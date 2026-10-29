@@ -1,9 +1,10 @@
 // LCARS: the frame of the lcars layout. One mod draws every part; the layout says which with props().part:
 // "top" (the upper elbow, arm and title), "side" (spaces and crew as LCARS buttons), "tabs" (the tab pills)
-// and "bottom" (the lower elbow and the status arm).
+// and "bottom" (the lower elbow and the status arm). As a popup it is "machines" (where a new space goes).
+// Right-clicks open Herdr's own menu mod, so rename, close, split and worktrees work as in its other layouts.
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { spaces, agents, machines, run, props, setAgentOrder, window } from "herdr";
+import { spaces, agents, machines, run, props, setAgentOrder, window, openOverlay, closeOverlay } from "herdr";
 
 const C = {
   black: "#000000", orange: "#ff9900", peach: "#ff9966", gold: "#ffcc66", tan: "#ffcc99", lilac: "#cc99cc",
@@ -33,6 +34,18 @@ function slab(id, color, label, h, extra) {
   return extra ? extra(el) : el;
 }
 
+// Herdr's menu mod at the pointer: tab is "space", "tab", "pane" or "global"
+const menu = (tab, target) => openOverlay({ mod: "menu", kind: "popup", width: 200, height: 260, props: { tab, target } });
+// Herdr's new menu: a terminal, each installed agent, a new space, worktrees
+const newMenu = () => openOverlay({ mod: "new-menu", kind: "popup", width: 250, height: 512 });
+// where a new space goes, when there is more than this computer
+function newSpace() {
+  const away = machines().filter((m) => m.name);
+  if (!away.length) return run("space.new", {});
+  openOverlay({ mod: "lcars", kind: "popup", width: 230, height: 60 + 44 * (away.length + 1),
+    frame: "none", props: { part: "machines" } });
+}
+
 export default class Lcars extends View {
   init(_props, cx) {
     this.now = Date.now();
@@ -45,7 +58,23 @@ export default class Lcars extends View {
     if (part === "side") return this.side();
     if (part === "tabs") return this.tabs();
     if (part === "bottom") return this.bottom();
+    if (part === "machines") return this.machines();
     return div().child(`lcars: unknown part ${part}`);
+  }
+
+  machines() {
+    const close = () => closeOverlay(props()?.overlay);
+    const all = [{ name: null, layout: "ready" }, ...machines().filter((m) => m.name)];
+    const row = (m, i) => {
+      const ready = m.layout === "ready";
+      return slab(`new-space-${m.name ?? "local"}`, ready ? SPACE_COLORS[i % SPACE_COLORS.length] : C.gray,
+        `${m.name ?? "this computer"}${ready ? "" : " · " + m.layout}`, 40, (el) => el
+          .when(ready, (el) => el.cursor_pointer().hover((st) => st.opacity(0.85))
+            .on_click(() => { close(); run("space.new", m.name ? { machine: m.name } : {}); })));
+    };
+    return v_flex().size_full().bg(C.black).rounded(14).p(6).gap(GAP)
+      .child(slab("new-space-title", C.orange, "new space on", 30, (el) => el.rounded_tl(12).rounded_tr(12)))
+      .children(all.map(row));
   }
 
   top() {
@@ -79,12 +108,14 @@ export default class Lcars extends View {
         .hover((st) => st.opacity(0.85))
         .when(s.status === "blocked" && !s.active, (el) => el.loop("opacity", { from: 0.55, to: 1, period: 900 }))
         .on_click(() => run("space.select", { id: s.id }))
+        .on_mouse_down("right", () => menu("space", { id: s.id }))
         .child(div().text_size(12).child(`${two(s.index)}${s.machine ? "-" + up(s.machine) : ""}`))
         .child(div().text_size(15).truncate().child(up(s.name)));
     };
     const member = (a) => h_flex().id(`agent-${a.address}`).w_full().h(40).flex_none().gap(6).items_center()
       .cursor_pointer().hover((st) => st.opacity(0.85))
       .on_click(() => run("agent.focus", { terminal: a.address }))
+      .on_mouse_down("right", () => menu("pane", { pane: a.pane, terminal: a.address }))
       .child(div().w(14).h_full().bg(STATUS[a.status] ?? C.gray).rounded_l(15)
         .when(a.status === "blocked", (el) => el.loop("opacity", { from: 0.4, to: 1, period: 700 })))
       .child(v_flex().flex_1().min_w(0)
@@ -96,6 +127,8 @@ export default class Lcars extends View {
       .child(div().w_full().h(18).flex_none().bg(C.orange)) // carries the top elbow down
       .child(slab("spaces-label", C.peach, `spaces ${two(list.length)}`, 26))
       .children(list.map(space))
+      .child(slab("space-new", C.gray, "+ new space", 30, (el) => el.cursor_pointer()
+        .hover((st) => st.bg(C.violet)).on_click(() => newSpace())))
       .child(slab("crew-label", C.lilac, `crew ${two(crew.length)}`, 26))
       .child(v_flex().id("crew").w_full().flex_none().gap(2).pr(4).children(crew.map(member)))
       .child(div().w_full().flex_1().min_h(10).bg(C.gray)); // runs into the bottom elbow
@@ -110,13 +143,14 @@ export default class Lcars extends View {
         .hover((st) => st.opacity(0.85))
         .when(t.status === "blocked" && !t.active, (el) => el.loop("opacity", { from: 0.5, to: 1, period: 800 }))
         .on_click(() => run("tab.select", { id: t.id }))
+        .on_mouse_down("right", () => menu("tab", { id: t.id, space: space.id }))
         .child(`${two(t.index)} ${up(t.name)}`);
     };
     return h_flex().size_full().gap(GAP + 2).items_center().overflow_x_scrollbar()
       .children((space?.tabs ?? []).filter((t) => !t.settled).map(pill))
       .child(h_flex().id("tab-new").h_full().flex_none().px(14).rounded(15).bg(C.gray).items_center()
         .text_color(C.black).text_size(16).font_weight(700).cursor_pointer().hover((st) => st.bg(C.violet))
-        .on_click(() => run("tab.new", {})).child("+"));
+        .on_click(() => newMenu()).child("+"));
   }
 
   bottom() {
@@ -124,7 +158,9 @@ export default class Lcars extends View {
     const count = (s) => crew.filter((a) => a.status === s).length;
     const away = machines().filter((m) => m.name).length;
     const clock = new Date(this.now).toTimeString().slice(0, 5);
-    const elbow = div().w(SIDE).h_full().flex_none().bg(C.gray).rounded_bl(40);
+    const elbow = div().id("menu").w(SIDE).h_full().flex_none().bg(C.gray).rounded_bl(40)
+      .flex().items_start().justify_end().px(10).pt(4).text_color(C.black).text_size(13).font_weight(700)
+      .cursor_pointer().hover((st) => st.bg(C.violet)).on_click(() => menu("global", {})).child("MENU");
     const status = div().w_full().flex_1().bg(C.gray).child(
       h_flex().size_full().bg(C.black).rounded_bl(22).items_center().gap(18).pl(18).text_size(12).font_weight(700)
         .child(div().text_color(C.blue).child(`${two(count("working"))} WORKING`))

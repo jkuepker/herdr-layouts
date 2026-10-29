@@ -1,6 +1,6 @@
 # LCARS
 
-A Star Trek LCARS frame around your terminals. A black window has an orange elbow in the top-left corner that runs down into a sidebar of flat colour slabs: your spaces as big buttons, then a "crew" list of every agent with a status strip. A coloured arm runs across the top under the space name, which is set in large orange capitals next to a stardate. Tabs are round pills coloured by what their agent is doing. Terminals sit in thin rounded frames, and the focused one is ringed in orange. A grey elbow closes the bottom-left corner, and its arm carries a count of agents working, needing you and done, plus the clock. An agent that needs you blinks red in the sidebar and on its tab.
+A Star Trek LCARS frame around your terminals. A black window has an orange elbow in the top-left corner that runs down into a sidebar of flat colour slabs: your spaces as big buttons, then a "crew" list of every agent with a status strip. A grey `+ NEW SPACE` slab under the spaces asks which machine to put it on. A coloured arm runs across the top under the space name, which is set in large orange capitals next to a stardate. Tabs are round pills coloured by what their agent is doing. Terminals sit in thin rounded frames, and the focused one is ringed in orange. A grey elbow closes the bottom-left corner, and its arm carries a count of agents working, needing you and done, plus the clock. An agent that needs you blinks red in the sidebar and on its tab.
 
 ![LCARS](preview.png)
 
@@ -16,6 +16,7 @@ The whole window is black (`#000000`). All labels are bold (weight 700) capitals
    - An 18px orange slab that carries the elbow down.
    - A 26px peach (`#ff9966`) label slab, `SPACES nn`.
    - One 40px slab per space. The label sits bottom-right in 15px black, with the index and machine (`01`, `02-SPARK1`) at the left in 12px. The shown space is orange. A space whose agent needs you is red (`#ff5544`). The others cycle tan, lilac, peach, blue, violet (`#9999ff`).
+   - A 30px grey slab, `+ NEW SPACE`, which turns violet on hover.
    - A 26px lilac label slab, `CREW nn`.
    - One 40px row per agent:
      - A 14px status strip at the left, rounded on its left side.
@@ -25,7 +26,7 @@ The whole window is black (`#000000`). All labels are bold (weight 700) capitals
    - **Tab row, 30px.** Each tab not put away (settled) is a pill with a 15px radius and 16px side padding. Its label is `nn NAME` in 14px black. Then comes a grey `+` pill that turns violet on hover.
    - **Panes.** The active tab's panes have an 8px gap and a 10px radius on a black background. Each pane has a 2px grey border, orange when focused. A lone pane keeps its frame.
 4. **Bottom bar, 44px tall, full width.**
-   - Left: a 210px grey elbow with a 40px rounded bottom-left corner.
+   - Left: a 210px grey elbow with a 40px rounded bottom-left corner, labelled `MENU` top-right in 13px black. It turns violet on hover.
    - Right of it, a black area with a 22px rounded bottom-left corner cut into the grey. It holds 12px counts, from the left: `nn WORKING` in blue, `nn NEED YOU` in red (grey when 0), `nn DONE` in gold and `nn MACHINES` in lilac. At the far right sits `⌘ SHIFT P · HH:MM` in tan (`CTRL SHIFT P` off macOS).
    - Under that, a 16px arm made of grey 120px, sky (`#5599ff`) filling the rest, peach 90px, and orange 46px with rounded right ends (8px).
 
@@ -54,8 +55,16 @@ Each agent status shows the same colour in the crew strip, the tab pill and the 
 - A space slab: `space.select {id}`.
 - A crew row: `agent.focus {terminal}`.
 - A tab pill: `tab.select {id}`.
-- `+`: `tab.new`.
+- `+ NEW SPACE`: with no other machines, `space.new` here. With machines added (`hc machine add`), a popup of LCARS slabs, `NEW SPACE ON` then `THIS COMPUTER` and one per machine. Picking one runs `space.new {machine}`. A machine that isn't ready shows grey with its state and can't be picked.
+- `+` after the tabs: Herdr's new menu (terminal, each installed agent, new space, new worktree, open worktree).
+- `MENU`: Herdr's global menu (new space, keybinds, themes).
 - `⌘ SHIFT P`: `app.palette`.
+
+**Right-clicks** open Herdr's own menu at the pointer:
+- A space slab: rename, new worktree, open worktree, close.
+- A tab pill: rename, new tab, close.
+- A crew row: that agent's pane menu (split right or down, zoom, right-clicks to the program, close).
+- A terminal: Herdr's usual terminal menu.
 
 **Hovers:** every clickable dims to opacity 0.85. The `+` pill turns violet.
 
@@ -70,8 +79,9 @@ Each agent status shows the same colour in the crew strip, the tab pill and the 
     - `work`: a column with padding `[8, 12]` and gap 8. It holds `tabs`, a block of `{ "px": 30 }`, and `main`, a block with `"tab": "active"` and the pane frame (gap 8, radius 10, border `#666688` 2px, focus `#ff9900` 2px, `lone: true`).
   - `bottom`: a block, `{ "px": 44 }`.
 - **One mod, `mods/lcars`** (`{ "place": "none" }`), used by all four blocks. `props().part` picks what it draws: `"top"`, `"side"`, `"tabs"` or `"bottom"`. Its code is one `View` class with a renderer per part. It uses `gpui-kit` `div` and `gpui-base` `h_flex` / `v_flex`.
-- **`herdr` functions:** `spaces()`, `agents()`, `machines()`, `window()` (only its `platform`), `props()`, `run()` and `setAgentOrder()`. It runs no programs and makes no network or file reads.
-- **Shipped mods:** none. It replaces the tab bar, the sidebar and the status bar.
+- **The machine picker** is the same mod opened as a popup (`openOverlay {mod: "lcars", kind: "popup", frame: "none", props: {part: "machines"}}`), sized 230px wide and 60 + 44 per machine tall. It closes itself with `closeOverlay(props().overlay)` before running `space.new`.
+- **`herdr` functions:** `spaces()`, `agents()`, `machines()`, `window()` (only its `platform`), `props()`, `run()`, `setAgentOrder()`, `openOverlay()` and `closeOverlay()`. It runs no programs and makes no network or file reads.
+- **Shipped mods:** `menu` (right-click menus, opened with `props {tab: "space" | "tab" | "pane" | "global", target}`) and `new-menu` (the `+` popup). It replaces the tab bar, the sidebar and the status bar.
 - **Art:** none. Every shape is a coloured `div` with per-corner radii (`rounded_tl`, `rounded_bl`, `rounded_tr`, `rounded_br`, `rounded_l`).
 
 ## Watch out
@@ -83,7 +93,8 @@ Each agent status shows the same colour in the crew strip, the tab pill and the 
 - **Avenir Next Condensed ships with macOS only.** Elsewhere the text falls back to Geist and runs wider. Antonio (OFL) is the classic LCARS face. To use it, put its `.ttf` files in `mods/lcars/fonts/` and set `ui_font` to `Antonio`.
 - **The sidebar has a fixed width (210px) and doesn't scroll.** In an 820px-tall window about 14 rows fit, spaces and crew together. More are cut off. Long names are truncated.
 - **The top arm's orange, lilac and blue slabs have fixed widths** (160, 70 and 46px). Only the tan slab shrinks.
-- **No right-click menus** on spaces, tabs or crew rows. There is no rename, close or settle from this layout: use the palette or keys.
+- **Menus are Herdr's, not LCARS-styled.** They keep the app's own look, so rename, close, split and worktrees behave exactly as in Herdr's layouts.
+- **A hidden window doesn't redraw.** `herdr-app shot` returns the last frame drawn, so bring the window forward before taking a screenshot.
 - **The stardate is invented:** the year minus 1920, then the fraction of the year so far.
 
 ## Done when
@@ -92,4 +103,6 @@ Each agent status shows the same colour in the crew strip, the tab pill and the 
 2. `layout.switch {name: "lcars"}` shows the frame, and `herdr-app status` lists no errors.
 3. A terminal that sends `OSC 7501 state=blocked` turns its crew strip and tab red and pulsing, and raises the `NEED YOU` count.
 4. Clicking a crew row focuses that terminal. Clicking a space slab switches to that space, and the big title changes to its name.
-5. `+` opens a new tab, which appears as a new pill.
+5. `+` after the tabs opens Herdr's new menu. Picking Terminal adds a pill.
+6. `+ NEW SPACE` opens the machine picker when machines are added. Picking `THIS COMPUTER` adds a space slab and shows it.
+7. `MENU` opens the global menu. Right-clicking a space, tab or crew row opens its menu.
