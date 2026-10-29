@@ -71,6 +71,19 @@ Each agent status shows the same colour in the crew strip, the tab pill and the 
 
 **Over time:** the stardate and clock update every 15s. The crew order follows the sidebar, through `setAgentOrder`, so `agent.next` and `agent.prev` walk it top to bottom.
 
+## Shepherdr blocks
+
+When [Shepherdr](https://github.com/eliasstravik/shepherdr) runs on this computer, the sidebar and the status arm show what waits on you. Both are drawn by `mods/lcars/main.js`.
+
+- **Data:** `GET http://127.0.0.1:<port>/api/snapshot`, the port read from `~/.shepherdr/server.json` (7787 if that file is missing). The mod polls every 12s from `cx.spawn`, so rendering never waits on it, and redraws only when the answer changed. It uses `places`, `tasks` (`status`, `name`, `sub`, `place`, `archived`) and `asks`, and skips archived tasks and tasks of places that no longer exist.
+- **Sidebar, under CREW:**
+  - A `SHEPHERDR` label slab: gold, red and pulsing (0.55↔1 every 900ms) while anything needs you.
+  - Three count blocks: `NEED YOU` (red, pulsing), `READY` (gold), `WORKING` (blue), each grey at 00. `NEED YOU` is the coordinators' open questions (`asks`) plus tasks with status `need`. `WORKING` is `work` plus `merging`.
+  - Up to three rows of what waits on you, questions first, then tasks that need you, then tasks ready to merge, each with a red or gold pill, `ID · NAME` in tan and its status line (the task's `sub`) below. Past three, a grey `+ nn MORE`.
+- **Status arm:** `nn SHEPHERDR` after `MACHINES`, the number of things that need you or are ready to merge. Red when something needs you, gold when only merges are ready, grey at 00.
+- **Click:** the label slab, a count block, a row, `+ nn MORE` and the `SHEPHERDR` count open Shepherdr's address in the default browser (`open` on macOS, `xdg-open` elsewhere).
+- **Offline:** when Shepherdr doesn't answer, the sidebar shows one quiet grey `SHEPHERDR OFFLINE` slab and the status arm shows nothing. Nothing is drawn before the first answer, and an error never shows.
+
 ## Built from
 
 - **`layouts/lcars.json`:** a root `column` with `"titlebar": "none"`, `"traffic_lights": [226, 34]` (in the black under the top arm), `"theme": "graphite"`, a `colors` block that sets every theme colour and `ansi0`–`ansi15` (so no `themes/` file is needed), `"ui_font": "Antonio"` and `"preview": "mods/lcars/preview.png"`. Its children:
