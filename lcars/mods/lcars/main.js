@@ -38,6 +38,9 @@ function slab(id, color, label, h, extra) {
 const menu = (tab, target) => openOverlay({ mod: "menu", kind: "popup", width: 200, height: 260, props: { tab, target } });
 // Herdr's new menu: a terminal, each installed agent, a new space, worktrees
 const newMenu = () => openOverlay({ mod: "new-menu", kind: "popup", width: 250, height: 512 });
+// a right-click handler that opens one menu; stopping the press keeps the bar behind from opening its own
+const onRight = (open) => (_e, cx) => { cx.stop_propagation(); open(); };
+const globalMenu = () => menu("global", {});
 // where a new space goes, when there is more than this computer
 function newSpace() {
   const away = machines().filter((m) => m.name);
@@ -92,7 +95,7 @@ export default class Lcars extends View {
       h_flex().size_full().bg(C.black).rounded_tl(26).items_center().justify_end().gap(14).pr(4)
         .child(div().text_color(C.gold).text_size(13).font_weight(700).child(`STARDATE ${stardate(this.now)}`))
         .child(div().text_color(C.orange).text_size(30).font_weight(700).child(up(space?.name ?? "HERDR"))));
-    return h_flex().size_full().bg(C.black)
+    return h_flex().id("top").size_full().bg(C.black).on_mouse_down("right", onRight(globalMenu))
       .child(elbow)
       .child(v_flex().flex_1().h_full().child(arm).child(title));
   }
@@ -108,14 +111,14 @@ export default class Lcars extends View {
         .hover((st) => st.opacity(0.85))
         .when(s.status === "blocked" && !s.active, (el) => el.loop("opacity", { from: 0.55, to: 1, period: 900 }))
         .on_click(() => run("space.select", { id: s.id }))
-        .on_mouse_down("right", () => menu("space", { id: s.id }))
+        .on_mouse_down("right", onRight(() => menu("space", { id: s.id })))
         .child(div().text_size(12).child(`${two(s.index)}${s.machine ? "-" + up(s.machine) : ""}`))
         .child(div().text_size(15).truncate().child(up(s.name)));
     };
     const member = (a) => h_flex().id(`agent-${a.address}`).w_full().h(40).flex_none().gap(6).items_center()
       .cursor_pointer().hover((st) => st.opacity(0.85))
       .on_click(() => run("agent.focus", { terminal: a.address }))
-      .on_mouse_down("right", () => menu("pane", { pane: a.pane, terminal: a.address }))
+      .on_mouse_down("right", onRight(() => menu("pane", { pane: a.pane, terminal: a.address })))
       .child(div().w(14).h_full().bg(STATUS[a.status] ?? C.gray).rounded_l(15)
         .when(a.status === "blocked", (el) => el.loop("opacity", { from: 0.4, to: 1, period: 700 })))
       .child(v_flex().flex_1().min_w(0)
@@ -123,12 +126,12 @@ export default class Lcars extends View {
           .child(up(`${a.program?.name ?? a.app ?? "agent"} · ${a.tab_name}`)))
         .child(div().text_size(11).text_color(STATUS[a.status] ?? C.gray).truncate()
           .child(`${WORD[a.status] ?? up(a.status)} · ${up(a.space_name)}`)));
-    return v_flex().size_full().bg(C.black).gap(GAP)
+    return v_flex().id("side").size_full().bg(C.black).gap(GAP).on_mouse_down("right", onRight(globalMenu))
       .child(div().w_full().h(18).flex_none().bg(C.orange)) // carries the top elbow down
       .child(slab("spaces-label", C.peach, `spaces ${two(list.length)}`, 26))
       .children(list.map(space))
       .child(slab("space-new", C.gray, "+ new space", 30, (el) => el.cursor_pointer()
-        .hover((st) => st.bg(C.violet)).on_click(() => newSpace())))
+        .hover((st) => st.bg(C.violet)).on_click(() => newSpace()).on_mouse_down("right", onRight(newSpace))))
       .child(slab("crew-label", C.lilac, `crew ${two(crew.length)}`, 26))
       .child(v_flex().id("crew").w_full().flex_none().gap(2).pr(4).children(crew.map(member)))
       .child(div().w_full().flex_1().min_h(10).bg(C.gray)); // runs into the bottom elbow
@@ -143,14 +146,15 @@ export default class Lcars extends View {
         .hover((st) => st.opacity(0.85))
         .when(t.status === "blocked" && !t.active, (el) => el.loop("opacity", { from: 0.5, to: 1, period: 800 }))
         .on_click(() => run("tab.select", { id: t.id }))
-        .on_mouse_down("right", () => menu("tab", { id: t.id, space: space.id }))
+        .on_mouse_down("right", onRight(() => menu("tab", { id: t.id, space: space.id })))
         .child(`${two(t.index)} ${up(t.name)}`);
     };
-    return h_flex().size_full().gap(GAP + 2).items_center().overflow_x_scrollbar()
+    return h_flex().id("tab-bar").size_full().gap(GAP + 2).items_center().overflow_x_scrollbar()
+      .on_mouse_down("right", onRight(globalMenu))
       .children((space?.tabs ?? []).filter((t) => !t.settled).map(pill))
       .child(h_flex().id("tab-new").h_full().flex_none().px(14).rounded(15).bg(C.gray).items_center()
         .text_color(C.black).text_size(16).font_weight(700).cursor_pointer().hover((st) => st.bg(C.violet))
-        .on_click(() => newMenu()).child("+"));
+        .on_click(() => newMenu()).on_mouse_down("right", onRight(newMenu)).child("+"));
   }
 
   bottom() {
@@ -175,7 +179,7 @@ export default class Lcars extends View {
       .child(div().flex_1().h_full().bg(C.sky))
       .child(div().w(90).h_full().bg(C.peach))
       .child(div().w(46).h_full().bg(C.orange).rounded_tr(8).rounded_br(8));
-    return h_flex().size_full().bg(C.black)
+    return h_flex().id("bottom").size_full().bg(C.black).on_mouse_down("right", onRight(globalMenu))
       .child(elbow)
       .child(v_flex().flex_1().h_full().child(status).child(arm));
   }
