@@ -6,7 +6,7 @@ A Star Trek LCARS frame around your terminals. A black window has an orange elbo
 
 ## What you see
 
-The whole window is black (`#000000`). All labels are bold (weight 700) capitals in Avenir Next Condensed. LCARS blocks are separated by 4px of black.
+The whole window is black (`#000000`). All labels are bold (weight 700) capitals in Antonio, the classic LCARS face, which the mod brings with it. LCARS blocks are separated by 4px of black.
 
 1. **Top bar, 64px tall, full width.** It is a window drag area.
    - Left: a 210px orange (`#ff9900`) elbow with a 44px rounded top-left corner. Its bottom-right corner reads the shown space's machine, or `THIS COMPUTER`, in 13px black.
@@ -72,7 +72,7 @@ Each agent status shows the same colour in the crew strip, the tab pill and the 
 
 ## Built from
 
-- **`layouts/lcars.json`:** a root `column` with `"titlebar": "none"`, `"traffic_lights": [226, 34]` (in the black under the top arm), `"theme": "graphite"`, a `colors` block that sets every theme colour and `ansi0`–`ansi15` (so no `themes/` file is needed), `"ui_font": "Avenir Next Condensed"` and `"preview": "mods/lcars/preview.png"`. Its children:
+- **`layouts/lcars.json`:** a root `column` with `"titlebar": "none"`, `"traffic_lights": [226, 34]` (in the black under the top arm), `"theme": "graphite"`, a `colors` block that sets every theme colour and `ansi0`–`ansi15` (so no `themes/` file is needed), `"ui_font": "Antonio"` and `"preview": "mods/lcars/preview.png"`. Its children:
   - `top`: a block, `{ "px": 64 }`, `window_drag`.
   - `body`: a row with `resizable: false`, holding:
     - `sidebar`: a block, `{ "px": 210 }`.
@@ -90,7 +90,7 @@ Each agent status shows the same colour in the crew strip, the tab pill and the 
 - **`loop()` takes a policy object:** `.loop("opacity", { from, to, period })`. Positional numbers fail at render time. `herdr-app check` passes, and the part simply goes blank.
 - **Theme:** a theme in `themes/` does not travel with a shared layout, so put the palette in the layout's `colors`.
 - **`done` shows only until the tab is seen.** Herdr settles it to `idle`, so a screenshot rarely shows a gold `DONE`.
-- **Avenir Next Condensed ships with macOS only.** Elsewhere the text falls back to Geist and runs wider. Antonio (OFL) is the classic LCARS face. To use it, put its `.ttf` files in `mods/lcars/fonts/` and set `ui_font` to `Antonio`.
+- **Antonio comes with the mod.** `mods/lcars/fonts/` holds Antonio Regular and Bold (latin, static TTFs from Fontsource) and their licence, the SIL Open Font License (`OFL.txt`). Herdr loads a mod's `fonts/` at start, so nothing needs installing.
 - **The sidebar has a fixed width (210px) and doesn't scroll.** In an 820px-tall window about 14 rows fit, spaces and crew together. More are cut off. Long names are truncated.
 - **The top arm's orange, lilac and blue slabs have fixed widths** (160, 70 and 46px). Only the tan slab shrinks.
 - **Menus are Herdr's, not LCARS-styled.** They keep the app's own look, so rename, close, split and worktrees behave exactly as in Herdr's layouts.

@@ -153,7 +153,7 @@ export default class Lcars extends View {
       .on_mouse_down("right", onRight(globalMenu))
       .children((space?.tabs ?? []).filter((t) => !t.settled).map(pill))
       .child(h_flex().id("tab-new").h_full().flex_none().px(14).rounded(15).bg(C.gray).items_center()
-        .text_color(C.black).text_size(16).font_weight(700).cursor_pointer().hover((st) => st.bg(C.violet))
+        .text_color(C.black).text_size(22).font_weight(700).cursor_pointer().hover((st) => st.bg(C.violet))
         .on_click(() => newMenu()).on_mouse_down("right", onRight(newMenu)).child("+"));
   }
 
