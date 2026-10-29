@@ -26,7 +26,7 @@ The whole window is black (`#000000`). All labels are bold (weight 700) capitals
    - **Tab row, 30px.** Each tab not put away (settled) is a pill with a 15px radius and 16px side padding. Its label is `nn NAME` in 14px black. Then comes a grey `+` pill that turns violet on hover.
    - **Panes.** The active tab's panes have an 8px gap and a 10px radius on a black background. Each pane has a 2px grey border, orange when focused. A lone pane keeps its frame.
 4. **Bottom bar, 44px tall, full width.**
-   - Left: a 210px grey elbow with a 40px rounded bottom-left corner, labelled `MENU` top-right in 13px black. It turns violet on hover.
+   - Left: a 210px grey elbow with a 40px rounded bottom-left corner, labelled `MENU` top-right in 13px black, with a 16px black gear (`mods/lcars/gear.svg`, Lucide's `settings` icon) 10px to its left. The elbow turns violet on hover; the gear dims to 60%.
    - Right of it, a black area with a 22px rounded bottom-left corner cut into the grey. It holds 12px counts, from the left: `nn WORKING` in blue, `nn NEED YOU` in red (grey when 0), `nn DONE` in gold and `nn MACHINES` in lilac. At the far right sits `⌘ SHIFT P · HH:MM` in tan (`CTRL SHIFT P` off macOS).
    - Under that, a 16px arm made of grey 120px, sky (`#5599ff`) filling the rest, peach 90px, and orange 46px with rounded right ends (8px).
 
@@ -58,6 +58,7 @@ Each agent status shows the same colour in the crew strip, the tab pill and the 
 - `+ NEW SPACE`: with no other machines, `space.new` here. With machines added (`hc machine add`), a popup of LCARS slabs, `NEW SPACE ON` then `THIS COMPUTER` and one per machine. Picking one runs `space.new {machine}`. A machine that isn't ready shows grey with its state and can't be picked.
 - `+` after the tabs: Herdr's new menu (terminal, each installed agent, new space, new worktree, open worktree).
 - `MENU`: Herdr's global menu (new space, keybinds, themes).
+- The gear: Herdr's settings (`app.settings`, the same as `⌘ ,`). It stops its own press so the elbow's menu does not open as well.
 - `⌘ SHIFT P`: `app.palette`.
 
 **Right-clicks** open Herdr's own menu at the pointer:
@@ -105,4 +106,4 @@ Each agent status shows the same colour in the crew strip, the tab pill and the 
 4. Clicking a crew row focuses that terminal. Clicking a space slab switches to that space, and the big title changes to its name.
 5. `+` after the tabs opens Herdr's new menu. Picking Terminal adds a pill.
 6. `+ NEW SPACE` opens the machine picker when machines are added. Picking `THIS COMPUTER` adds a space slab and shows it.
-7. `MENU` opens the global menu. Right-clicking a space, tab or crew row opens its menu.
+7. `MENU` opens the global menu and the gear opens the settings. Right-clicking a space, tab or crew row opens its menu.

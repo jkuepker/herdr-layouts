@@ -10,4 +10,4 @@ To add one, ask your agent in Herdr to read `~/.config/herdr-app/AGENTS.md` ("La
 
 ## Licence
 
-MIT (see `LICENSE`), except the Antonio font files in `lcars/mods/lcars/fonts/`, which are under the SIL Open Font License 1.1 (`OFL.txt` beside them).
+MIT (see `LICENSE`), except the Antonio font files in `lcars/mods/lcars/fonts/`, which are under the SIL Open Font License 1.1 (`OFL.txt` beside them). The gear icon is Lucide's `settings` (ISC licence, lucide.dev).

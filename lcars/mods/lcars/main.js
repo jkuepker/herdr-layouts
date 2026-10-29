@@ -2,7 +2,7 @@
 // "top" (the upper elbow, arm and title), "side" (spaces and crew as LCARS buttons), "tabs" (the tab pills)
 // and "bottom" (the lower elbow and the status arm). As a popup it is "machines" (where a new space goes).
 // Right-clicks open Herdr's own menu mod, so rename, close, split and worktrees work as in its other layouts.
-import { View, div } from "gpui-kit";
+import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { spaces, agents, machines, run, props, setAgentOrder, window, openOverlay, closeOverlay } from "herdr";
 
@@ -164,7 +164,15 @@ export default class Lcars extends View {
     const clock = new Date(this.now).toTimeString().slice(0, 5);
     const elbow = div().id("menu").w(SIDE).h_full().flex_none().bg(C.gray).rounded_bl(40)
       .flex().items_start().justify_end().px(10).pt(4).text_color(C.black).text_size(13).font_weight(700)
-      .cursor_pointer().hover((st) => st.bg(C.violet)).on_click(() => menu("global", {})).child("MENU");
+      .cursor_pointer().hover((st) => st.bg(C.violet)).on_click(() => menu("global", {}))
+      .child(h_flex().gap(10).items_center()
+        // the gear opens Herdr's settings; stopping its press keeps the elbow's MENU from opening too
+        .child(div().id("settings").cursor_pointer().hover((st) => st.opacity(0.6))
+          .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+          .on_mouse_down("right", (_e, cx) => cx.stop_propagation())
+          .on_click(() => run("app.settings"))
+          .child(svg("mods/lcars/gear.svg").size(16).text_color(C.black)))
+        .child("MENU"));
     const status = div().w_full().flex_1().bg(C.gray).child(
       h_flex().size_full().bg(C.black).rounded_bl(22).items_center().gap(18).pl(18).text_size(12).font_weight(700)
         .child(div().text_color(C.blue).child(`${two(count("working"))} WORKING`))
