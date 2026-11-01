@@ -1,9 +1,9 @@
 // Slate: a quiet, dense dark frame. One mod draws every part; the layout says which with props().part:
 // "top" (brand, text tabs with an underline, the command hint), "side" (the shown space as a pinned card, what
-// waits on you with the question asked, spaces as coloured chips, agents in flight, the concluded ones folded
+// needs you with the question asked, spaces as coloured chips, agents in flight, the concluded ones folded
 // away), "panel" (the shown space's task graph:
 // each tab and the agents in it) and "bottom" (the status bar). Right-clicks open Herdr's own menu mod.
-import { View, div, svg } from "gpui-kit";
+import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { spaces, agents, machines, run, props, setAgentOrder, window, openOverlay, home, exec, shared, setShared } from "herdr";
 
@@ -18,7 +18,7 @@ const CHIPS = [
   ["#e6c35c", "#352c10"], ["#6fb3f2", "#152a40"], ["#e88cc8", "#3a1a30"], ["#8fd18a", "#1c321c"],
 ];
 const STATUS = { blocked: C.yellow, working: C.purple, done: C.green, idle: C.dim };
-const WORD = { blocked: "waits on you", working: "working", done: "done", idle: "idle" };
+const WORD = { blocked: "needs you", working: "working", done: "done", idle: "idle" };
 const ORDER = { blocked: 0, working: 1, done: 2, idle: 3 };
 const MONO = "JetBrains Mono";
 const SANS = "Geist";
@@ -67,10 +67,19 @@ const noDrag = (el) => el.on_mouse_down("left", (_e, cx) => cx.stop_propagation(
 
 const mono = (size, color, text) => div().font_family(MONO).text_size(size).text_color(color).child(text);
 const icon = (name, size, color) => svg(`mods/slate/${name}.svg`).size(size).flex_none().text_color(color);
-function tag(name) {
-  const [fg, bg] = chip(name);
-  return div().flex_none().px(5).py(1).rounded(3).bg(bg).text_color(fg).font_family(SANS).text_size(11).truncate().child(name);
+// the agent's icon from Herdr's program table: a one-colour glyph tinted like the text, or a picture
+function glyph(p, size, color) {
+  if (!p?.icon) return null;
+  return p.tint ? svg(p.icon).size(size).flex_none().text_color(color) : image(p.icon).w(size).h(size).flex_none();
 }
+// a space's chip; with an agent's program, that agent's icon in front of it
+function tag(name, program) {
+  const [fg, bg] = chip(name);
+  const el = div().flex_none().px(5).py(1).rounded(3).bg(bg).text_color(fg).font_family(SANS).text_size(11).truncate().child(name);
+  const g = glyph(program, 12, C.muted);
+  return g ? h_flex().flex_none().gap(5).items_center().child(g).child(el) : el;
+}
+const needs = (n) => `${n} ${n === 1 ? "needs" : "need"} you`;
 // the status mark in front of a row: a spinner while working, a check when done, a dot otherwise
 function mark(status, size = 12) {
   if (status === "working") return icon("spinner", size, C.purple).spin(900);
@@ -194,7 +203,7 @@ export default class Slate extends View {
             .child(mono(11, C.dim, space?.machine ? `@${space.machine}` : "@local")))
           .child(h_flex().gap(6).items_center()
             .child(div().w(7).h(7).rounded(4).bg(waiting ? C.yellow : C.green))
-            .child(mono(11, C.muted, waiting ? `${waiting} waiting on you` : `${busy} working`))
+            .child(mono(11, C.muted, waiting ? needs(waiting) : `${busy} working`))
             .child(div().flex_1())
             .child(mono(10, C.dim, ago(space?.tabs?.reduce((m, t) => Math.max(m, t.changed_at ?? 0), 0), this.now))))));
 
@@ -226,7 +235,7 @@ export default class Slate extends View {
         .child(div().flex_1().min_w(0).truncate().font_family(SANS).text_size(13)
           .text_color(a.focused ? C.text : "#c8c8cc").child(this.titleOf(a))))
       .child(h_flex().pl(20).gap(8).items_center()
-        .child(tag(a.space_name))
+        .child(tag(a.space_name, a.program))
         .child(mono(11, STATUS[a.status] ?? C.dim, WORD[a.status] ?? a.status ?? ""))
         .child(div().flex_1().min_w(0).truncate().font_family(MONO).text_size(11).text_color(C.dim)
           .child(a.program?.name ?? a.app ?? ""))
@@ -244,7 +253,7 @@ export default class Slate extends View {
         .child(div().flex_1().min_w(0).truncate().font_family(SANS).text_size(13).text_color(C.text).child(this.titleOf(a)))
         .child(mono(11, C.dim, ago(this.when(a), this.now))))
       .child(h_flex().pl(20).gap(8).items_center()
-        .child(tag(a.space_name))
+        .child(tag(a.space_name, a.program))
         .child(mono(11, C.yellow, "asks you"))
         .child(div().flex_1().min_w(0).truncate().font_family(MONO).text_size(11).text_color(C.dim)
           .child(a.program?.name ?? a.app ?? "")))
@@ -258,7 +267,7 @@ export default class Slate extends View {
       .child(header)
       .child(card)
       .child(v_flex().id("side-lists").w_full().flex_1().min_h(0).overflow_y_scrollbar().pb(8)
-        .when(blocked.length > 0, (el) => el.child(section("waiting", "waiting on you", blocked.length, null, C.yellow))
+        .when(blocked.length > 0, (el) => el.child(section("waiting", "needs you", blocked.length, null, C.yellow))
           .when(this.open.waiting, (el) => el.children(blocked.map(askCard)))
           .child(div().h(4).flex_none()))
         .child(section("spaces", "spaces", list.length, addSpace))
@@ -293,7 +302,7 @@ export default class Slate extends View {
           .child(v_flex().flex_1().min_w(0).gap(2)
             .child(div().truncate().font_family(SANS).text_size(13).text_color(C.text).child(title))
             .child(h_flex().gap(6).items_center()
-              .child(tag(space.name))
+              .child(tag(space.name, inTab[0]?.program))
               .child(mono(11, C.dim, `#${two(t.index)}`))
               .when(t.panes > 1, (el) => el.child(mono(11, C.dim, `${t.panes} panes`)))))
           .child(mono(11, C.dim, ago(t.working_since ?? t.changed_at, this.now))))
@@ -319,7 +328,7 @@ export default class Slate extends View {
         .child(div().flex_1())
         .child(mono(11, C.dim, `${tabs.length} live · ${running} running`)))
       .child(v_flex().id("graph").w_full().flex_1().min_h(0).overflow_y_scrollbar().pb(8)
-        .children(group("waiting on you", by("blocked")))
+        .children(group("needs you", by("blocked")))
         .children(group("running", by("working")))
         .children(group("landed", by("done")))
         .children(group("idle", by("idle"))));
@@ -337,7 +346,7 @@ export default class Slate extends View {
       .on_mouse_down("right", onRight(globalMenu))
       .child(item(`${crew.length} agents`, C.muted))
       .child(item(`${count("working")} working`, C.muted, C.purple))
-      .child(item(`${count("blocked")} waiting`, count("blocked") ? C.yellow : C.muted, C.yellow))
+      .child(item(needs(count("blocked")), count("blocked") ? C.yellow : C.muted, C.yellow))
       .child(item(`${count("done")} done`, C.muted, C.green))
       .child(div().flex_1())
       .child(item(`${spaces().length} spaces`, C.dim))
