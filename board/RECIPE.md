@@ -44,10 +44,11 @@ Slate's palette (see [Slate](../slate/RECIPE.md)): near-black `#121214`, JetBrai
    - facts in mono: commits, uncommitted files, `+added −deleted` (when xo reports them), tokens, and checks (`✓ checks`, `✗ checks`, `checks stale`).
    - buttons:
      - NEEDS YOU: **Answer** and **Go to agent**.
-     - READY TO LAND: **Merge** and/or **Ship PR** (whichever xo's `next` names), plus Go to agent.
+     - any column but NEEDS YOU: **Sync**, **Merge PR**, **Merge** and/or **Ship PR**, whichever xo's `next` names (`xo sync`, `xo land`, `xo merge`, `xo ship`), plus Go to agent.
      - DONE: **Archive**.
    - while an action runs, `Merge…` with a spinner. A failure stays on the card with its first line.
-6. **Status bar, 24px.** Task counts by group, any xo error in red, when xo was last read, and the clock.
+6. **Ready to push.** Under the chips, one line per project whose branch is ahead of origin (a bearing of kind `push`, keyed by the project): `life  main is 2 commits ahead of origin  [Push]`. A dirty checkout gets the line without the button. With one project's chip picked, **Release** shows beside Focus (`xo cut`, a patch release).
+7. **Status bar, 24px.** Task counts by group, any xo error in red, when xo was last read, and the clock.
 
 ## How it behaves
 
@@ -58,7 +59,8 @@ Slate's palette (see [Slate](../slate/RECIPE.md)): near-black `#121214`, JetBrai
   - and every 15s anyway.
 - **Questions:** every 5s it runs `hc read` on each blocked hc task and takes the lowest line that ends in a question, the same rule as Slate.
 - **Actions** use `xo act <key> <do> --id <id>`, then poll `xo act --state <id>` every 2s.
-  - Merge, Ship PR and Archive (`remove`) ask on the card first: `Archive token-column? [Yes y] [No n]`.
+  - Merge, Ship PR, Merge PR (`land`) and Archive (`remove`) ask on the card first: `Archive token-column? [Yes y] [No n]`. Sync does not ask: it only touches the task's own branch.
+  - Push and Release take the project as the key (`xo act life push`) and ask on their line: `Push life to origin? [Yes y] [No n]`.
   - **Archive all** asks once for every DONE card.
 - **Go to agent:** `agent.focus {terminal}`, then `layout.select {stack: "main", child: "work"}`, so the work area shows that task's tab. Clicking Board switches back.
 - **Focus:** `agent.focus` on the picked NEEDS YOU task, then `layout.show {id: "focus-term"}`, which is a `{ "agent": "focused" }` block. Every other column, the strip and the chips fade to 18%. Picking another NEEDS YOU card switches the terminal. Esc or F hides it again.

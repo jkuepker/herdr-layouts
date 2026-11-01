@@ -35,8 +35,18 @@ const SAFETY_MS = 15000; // a read nothing asked for
 const TICK_MS = 1000; // checks worker terminals and running actions; runs no program while nothing moved
 const ASK_MS = 5000; // how often the questions of blocked agents are read off their screens
 const WATCHED = /\/(state\.json(\.tmp-\d+)?|events\.jsonl(\.1)?)$/; // what xo writes when a task changes
-const CONFIRM = new Set(["merge", "ship", "remove"]); // asked on the card first
-const LABEL = { merge: "Merge", ship: "Ship PR", remove: "Archive" };
+const CONFIRM = new Set(["merge", "ship", "remove", "land", "push", "cut"]); // asked on the card first
+const LABEL = { merge: "Merge", ship: "Ship PR", remove: "Archive", land: "Merge PR", sync: "Sync", push: "Push", cut: "Release" };
+
+// the next moves a task's bearing offers as buttons: xo sync (catch up with its base), xo land (merge its PR), xo merge, xo ship
+function moves(t) {
+  const out = [];
+  if (/^xo sync /.test(t.next)) out.push("sync");
+  if (/^xo land /.test(t.next)) out.push("land");
+  if (/^xo merge /.test(t.next)) out.push("merge");
+  if (/^xo ship /.test(t.next) || /\bor xo ship\b/.test(t.next + " " + t.reason)) out.push("ship");
+  return out;
+}
 const VIEW = "board.view"; // shared: "board" or "work", which child of the main stack shows
 const LEFT = "board.left"; // shared: when the top bar last sent a picked space to the work view (ms)
 const FOCUS = "board.focus"; // shared: Focus is on (the top bar fades tabs too)
@@ -131,6 +141,7 @@ export default class Board extends View {
     this.asking = false;
     this.programs = {}; // harness -> Program, for the agent icons
     this.filter = null; // a project, or null for all
+    this.pushes = []; // {key: project, reason, next} for projects ahead of origin
     this.sel = null; // the selected task key
     this.focus = false;
     this.confirm = null; // {key, do}; key "*" archives every DONE task
@@ -204,6 +215,9 @@ export default class Board extends View {
           const r = rows.get(e.key);
           return { key: e.key, project: r.project, slug: r.slug ?? e.key.split("/").pop(), kind: e.kind, reason: e.reason, next: e.next ?? "", row: r };
         });
+        // a project whose branch is ahead of origin: bearing kind push, keyed by the project (no task row)
+        this.pushes = (state.bearings ?? []).filter((e) => e.kind === "push")
+          .map((e) => ({ key: e.key, project: e.key, slug: e.key, reason: e.reason ?? "", next: e.next ?? "" }));
         this.events = events ?? [];
         this.problem = state.error || null;
         for (const t of this.tasks) {
@@ -367,7 +381,7 @@ export default class Board extends View {
     else if (c === "merge" && t?.kind === "ready") this.ask(cx, t, "merge");
     else if (c === "yes" && this.confirm) {
       if (this.confirm.key === "*") this.archiveAll(cx);
-      else { const ct = this.tasks.find((x) => x.key === this.confirm.key); if (ct) this.act(cx, ct, this.confirm.do); }
+      else { const ct = this.tasks.find((x) => x.key === this.confirm.key) ?? this.projectTarget(this.confirm); if (ct) this.act(cx, ct, this.confirm.do); }
     } else if (c === "no") this.confirm = null;
   }
 
@@ -377,7 +391,7 @@ export default class Board extends View {
     if (this.confirm && (k === "y" || k === "enter")) {
       const c = this.confirm;
       if (c.key === "*") this.archiveAll(cx);
-      else { const ct = this.tasks.find((x) => x.key === c.key); if (ct) this.act(cx, ct, c.do); }
+      else { const ct = this.tasks.find((x) => x.key === c.key) ?? this.projectTarget(c); if (ct) this.act(cx, ct, c.do); }
       return;
     }
     if (this.confirm && (k === "n" || k === "escape")) { this.confirm = null; cx.notify(); return; }
@@ -441,7 +455,7 @@ export default class Board extends View {
     const today = day(new Date(this.now));
     const counts = Array(7).fill(0);
     for (const e of this.events) {
-      if (e.kind !== "merged" && e.kind !== "shipped") continue;
+      if (e.kind !== "merged" && e.kind !== "landed" && e.kind !== "shipped") continue;
       const ts = e.ts ? e.ts * 1000 : Date.parse(e.at ?? "");
       const ago = Math.round((today - day(new Date(ts))) / 86400000);
       if (ago >= 0 && ago < 7) counts[6 - ago]++;
@@ -484,12 +498,9 @@ export default class Board extends View {
       actions = h_flex().gap(6)
         .child(this.btn(`answer-${t.key}`, "Answer", "you", (cx) => this.setFocus(cx, true, t)))
         .when(!!r.session, (el) => el.child(this.btn(`go-${t.key}`, "Go to agent", "plain", (cx) => this.goTo(cx, t))));
-    } else if (t.kind === "ready") {
-      const land = [];
-      if (/^xo merge /.test(t.next)) land.push("merge");
-      if (/^xo ship /.test(t.next) || /\bor xo ship\b/.test(t.next + " " + t.reason)) land.push("ship");
+    } else if (moves(t).length) {
       actions = h_flex().gap(6)
-        .children(land.map((w) => this.btn(`${w}-${t.key}`, LABEL[w], w === "merge" ? "land" : "plain", (cx) => this.ask(cx, t, w))))
+        .children(moves(t).map((w) => this.btn(`${w}-${t.key}`, LABEL[w], w === "merge" || w === "land" ? "land" : "plain", (cx) => this.ask(cx, t, w))))
         .when(!!r.session, (el) => el.child(this.btn(`go-${t.key}`, "Go to agent", "plain", (cx) => this.goTo(cx, t))));
     } else if (t.kind === "done") {
       actions = h_flex().gap(6).child(this.btn(`archive-${t.key}`, "Archive", "plain", (cx) => this.ask(cx, t, "remove")));
@@ -562,7 +573,16 @@ export default class Board extends View {
           this.tasks.some((t) => t.project === p && t.kind === "needs_you"))))))
       .child(div().flex_1())
       .child(mono(11, C.dim, this.focus ? "type in the terminal to answer · click the board, then F to leave" : "j/k move · ⏎ go to agent · m merge · a archive"))
+      .when(!!this.filter, (el) => el.child(this.projectActions({ key: this.filter, slug: this.filter }, ["cut"])))
       .child(this.btn("focus", this.focus ? "◎ Focus  F" : "◎ Focus  F", this.focus ? "on" : "plain", (cx) => this.setFocus(cx, !this.focus)));
+
+    const pushes = this.pushes.filter((p) => !this.filter || p.key === this.filter).map((p) =>
+      dimmed(h_flex().w_full().flex_none().gap(8).items_center().px(10).py(6).rounded(6).bg(C.card).border(1).border_color(C.line)
+        .child(div().w(7).h(7).rounded(4).bg(CHIPS[[...p.key].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) >>> 0, 0) % CHIPS.length][0]))
+        .child(mono(12, C.text, p.key))
+        .child(mono(11, C.muted, p.reason))
+        .child(div().flex_1())
+        .child(this.projectActions(p, p.next === `xo push ${p.key}` ? ["push"] : [])))); // a dirty checkout gets --dry-run: no button
 
     const column = ([k, label, color]) => {
       const list = by(k);
@@ -593,9 +613,31 @@ export default class Board extends View {
       .children(banner ? [banner] : [])
       .when(!!this.problem, (el) => el.child(mono(11, C.red, `xo: ${this.problem}`)))
       .child(chips)
+      .children(pushes)
       // a plain flex row: h_flex centres its children, which would shrink each column to its header
       .child(div().w_full().flex_1().min_h(0).flex().flex_row().gap(12)
         .children(COLS.map(column)));
+  }
+
+  // the project a push or release question is about, as act() takes it
+  projectTarget(c) { return c.do === "push" || c.do === "cut" ? { key: c.key, slug: c.key } : null; }
+
+  // Push or Release for a project ({key: project}): what runs, the question, or the buttons
+  projectActions(p, offer) {
+    const a = this.acts[p.key];
+    if (a && a.state !== "done") {
+      return h_flex().gap(6).items_center()
+        .child(a.state === "running" ? icon("spinner", 11, C.work).spin(900) : div().child(""))
+        .child(mono(11, a.state === "failed" ? C.red : C.muted, a.state === "running" ? `${LABEL[a.do]}…` : `${LABEL[a.do]} failed: ${a.line}`))
+        .when(a.state === "failed", (el) => el.child(this.btn(`ok-${p.key}`, "OK", "plain", (cx) => { delete this.acts[p.key]; cx.notify(); })));
+    }
+    if (this.confirm?.key === p.key) {
+      return h_flex().gap(6).items_center()
+        .child(mono(11, C.text, this.confirm.do === "cut" ? `Release a patch version of ${p.key}?` : `Push ${p.key} to origin?`))
+        .child(this.btn(`yes-${p.key}`, "Yes  y", "land", (cx) => this.act(cx, p, this.confirm.do)))
+        .child(this.btn(`no-${p.key}`, "No  n", "plain", (cx) => { this.confirm = null; cx.notify(); }));
+    }
+    return h_flex().gap(6).children(offer.map((w) => this.btn(`${w}-${p.key}`, LABEL[w], w === "push" ? "land" : "plain", (cx) => this.ask(cx, p, w))));
   }
 
   filterChip(p, label, n, alert) {
