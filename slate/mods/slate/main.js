@@ -1,10 +1,11 @@
 // Slate: a quiet, dense dark frame. One mod draws every part; the layout says which with props().part:
-// "top" (brand, text tabs with an underline, the command hint), "side" (the shown space as a pinned card, spaces
-// as coloured chips, agents in flight, the concluded ones folded away), "panel" (the shown space's task graph:
+// "top" (brand, text tabs with an underline, the command hint), "side" (the shown space as a pinned card, what
+// waits on you with the question asked, spaces as coloured chips, agents in flight, the concluded ones folded
+// away), "panel" (the shown space's task graph:
 // each tab and the agents in it) and "bottom" (the status bar). Right-clicks open Herdr's own menu mod.
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { spaces, agents, machines, run, props, setAgentOrder, window, openOverlay, home } from "herdr";
+import { spaces, agents, machines, run, props, setAgentOrder, window, openOverlay, home, exec, shared, setShared } from "herdr";
 
 const C = {
   top: "#101012", side: "#0f0f11", main: "#121214", panel: "#0e0e10", card: "#242328", hover: "#1a1a1d",
@@ -40,6 +41,18 @@ function ago(ms, now) {
 }
 // what the program titled its terminal, when that says more than its address
 const said = (a) => (a.title && a.title !== a.address ? a.title : "");
+// what the agent is asking: the lowest line on its screen that ends a question, from `hc read` (screen only).
+// Its footer's "? for shortcuts" and similar hints are skipped; long questions are cut at ASK_MAX characters.
+const ASK_POLL = 5000;
+const ASK_MAX = 160;
+async function question(address) {
+  const r = await exec("hc", ["read", address]);
+  if (r.code !== 0) return "";
+  const lines = r.stdout.split("\n").map((l) => l.replace(/^[\s│┃╭╰╮╯─━❯›>⎿⏺●•◆□☐✳*]+/u, "").trim()).reverse();
+  const q = lines.find((l) => l.length >= 10 && /\p{L}/u.test(l) && /\?(\s|\)|$)/.test(l) && !l.startsWith("?") && !/shortcuts/i.test(l));
+  return !q ? "" : q.length > ASK_MAX ? q.slice(0, ASK_MAX - 1) + "…" : q;
+}
+const ASKS = "slate.asks"; // shared: terminal address -> its question, so the task graph shows it too
 const tilde = (p) => (p && home() && p.startsWith(home()) ? "~" + p.slice(home().length) : p ?? "");
 
 // Herdr's menu mod at the pointer: tab is "space", "tab", "pane" or "global"
@@ -72,7 +85,26 @@ export default class Slate extends View {
     this.now = Date.now();
     // relative times and the clock; Herdr's own data redraws without this
     cx.timer.every(30000, (cx) => { this.now = Date.now(); cx.notify(); });
-    this.open = { spaces: true, flight: true, concluded: false };
+    this.open = { waiting: true, spaces: true, flight: true, concluded: false };
+    // the sidebar reads what blocked agents ask; the task graph reads it from shared state
+    if ((_props?.part ?? props()?.part) === "side") {
+      this.asks(cx);
+      cx.timer.every(ASK_POLL, (cx) => this.asks(cx));
+    }
+  }
+
+  asks(cx) {
+    if (this.asking) return; // an earlier read is still out
+    const blocked = agents().filter((a) => a.status === "blocked").map((a) => a.address);
+    this.asking = true;
+    cx.spawn(async (cx) => {
+      const next = {};
+      for (const address of blocked) {
+        try { next[address] = await question(address); } catch { next[address] = ""; }
+      }
+      this.asking = false;
+      if (JSON.stringify(next) !== JSON.stringify(shared(ASKS) ?? {})) setShared(ASKS, next);
+    });
   }
 
   render() {
@@ -88,6 +120,12 @@ export default class Slate extends View {
   tabOf(a) {
     for (const s of spaces()) for (const t of s.tabs) if (t.id === a.tab) return t;
     return null;
+  }
+  // a row's title: the tab's name when someone named it, else what the program titled its terminal
+  titleOf(a) {
+    const t = this.tabOf(a);
+    if (t?.named) return t.name;
+    return said(a).replace(/^[^\p{L}\p{N}]+/u, "") || a.program?.name || a.tab_name;
   }
   when(a) {
     const t = this.tabOf(a);
@@ -130,7 +168,8 @@ export default class Slate extends View {
     const crew = agents().slice().sort((a, b) => (ORDER[a.status] ?? 4) - (ORDER[b.status] ?? 4));
     setAgentOrder(crew.map((a) => a.address));
     const space = list.find((s) => s.active);
-    const flight = crew.filter((a) => a.status === "working" || a.status === "blocked");
+    const blocked = crew.filter((a) => a.status === "blocked");
+    const flight = crew.filter((a) => a.status === "working");
     const concluded = crew.filter((a) => a.status !== "working" && a.status !== "blocked");
     // the pinned card counts only the shown space; the lists below cover every space
     const here = crew.filter((a) => a.space === space?.id);
@@ -159,10 +198,10 @@ export default class Slate extends View {
             .child(div().flex_1())
             .child(mono(10, C.dim, ago(space?.tabs?.reduce((m, t) => Math.max(m, t.changed_at ?? 0), 0), this.now))))));
 
-    const section = (key, label, n, extra) => h_flex().id(`sec-${key}`).w_full().h(26).flex_none().px(12).gap(6).items_center()
+    const section = (key, label, n, extra, color = C.dim) => h_flex().id(`sec-${key}`).w_full().h(26).flex_none().px(12).gap(6).items_center()
       .cursor_pointer().on_click((_e, cx) => { this.open[key] = !this.open[key]; cx.notify(); })
       .child(icon(this.open[key] ? "chevron-down" : "chevron-right", 12, C.dim))
-      .child(mono(11, C.dim, label.toUpperCase()))
+      .child(mono(11, color, label.toUpperCase()))
       .child(div().px(5).rounded(8).bg(C.card).font_family(MONO).text_size(10).text_color(C.muted).child(String(n)))
       .child(div().flex_1())
       .children(extra ? [extra] : []);
@@ -185,13 +224,32 @@ export default class Slate extends View {
       .child(h_flex().gap(8).items_center()
         .child(mark(a.status))
         .child(div().flex_1().min_w(0).truncate().font_family(SANS).text_size(13)
-          .text_color(a.focused ? C.text : "#c8c8cc").child(a.tab_name)))
+          .text_color(a.focused ? C.text : "#c8c8cc").child(this.titleOf(a))))
       .child(h_flex().pl(20).gap(8).items_center()
         .child(tag(a.space_name))
         .child(mono(11, STATUS[a.status] ?? C.dim, WORD[a.status] ?? a.status ?? ""))
         .child(div().flex_1().min_w(0).truncate().font_family(MONO).text_size(11).text_color(C.dim)
           .child(a.program?.name ?? a.app ?? ""))
         .child(mono(11, C.dim, ago(this.when(a), this.now))));
+
+    // a blocked agent as a card: what it is, where, and the question it asks
+    const asks = shared(ASKS) ?? {};
+    const askCard = (a) => v_flex().id(`ask-${a.address}`).mx(8).mb(6).px(10).py(7).gap(4).flex_none().rounded(6)
+      .bg(a.focused ? "#241f2e" : "#1a1720").border(1).border_color(C.accentDim).cursor_pointer()
+      .hover((st) => st.bg("#241f2e"))
+      .on_click(() => run("agent.focus", { terminal: a.address }))
+      .on_mouse_down("right", onRight(() => menu("pane", { pane: a.pane, terminal: a.address })))
+      .child(h_flex().gap(8).items_center()
+        .child(mark("blocked"))
+        .child(div().flex_1().min_w(0).truncate().font_family(SANS).text_size(13).text_color(C.text).child(this.titleOf(a)))
+        .child(mono(11, C.dim, ago(this.when(a), this.now))))
+      .child(h_flex().pl(20).gap(8).items_center()
+        .child(tag(a.space_name))
+        .child(mono(11, C.yellow, "asks you"))
+        .child(div().flex_1().min_w(0).truncate().font_family(MONO).text_size(11).text_color(C.dim)
+          .child(a.program?.name ?? a.app ?? "")))
+      .when(!!asks[a.address], (el) => el.child(div().pl(20).font_family(MONO).text_size(11).text_color(C.muted)
+        .child(asks[a.address])));
 
     const addSpace = noDrag(div().id("space-new").cursor_pointer().hover((st) => st.opacity(0.6))
       .on_click((_e, cx) => { cx.stop_propagation(); run("space.new", {}); }).child(icon("plus", 12, C.dim)));
@@ -200,6 +258,9 @@ export default class Slate extends View {
       .child(header)
       .child(card)
       .child(v_flex().id("side-lists").w_full().flex_1().min_h(0).overflow_y_scrollbar().pb(8)
+        .when(blocked.length > 0, (el) => el.child(section("waiting", "waiting on you", blocked.length, null, C.yellow))
+          .when(this.open.waiting, (el) => el.children(blocked.map(askCard)))
+          .child(div().h(4).flex_none()))
         .child(section("spaces", "spaces", list.length, addSpace))
         .when(this.open.spaces, (el) => el.children(list.map(spaceRow)))
         .child(div().h(8).flex_none())
@@ -217,10 +278,12 @@ export default class Slate extends View {
   panel() {
     const space = spaces().find((s) => s.active);
     const crew = agents().filter((a) => a.space === space?.id);
+    const asks = shared(ASKS) ?? {};
     const running = crew.filter((a) => a.status === "working").length;
     const tabs = (space?.tabs ?? []).filter((t) => !t.settled || t.status === "blocked");
     const node = (t) => {
       const inTab = crew.filter((a) => a.tab === t.id);
+      const title = t.named || !inTab.length ? t.name : this.titleOf(inTab[0]);
       return v_flex().id(`node-${t.id}`).w_full().flex_none().gap(2)
         .child(h_flex().id(`node-head-${t.id}`).w_full().px(12).py(4).gap(8).items_center().rounded(4)
           .bg(t.active ? C.hover : "#00000000").cursor_pointer().hover((st) => st.bg(C.hover))
@@ -228,7 +291,7 @@ export default class Slate extends View {
           .on_mouse_down("right", onRight(() => menu("tab", { id: t.id, space: space.id })))
           .child(mark(t.status))
           .child(v_flex().flex_1().min_w(0).gap(2)
-            .child(div().truncate().font_family(SANS).text_size(13).text_color(C.text).child(t.name))
+            .child(div().truncate().font_family(SANS).text_size(13).text_color(C.text).child(title))
             .child(h_flex().gap(6).items_center()
               .child(tag(space.name))
               .child(mono(11, C.dim, `#${two(t.index)}`))
@@ -242,7 +305,7 @@ export default class Slate extends View {
           .child(v_flex().flex_1().min_w(0)
             .child(div().truncate().font_family(SANS).text_size(12).text_color("#c8c8cc").child(a.program?.name ?? a.app ?? "agent"))
             .child(div().truncate().font_family(MONO).text_size(11).text_color(STATUS[a.status] ?? C.dim)
-              .child(`${WORD[a.status] ?? ""}${said(a) ? " · " + said(a) : ""}`)))));
+              .child(`${WORD[a.status] ?? ""}${(a.status === "blocked" && asks[a.address]) || said(a) ? " · " + ((a.status === "blocked" && asks[a.address]) || said(a)) : ""}`)))));
     };
     const group = (label, list) => !list.length ? [] : [
       h_flex().w_full().px(12).pt(10).pb(4).gap(6).items_center()
