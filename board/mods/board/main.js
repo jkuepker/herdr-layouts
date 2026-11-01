@@ -7,7 +7,9 @@
 // live terminal in the layout's hidden "focus-term" block, so the question can be answered in place.
 import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { spaces, agents, terminals, run, props, exec, readTextFile, appHome, home, watchFolder, shared, setShared, window, knownAgents, nextCommand } from "herdr";
+import { spaces, agents, terminals, run, props, exec, readTextFile, appHome, home, watchFolder, shared, setShared, window, knownAgents, nextCommand, layout } from "herdr";
+
+const findNode = (node, id) => node?.id === id ? node : (node?.children ?? []).reduce((f, c) => f ?? findNode(c, id), null);
 
 const MOD = "board";
 const C = {
@@ -36,6 +38,7 @@ const WATCHED = /\/(state\.json(\.tmp-\d+)?|events\.jsonl(\.1)?)$/; // what xo w
 const CONFIRM = new Set(["merge", "ship", "remove"]); // asked on the card first
 const LABEL = { merge: "Merge", ship: "Ship PR", remove: "Archive" };
 const VIEW = "board.view"; // shared: "board" or "work", which child of the main stack shows
+const LEFT = "board.left"; // shared: when the top bar last sent a picked space to the work view (ms)
 const FOCUS = "board.focus"; // shared: Focus is on (the top bar fades tabs too)
 const COUNTS = "board.counts"; // shared: what the top bar and status bar count
 
@@ -457,7 +460,8 @@ export default class Board extends View {
     const commits = num(r.commits), changed = num(r.changed);
     if (commits !== null) facts.push([plural(commits, "commit"), C.muted]);
     if (changed) facts.push([`${changed} uncommitted`, C.muted]);
-    if (typeof r.added === "number") facts.push([`+${r.added}`, C.land], [`−${r.deleted ?? 0}`, C.red]);
+    const lines = r.lines ?? (typeof r.added === "number" ? { added: r.added, removed: r.deleted ?? 0 } : null); // xo sends lines; the fixture added/deleted
+    if (lines) facts.push([`+${lines.added}`, C.land], [`−${lines.removed}`, C.red]);
     if (r.tokens?.total) facts.push([`${human(r.tokens.total)} tok`, C.muted]);
     if (r.checks_state === "pass") facts.push(["✓ checks", C.land]);
     else if (r.checks_state === "FAIL") facts.push(["✗ checks", C.red]);
@@ -517,7 +521,8 @@ export default class Board extends View {
   board() {
     // drawing means the stack shows the board (a hidden child doesn't draw, nor take commands): tell the top bar,
     // which can't see the stack, also after a keys.json layout.select brought the board back
-    if (shared(VIEW) === "work") setShared(VIEW, "board");
+    // (not right after the top bar sent a picked space to its terminal: the board can draw once more before the stack switches)
+    if (shared(VIEW) === "work" && Date.now() - (shared(LEFT) ?? 0) > 1500) setShared(VIEW, "board");
     const times = this.times();
     const shown = this.tasks.filter((t) => !this.filter || t.project === this.filter);
     const by = (k) => shown.filter((t) => t.kind === k);
@@ -610,6 +615,16 @@ export default class Board extends View {
     const view = shared(VIEW) ?? "board";
     const focus = Boolean(shared(FOCUS));
     const space = spaces().find((s) => s.active);
+    // a space picked in the sidebar or the picker shows its terminal, not the board (Focus moves the space itself;
+    // with the side terminal open, the board stays and the side shows it)
+    const side = findNode(layout(), "side");
+    const sideOpen = Boolean(side && !side.hidden);
+    if (space && this.lastSpace && space.id !== this.lastSpace && !focus && view === "board" && !sideOpen) {
+      run("layout.select", { stack: "main", child: "work" });
+      setShared(LEFT, Date.now());
+      setShared(VIEW, "work");
+    }
+    this.lastSpace = space?.id;
     const mac = window()?.platform === "macos";
     const noDrag = (el) => el.on_mouse_down("left", (_e, cx) => cx.stop_propagation());
     const tabEl = (id, on, children, onClick, faded) => noDrag(h_flex().id(id).h_full().flex_none().px(11).items_center().gap(7).relative()

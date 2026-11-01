@@ -23,6 +23,7 @@ Slate's palette (see [Slate](../slate/RECIPE.md)): near-black `#121214`, JetBrai
    - A divider, then the shown space's tabs. Blocked tabs get a yellow dot, working ones a spinner.
    - The active one (Board or a tab) is underlined in lilac `#b4a0db`.
    - In Focus, tabs that don't need you fade.
+   Under it, on the left, the **spaces sidebar** (220px): the main layout's spaces list, grouped by machine, with **+** on each machine for a new space there. `cmd-b` hides and shows it, and dragging it under 160px turns it into the narrow rail.
 2. **Today strip.** Five equal boxes:
    - `LANDED TODAY`: the count in green, on a green tint, with 7 bars for the last 7 days (today solid, the rest at 30%).
    - `NEEDS YOU` (yellow `#ffb406`), `WORKING` (purple `#8f7fd1`), `READY TO LAND` (green `#53cf91`).
@@ -61,6 +62,8 @@ Slate's palette (see [Slate](../slate/RECIPE.md)): near-black `#121214`, JetBrai
   - **Archive all** asks once for every DONE card.
 - **Go to agent:** `agent.focus {terminal}`, then `layout.select {stack: "main", child: "work"}`, so the work area shows that task's tab. Clicking Board switches back.
 - **Focus:** `agent.focus` on the picked NEEDS YOU task, then `layout.show {id: "focus-term"}`, which is a `{ "agent": "focused" }` block. Every other column, the strip and the chips fade to 18%. Picking another NEEDS YOU card switches the terminal. Esc or F hides it again.
+- **Spaces:** picking a space in the sidebar (or with `cmd-p`) while the board shows switches to its terminal, as Go to agent does. With the side terminal open the board stays, and the side shows that space's tab. Focus moves the space itself, so it leaves the board alone.
+- **Side terminal:** `cmd-alt-b` (`layout.toggle:side`) opens the active tab's terminal on the right of the board, 640px.
 - **Keys** (once you click the board): `j`/`k` or arrows move, `⏎` goes to the agent, `f` toggles Focus, `f` again (after clicking the board) leaves it: Esc in the terminal goes to the agent, `m` merges, `a` archives, `y`/`n` answer a confirm.
 - **Commands** (for `keys.json` or `herdr-app do`): `board.focus`, `board.unfocus`, `board.next`, `board.prev`, `board.go`, `board.merge`, `board.archive`, `board.yes`, `board.no`. They reach the board only while it shows: a hidden stack child doesn't run. To get back to the board from a key, bind `layout.select {"stack": "main", "child": "board"}` in `keys.json`.
 - **Settings:** `local.json` beside the installed mod sets the xo to run: `{"xo": "/opt/code/xo/.worktrees/herdr-mode/.venv/bin/xo"}`. Add `"home"` to set `XO_HOME`.
@@ -70,12 +73,14 @@ Slate's palette (see [Slate](../slate/RECIPE.md)): near-black `#121214`, JetBrai
 - **`layouts/board.json`:** Slate's colours and pane frame. A `column` root holds:
   - `top`: 38px, `window_drag`, the mod with part `top`.
   - `body`: a row holding:
+    - `sidebar`: a 220px `column` (min 44, max 480, chrome background) holding the `spaces` mod. The id must be `sidebar`: the spaces mod picks its narrow rail from that node's width, and `cmd-b` toggles it.
     - `main`: a `stack` with `active: "board"`. Its children are `board` (the mod, part `board`) and `work` (`"tab": "active"`).
     - `focus-term`: `{ "agent": "focused" }`, 640px (min 360, max 1000), `hidden: true`.
+    - `side`: `{ "tab": "active" }` with the work pane's frame, 640px (min 360, max 1000), `hidden: true`.
   - `bottom`: 24px, part `bottom`.
 - **`mods/board/main.js`:** one mod for all three parts.
   - The board part reads xo and writes `shared("board.counts")`, which the top and bottom parts draw.
-  - It also writes `board.view` and `board.focus`.
+  - It also writes `board.view` and `board.focus`. The top bar writes `board.left` when it sends a picked space to the work view, so the board's next draw doesn't mark the view `board` again.
   - Herdr functions: `exec`, `readTextFile`, `watchFolder`, `knownAgents` (agent icons), `agents`/`spaces` (timers), `nextCommand` and `run`.
 - **`mods/board/spinner.svg`:** Slate's arc.
 
@@ -87,7 +92,8 @@ Slate's palette (see [Slate](../slate/RECIPE.md)): near-black `#121214`, JetBrai
 - **A hidden stack child doesn't draw or take commands.** The top bar, always shown, switches views itself, and the board marks `board.view` when it draws again.
 - **The layout remembers a shown `focus-term` across reloads.** The board hides it when it starts, to match its own state.
 - **`hc send` refuses blocked terminals.** That's a guard for real permission prompts. Answer those yourself in Focus.
-- **Data xo doesn't give yet:** `+added −deleted` appear only when a row carries `added`/`deleted` (a planned xo change). There's no cost or agent-time-today yet.
+- **Two blocks show the active tab** (`work` and `side`). The stack hides `work` while the board shows, so only `side` draws then. Opening `side` from the work view shows the same tab twice.
+- **Data xo doesn't give yet:** cost and agent-time-today. `+added −removed` come from xo's `lines` (the fixture still sends `added`/`deleted`).
 
 ## Testing without agents
 
