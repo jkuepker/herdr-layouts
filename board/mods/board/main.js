@@ -35,8 +35,8 @@ const SAFETY_MS = 15000; // a read nothing asked for
 const TICK_MS = 1000; // checks worker terminals and running actions; runs no program while nothing moved
 const ASK_MS = 5000; // how often the questions of blocked agents are read off their screens
 const WATCHED = /\/(state\.json(\.tmp-\d+)?|events\.jsonl(\.1)?)$/; // what xo writes when a task changes
-const CONFIRM = new Set(["merge", "ship", "remove", "land", "push", "cut"]); // asked on the card first
-const LABEL = { merge: "Merge", ship: "Ship PR", remove: "Archive", land: "Merge PR", sync: "Sync", push: "Push", cut: "Release" };
+const CONFIRM = new Set(["merge", "ship", "remove", "land", "push", "cut", "clean"]); // asked on the card first
+const LABEL = { merge: "Merge", ship: "Ship PR", remove: "Archive", land: "Merge PR", sync: "Sync", push: "Push", cut: "Release", clean: "Clean" };
 
 // the next moves a task's bearing offers as buttons: xo sync (catch up with its base), xo land (merge its PR), xo merge, xo ship
 function moves(t) {
@@ -215,9 +215,10 @@ export default class Board extends View {
           const r = rows.get(e.key);
           return { key: e.key, project: r.project, slug: r.slug ?? e.key.split("/").pop(), kind: e.kind, reason: e.reason, next: e.next ?? "", row: r };
         });
-        // a project whose branch is ahead of origin: bearing kind push, keyed by the project (no task row)
-        this.pushes = (state.bearings ?? []).filter((e) => e.kind === "push")
-          .map((e) => ({ key: e.key, project: e.key, slug: e.key, reason: e.reason ?? "", next: e.next ?? "" }));
+        // a project whose branch is ahead of origin (bearing kind push), or with merged task branches left (kind
+        // clean): keyed by the project, no task row
+        this.pushes = (state.bearings ?? []).filter((e) => e.kind === "push" || e.kind === "clean")
+          .map((e) => ({ key: e.key, kind: e.kind, project: e.key, slug: e.key, reason: e.reason ?? "", next: e.next ?? "" }));
         this.events = events ?? [];
         this.problem = state.error || null;
         for (const t of this.tasks) {
@@ -582,7 +583,7 @@ export default class Board extends View {
         .child(mono(12, C.text, p.key))
         .child(mono(11, C.muted, p.reason))
         .child(div().flex_1())
-        .child(this.projectActions(p, p.next === `xo push ${p.key}` ? ["push"] : [])))); // a dirty checkout gets --dry-run: no button
+        .child(this.projectActions(p, p.next === `xo ${p.kind} ${p.key}` ? [p.kind] : [])))); // a dirty checkout gets push --dry-run: no button
 
     const column = ([k, label, color]) => {
       const list = by(k);
@@ -619,10 +620,10 @@ export default class Board extends View {
         .children(COLS.map(column)));
   }
 
-  // the project a push or release question is about, as act() takes it
-  projectTarget(c) { return c.do === "push" || c.do === "cut" ? { key: c.key, slug: c.key } : null; }
+  // the project a push, clean or release question is about, as act() takes it
+  projectTarget(c) { return c.do === "push" || c.do === "cut" || c.do === "clean" ? { key: c.key, slug: c.key } : null; }
 
-  // Push or Release for a project ({key: project}): what runs, the question, or the buttons
+  // Push, Clean or Release for a project ({key: project, kind?}): what runs, the question, or the buttons
   projectActions(p, offer) {
     const a = this.acts[p.key];
     if (a && a.state !== "done") {
@@ -631,9 +632,10 @@ export default class Board extends View {
         .child(mono(11, a.state === "failed" ? C.red : C.muted, a.state === "running" ? `${LABEL[a.do]}…` : `${LABEL[a.do]} failed: ${a.line}`))
         .when(a.state === "failed", (el) => el.child(this.btn(`ok-${p.key}`, "OK", "plain", (cx) => { delete this.acts[p.key]; cx.notify(); })));
     }
-    if (this.confirm?.key === p.key) {
+    if (this.confirm?.key === p.key && (!p.kind || this.confirm.do === p.kind)) {
       return h_flex().gap(6).items_center()
-        .child(mono(11, C.text, this.confirm.do === "cut" ? `Release a patch version of ${p.key}?` : `Push ${p.key} to origin?`))
+        .child(mono(11, C.text, this.confirm.do === "cut" ? `Release a patch version of ${p.key}?`
+          : this.confirm.do === "clean" ? `Delete ${p.key}'s merged task branches?` : `Push ${p.key} to origin?`))
         .child(this.btn(`yes-${p.key}`, "Yes  y", "land", (cx) => this.act(cx, p, this.confirm.do)))
         .child(this.btn(`no-${p.key}`, "No  n", "plain", (cx) => { this.confirm = null; cx.notify(); }));
     }
