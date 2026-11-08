@@ -11,7 +11,8 @@ import { emptyTranscript, addUser, addNotice, applyUpdate, endTurn, trim } from 
 
 export class ChatSession {
   // `old`: the chat's last state.json, to continue it.
-  constructor({ argv, cwd, old, write, kill, changed }) {
+  // `machine`: the Herdr machine the agent runs on, null for this computer.
+  constructor({ argv, cwd, machine = null, old, write, kill, changed }) {
     this.kill = kill;
     this.changed = changed;
     this.pendingPermission = null; // resolve function for the agent's request
@@ -22,6 +23,7 @@ export class ChatSession {
       agentArgv: argv,
       agentInfo: null,
       cwd,
+      machine,
       sessionId: null,
       configOptions: [],
       permission: null, // {title, options: [{optionId, name, kind}]}

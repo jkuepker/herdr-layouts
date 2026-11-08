@@ -10,13 +10,19 @@
 // Two faces:
 // - the launcher, as a dialog (`mod.open {"name": "acp-chat"}`): pick an agent
 //   and a folder, then it splits a chat pane beside the focused one;
-// - a chat pane, `pane.split {"mod": "acp-chat", "props": {chat, agent, cwd}}`.
+// - a chat pane, `pane.split {"mod": "acp-chat", "props": {chat, agent, cwd, machine, prompt}}`.
 //   The `chat` id keeps each pane's chat (and its localStorage, which Herdr
 //   keys by props) apart from every other pane's.
+//
+// In a space on another machine (with spawn only), the agent runs there over
+// `ssh <machine's target>`, under the remote user's login, interactive shell,
+// and finding agents goes the same way, so a green dot means it starts. Its
+// stdio is still this mod's: closing the pane ends ssh, the agent sees its
+// stdin close and exits.
 
 import { View, div, list } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, TextView, Scrollbar, VirtualListScrollHandle } from "gpui-base";
-import { exec, hc, run, openOverlay, closeOverlay, appHome, home, focused, props, theme, settings, pickFolder, readTextFile, writeTextFile, watchFolder } from "herdr";
+import { exec, hc, run, openOverlay, closeOverlay, appHome, home, focused, spaces, props, theme, settings, pickFolder, readTextFile, writeTextFile, watchFolder } from "herdr";
 import * as herdr from "herdr";
 import * as fs from "fs/promises";
 import { ChatSession } from "./session.js";
@@ -49,14 +55,51 @@ function shortPath(p) {
   return p && p.startsWith(h) ? "~" + p.slice(h.length) : p ?? "";
 }
 
+// Where a chat runs, as the dialog and header show it.
+function where(machine, cwd) {
+  return machine ? `${machine}:${cwd ?? "~"}` : shortPath(cwd);
+}
+
+function focusedMachine() {
+  const f = focused();
+  return (f && spaces().find((s) => s.id === f.space)?.machine) ?? null;
+}
+
+function shq(s) {
+  return `'${String(s).replace(/'/g, `'\\''`)}'`;
+}
+
+// `script` on the machine over ssh, under its user's login, interactive shell:
+// the PATH their terminals get (nvm and ~/.local/bin often load only there).
+function sshArgv(target, script) {
+  return [
+    "ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+    "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=4",
+    target, `exec "\${SHELL:-/bin/sh}" -lic ${shq(script)}`,
+  ];
+}
+
+// The ssh target Herdr reaches the machine by (`hc machine ls`).
+async function sshTarget(machine) {
+  const r = await hc(["machine", "ls", "--json"]);
+  let m;
+  try {
+    m = JSON.parse(r.stdout).machines?.find((x) => x.name === machine);
+  } catch {}
+  if (!m) throw new Error(`Herdr doesn't list a machine named ${machine}.`);
+  if (m.via) throw new Error(`Herdr reaches ${machine} through a command (${m.via}); chats there need it added over ssh.`);
+  return m.target;
+}
+
 function openLauncher() {
   openOverlay({ mod: "acp-chat", kind: "dialog", width: 560, height: 470 });
 }
 
 export default class AcpChat extends View {
   // Pane props (all optional): chat (its id), agent (an AGENTS id or an argv
-  // array), cwd. With `agent`, a chat that has never run starts at once. A pane
-  // without `chat` keeps one chat in its localStorage.
+  // array), cwd, machine (a Herdr machine name, null for this computer), prompt.
+  // With `agent`, a chat that has never run starts at once, and sends `prompt`
+  // as its first message. A pane without `chat` keeps one chat in its localStorage.
   init(_props, cx) {
     const p = props() ?? {};
     this.overlay = p.overlay ?? null; // set when this copy is the launcher dialog
@@ -74,8 +117,12 @@ export default class AcpChat extends View {
     this.session = null; // with spawn: the ChatSession in this mod
     this.phase = "loading"; // loading | setup | starting | chat
     this.found = {}; // program -> absolute path
-    this.cwd = p.cwd ?? focused()?.cwd ?? home();
+    this.machine = p.machine !== undefined ? p.machine : focusedMachine();
+    this.target = null; // its ssh target, once found
+    this.remoteError = null; // why the machine couldn't be asked
+    this.cwd = p.cwd ?? focused()?.cwd ?? (this.machine ? null : home());
     this.choice = null; // agent id picked in setup
+    this.firstPrompt = null; // a new chat's `prompt` prop, until it's sent
     this.expanded = {};
     this.follow = true;
     this.picker = null; // config option id whose choices are open
@@ -103,8 +150,10 @@ export default class AcpChat extends View {
     }
     cx.spawn(async (cx) => {
       await fs.mkdir(DIRECT ? this.dir : `${this.dir}/inbox`, { recursive: true });
-      await this.detect();
       await this.reload(cx);
+      // A chat runs where it first ran; chats saved before remote ones existed ran here.
+      if (this.state) this.machine = this.state.machine ?? null;
+      await this.detect();
       if (DIRECT) {
         // It ran in an earlier copy of this pane (a reload, or the app quit): continue it.
         if (this.state && !["exited", "stopped"].includes(this.state.status)) return this.restart(cx);
@@ -117,7 +166,10 @@ export default class AcpChat extends View {
       if (this.phase === "setup" && p.agent) {
         const agent = AGENTS.find((a) => a.id === p.agent);
         const argv = Array.isArray(p.agent) ? p.agent : agent && this.found[agent.argv[0]] ? [this.found[agent.argv[0]], ...agent.argv.slice(1)] : null;
-        if (argv) return this.start(cx, argv);
+        if (argv) {
+          this.firstPrompt = p.prompt ?? null;
+          return this.start(cx, argv);
+        }
       }
       cx.notify();
     });
@@ -142,12 +194,32 @@ export default class AcpChat extends View {
 
   async detect() {
     const programs = ["node", ...new Set(AGENTS.map((a) => a.argv[0]))];
-    const script = programs.map((p) => `printf '%s=%s\\n' ${p} "$(command -v ${p})"`).join("; ");
-    const r = await exec("/bin/sh", ["-lc", script]);
-    for (const line of r.stdout.split("\n")) {
-      const [k, v] = line.split("=");
-      if (k && v) this.found[k] = v.trim();
+    const script = [...programs.map((p) => `printf '%s=%s\\n' ${p} "$(command -v ${p})"`), `printf 'HOME=%s\\n' "$HOME"`].join("; ");
+    let r;
+    if (this.machine) {
+      try {
+        this.target = await sshTarget(this.machine);
+        const argv = sshArgv(this.target, script);
+        r = await exec(argv[0], argv.slice(1), { timeout: 30000 });
+      } catch (e) {
+        this.remoteError = String(e?.message ?? e);
+        return;
+      }
+    } else {
+      r = await exec("/bin/sh", ["-lc", script]);
     }
+    // An interactive shell may print more; only these lines count.
+    for (const line of r.stdout.split("\n")) {
+      const at = line.indexOf("=");
+      const k = line.slice(0, at);
+      const v = line.slice(at + 1).trim();
+      if (at > 0 && v && (k === "HOME" || programs.includes(k))) this.found[k] = v;
+    }
+    if (this.machine && !this.found.HOME) {
+      this.remoteError = `Couldn't reach ${this.machine}: ${(r.stderr.trim().split("\n").pop() || `ssh exited with code ${r.code}`)}`;
+      return;
+    }
+    if (this.machine && !this.cwd) this.cwd = this.found.HOME;
     this.choice = AGENTS.find((a) => this.found[a.argv[0]])?.id ?? null;
   }
 
@@ -205,6 +277,15 @@ export default class AcpChat extends View {
   }
 
   start(cx, argv, cwd = this.cwd) {
+    if (this.machine && !(DIRECT && this.target)) {
+      const why = this.remoteError ?? (DIRECT ? `Couldn't find how to reach ${this.machine}.` : "Chats on another machine need a Herdr with spawn.");
+      // A chat that ran keeps its messages, with the reason and Restart agent.
+      if (this.state) Object.assign(this.state, { status: "exited", error: why });
+      else this.startError = why;
+      this.alive = false;
+      this.phase = this.state ? "chat" : "setup";
+      return cx.notify();
+    }
     if (DIRECT) return this.startHere(cx, argv, cwd);
     if (!this.found.node) return;
     this.phase = "starting";
@@ -224,16 +305,21 @@ export default class AcpChat extends View {
         this.startError = (r.stderr || r.stdout).trim();
       } else {
         this.phase = "chat";
+        // The bridge takes commands once the session is ready.
+        if (this.firstPrompt) this.command({ type: "prompt", text: this.firstPrompt });
       }
+      this.firstPrompt = null;
       cx.notify();
     });
   }
 
   // With spawn: the agent runs as this copy's program, and stops with it.
   startHere(cx, argv, cwd) {
+    // On another machine the local program is ssh, started in this computer's home.
+    const cmd = this.machine ? sshArgv(this.target, `cd ${shq(cwd)} && exec ${argv.map(shq).join(" ")}`) : argv;
     let proc;
     try {
-      proc = herdr.spawn(argv[0], argv.slice(1), { cwd });
+      proc = herdr.spawn(cmd[0], cmd.slice(1), { cwd: this.machine ? home() : cwd });
     } catch (e) {
       this.phase = "setup";
       this.startError = String(e?.message ?? e);
@@ -250,7 +336,7 @@ export default class AcpChat extends View {
       // Asked now, so killing it later can't lose the answer.
       const exited = herdr.processExited(proc);
       const session = new ChatSession({
-        argv, cwd, old: this.state,
+        argv, cwd, machine: this.machine, old: this.state,
         write: (line) => herdr.processWrite(proc, line).catch(() => {}),
         kill: () => herdr.processKill(proc),
         changed: (urgent) => this.proc === proc && this.changed(cx, urgent),
@@ -258,7 +344,10 @@ export default class AcpChat extends View {
       this.session = session;
       this.state = session.state;
       cx.notify();
-      session.start();
+      session.start().then((ok) => {
+        if (ok && this.firstPrompt) session.handle({ type: "prompt", text: this.firstPrompt });
+        this.firstPrompt = null;
+      });
       for (let line; (line = await herdr.processNextLine(proc)) != null;) session.feed(line);
       const exit = await exited;
       if (this.proc !== proc || this.closing) return;
@@ -296,13 +385,19 @@ export default class AcpChat extends View {
     if (!argv) return;
     if (!this.overlay) return this.start(cx, argv);
     // The launcher: a new pane with its own chat id, beside the pane under the dialog.
-    run("pane.split", { direction: "right", mod: "acp-chat", props: { chat: newId(), agent: argv, cwd: this.cwd } });
+    run("pane.split", { direction: "right", mod: "acp-chat", props: { chat: newId(), agent: argv, cwd: this.cwd, machine: this.machine } });
     closeOverlay(this.overlay);
   }
 
   // Same agent and folder; the session resumes the agent's own when it can.
-  restart(cx) {
-    this.start(cx, this.state.agentArgv, this.state.cwd);
+  // `retry`: from the Restart agent button, which asks a machine that couldn't be reached again.
+  restart(cx, retry = false) {
+    if (!this.machine || this.target || !retry) return this.start(cx, this.state.agentArgv, this.state.cwd);
+    this.remoteError = null;
+    cx.spawn(async (cx) => {
+      await this.detect();
+      this.start(cx, this.state.agentArgv, this.state.cwd);
+    });
   }
 
   send(cx) {
@@ -345,16 +440,20 @@ export default class AcpChat extends View {
 
   setup(t) {
     const node = DIRECT || this.found.node;
+    const remote = this.machine != null;
+    const ready = remote ? DIRECT && !this.remoteError : node;
     return v_flex().flex_1().p(16).gap(12).overflow_y_scrollbar()
       .child(div().text_size(15).font_semibold().child("New agent chat"))
       .child(div().text_color(t.muted).child("Pick an agent that speaks ACP. It runs in this folder:"))
       .child(h_flex().gap(8).items_center()
-        .child(div().flex_1().truncate().px(8).py(4).rounded(5).bg(t.background).child(shortPath(this.cwd)))
-        .child(this.button(t, "pick-folder", "Change…", (cx) => cx.spawn(async (cx) => {
+        .child(div().flex_1().truncate().px(8).py(4).rounded(5).bg(t.background).child(where(this.machine, this.cwd)))
+        .when(!remote, (el) => el.child(this.button(t, "pick-folder", "Change…", (cx) => cx.spawn(async (cx) => {
           const dir = await pickFolder({ prompt: "Folder for the agent" });
           if (dir) this.cwd = dir;
           cx.notify();
-        }))))
+        })))))
+      .when(remote && !!this.remoteError, (el) => el.child(div().text_color(t.blocked).child(this.remoteError)))
+      .when(remote && !DIRECT, (el) => el.child(div().text_color(t.blocked).child("Chats on another machine need a Herdr with spawn.")))
       .child(v_flex().gap(4).children(AGENTS.map((a) => {
         const path = this.found[a.argv[0]];
         const picked = this.choice === a.id;
@@ -367,10 +466,10 @@ export default class AcpChat extends View {
           .child(div().flex_1().truncate().text_size(11).text_color(t.dim).child(path ? a.argv.join(" ") : `not installed${a.hint ? ` · ${a.hint}` : ""}`));
       })))
       .child(Input.new(this.custom))
-      .when(!node, (el) => el.child(div().text_color(t.blocked).child("Node.js isn't on PATH; the chat bridge needs it.")))
+      .when(!remote && !node, (el) => el.child(div().text_color(t.blocked).child("Node.js isn't on PATH; the chat bridge needs it.")))
       .when(!!this.startError, (el) => el.child(div().text_color(t.blocked).child(this.startError)))
       .child(h_flex().gap(6)
-        .child(this.button(t, "start", this.overlay ? "Open chat" : "Start chat", (cx) => this.startChoice(cx), { primary: true, disabled: !node }))
+        .child(this.button(t, "start", this.overlay ? "Open chat" : "Start chat", (cx) => this.startChoice(cx), { primary: true, disabled: !ready }))
         .when(!!this.overlay, (el) => el.child(this.button(t, "cancel", "Cancel", () => closeOverlay(this.overlay)))));
   }
 
@@ -387,7 +486,7 @@ export default class AcpChat extends View {
           : div().w(8).h(8).rounded(4).bg(color))
         .child(div().font_semibold().child(name))
         .child(div().text_color(t.dim).child(status))
-        .child(div().flex_1().truncate().text_size(11).text_color(t.dim).child(shortPath(s.cwd)))
+        .child(div().flex_1().truncate().text_size(11).text_color(t.dim).child(where(s.machine, s.cwd)))
         .when(usage?.size > 0, (el) => el.child(div().text_size(11).text_color(t.dim).child(`${Math.round((100 * usage.used) / usage.size)}% context`)))
         .child(this.button(t, "new-chat", "New", () => openLauncher())))
       .when(s.configOptions?.length > 0, (el) => el.child(h_flex().gap(6).flex_wrap().children(
@@ -507,7 +606,7 @@ export default class AcpChat extends View {
       return v_flex().px(12).py(10).gap(8).border_t(1).border_color(t.border).bg(t.chrome)
         .when(!!s.error, (el) => el.child(div().text_size(12).text_color(t.blocked).child(s.error)))
         .child(h_flex().gap(6)
-          .child(this.button(t, "restart", "Restart agent", (cx) => this.restart(cx), { primary: true }))
+          .child(this.button(t, "restart", "Restart agent", (cx) => this.restart(cx, true), { primary: true }))
           .child(this.button(t, "new", "New chat", () => openLauncher())));
     }
     const working = s.status === "working";
