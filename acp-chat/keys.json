@@ -1,0 +1,6 @@
+{
+  "global": {
+    "cmd-shift-j": { "command": "pane.split", "args": { "direction": "right", "mod": "acp-chat" } },
+    "ctrl-shift-j": { "command": "pane.split", "args": { "direction": "right", "mod": "acp-chat" } }
+  }
+}

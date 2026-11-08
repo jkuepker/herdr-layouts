@@ -1,0 +1,60 @@
+# ACP Chat
+
+A chat pane for coding agents that speak the [Agent Client Protocol](https://agentclientprotocol.com): Oh My Pi (`omp acp`), OpenCode (`opencode acp`), the Claude Code and Codex ACP adapters, Gemini CLI, or any command you type. It opens beside your terminals, streams the agent's replies as markdown, shows each tool call as a card, puts approval requests up as buttons, and lets you switch the agent's model and mode, including local models your agent already knows about. Closing the pane stops the agent; reopening a chat resumes the agent's own session when the agent can load one.
+
+![ACP Chat](preview.png)
+
+## What you see
+
+The pane uses the theme's colours throughout (`surface` behind, `chrome` for the header and message box, `raised` for your messages, `background` for tool cards).
+
+1. **Setup** (a new chat): "New agent chat", the folder the agent will run in (the focused terminal's folder, with **Change…** for the system folder picker), one row per known agent with a green dot when it is installed (found on the login shell's `PATH`) or "not installed" plus an install hint, a field for any other command, and **Start chat**.
+2. **Header**, two lines:
+   - a status dot (green ready, grey stopped) or a braille spinner while working, the agent's name from its `initialize` reply, its status, the folder, the share of the context window used (when the agent reports it), and **New**.
+   - one chip per option the agent offers for the session (`Model`, `Mode`, …), showing the current choice. A click opens a picker under the header: a filter field and the choices, the current one ticked.
+3. **Messages**, scrolling, newest at the bottom:
+   - your message in a rounded `raised` box;
+   - the agent's reply as markdown, selectable;
+   - thinking in dim italic, folded to its last two lines (click to open);
+   - tool calls as cards: a status icon (`○` pending, `◐` running, `✓` done, `✗` failed), the tool kind and its title; a click shows its output or diff (first 4,000 characters);
+   - the agent's plan as a checklist;
+   - notes from the chat itself (stopped, token limit, errors) in small coloured text.
+   Scrolling up stops following new output and shows **↓ Latest**.
+4. **Approval card**, above the message box while the agent waits: the tool's title and one button per option the agent offers (allow buttons in the theme's solid colour).
+5. **Message box**: a textarea that grows to 8 lines, with **Send**, or **Stop** while the agent works. When the agent has stopped, it shows the reason and **Restart agent** / **New chat** instead.
+
+## How it behaves
+
+- **Enter** sends, **Shift+Enter** adds a line. Sending is ignored while the agent works; **Stop** sends ACP `session/cancel` and answers a waiting approval as cancelled.
+- The pane follows new output until you scroll up.
+- Picking a model or mode sends `session/set_config_option` (or `session/set_mode` for agents that only report modes); the chip updates when the agent confirms.
+- Each pane is one chat, remembered in the pane's `localStorage`. Saving the mod's files (a hot reload) finds the running agent again.
+- Closing the pane, or quitting Herdr, stops the agent. **Restart agent** starts it again in the same folder and resumes its session (`session/load`) when the agent supports that; otherwise it starts a new session under the old messages and says so.
+- If Herdr goes away without closing the pane (a crash), the agent stops itself within 10 minutes.
+
+## Built from
+
+- **Mod** `acp-chat` (`mod.json`: `{"place": "none"}`), opened as a pane: `pane.split {"direction": "right", "mod": "acp-chat"}`. `keys.json` binds `cmd-shift-j` / `ctrl-shift-j` to that. Props, all optional: `agent` (an id from the list, or an argv array) starts that agent at once, `cwd` sets the folder, `chat` reopens a chat by id.
+- **`bridge.mjs`**, a small Node program, holds the agent session, because a mod's `exec` can't keep a program running. The mod starts it with `hc run --bg --no-parent --name acp-chat-<chat> -- <node> bridge.mjs --dir <chat folder> -- <agent argv>`, so it lives in herdr-core like any terminal, and stops it with `hc kill` in the view's `close()`.
+- **Files** under `~/.config/herdr-app/data/acp-chat/chats/<chat>/`: the bridge writes the whole chat to `state.json` (atomically, at most every 80 ms); the mod sends commands as files in `inbox/` (`prompt`, `cancel`, `permission`, `config`, `stop`) with `writeTextFile`, watches the folder with `watchFolder` and reads `state.json` with `readTextFile`. The mod touches `lease` every minute; the bridge stops when it goes stale.
+- **`acp.js`**: JSON-RPC over newline-delimited stdio, with no Node or Herdr APIs, so the bridge and a future in-mod transport share it. **`transcript.js`** folds `session/update` notifications into the message list; the bridge uses it.
+- `herdr` functions: `exec`, `hc`, `appHome`, `home`, `focused`, `props`, `theme`, `settings`, `pickFolder`, `readTextFile`, `writeTextFile`, `watchFolder`; `fs/promises` for `mkdir` and the lease. `gpui-base`: `TextareaState`/`Textarea`, `InputState`/`Input`, `TextView.markdown`, `Scrollbar`, `VirtualListScrollHandle`; `gpui-kit`: `list` (rows of any height).
+- The client tells agents it has no file system or terminal of its own (`fs`/`terminal` capabilities off), so agents use their own tools.
+
+## Watch out
+
+- It needs **Node.js** on the login shell's `PATH` for the bridge, and it runs the agent through it: the agent sees the bridge's environment (the folder from `--cwd`, the core's environment), not the pane's.
+- **This computer only.** `watchFolder` and `writeTextFile` have no `on`, so a chat for a space on another machine isn't supported yet.
+- `readTextFile` reads at most 1 MiB: the bridge keeps `state.json` under 800 KB by dropping the oldest messages and shows how many it dropped.
+- A mod textarea's Enter inserts a newline and then fires `submit` (with `shift` for Shift+Enter); the send trims it. `submit_on_enter` isn't exposed to mods.
+- `list` rows can't hold their own click handlers: item clicks go through `on_item_click` by key, so the approval buttons live outside the list.
+- Agents differ: OpenCode doesn't ask before running tools by default; omp's default model may be one you have no access to (pick another in the Model chip). Some agents echo your message as `user_message_chunk`; the bridge ignores those while its own turn runs.
+- Claude Code and Codex need their ACP adapters installed separately (`claude-code-acp`, `codex-acp`).
+
+## Done when
+
+- `herdr-app check ~/.config/herdr-app/mods/acp-chat` passes.
+- `node --test acp-chat/tests/*.test.mjs` passes (the bridge against a scripted fake agent: streaming, model change, allow/reject, cancel, stop, resume and the no-resume fallback).
+- Opening the pane with an installed agent shows its name, `ready`, and its Model chip; a prompt that makes the agent read a file shows a `✓` tool card and a markdown reply.
+- An approval request from the agent shows the card with its buttons; **Allow** finishes the tool.
+- Closing the pane leaves no `acp-chat-*` terminal in `hc ls`; **Restart agent** on a stopped chat with OpenCode shows "Resumed the agent's session." and the old messages.
