@@ -1,8 +1,11 @@
 // A chat pane for agents that speak the Agent Client Protocol (omp, OpenCode,
-// the Claude Code and Codex ACP adapters, Gemini CLI). A mod can't keep a
-// program running, so bridge.mjs holds the agent session in a herdr-core
-// terminal; this mod reads the chat from <chat folder>/state.json and sends
-// commands as files in <chat folder>/inbox/.
+// the Claude Code and Codex ACP adapters, Gemini CLI). session.js holds the
+// agent session; where it runs depends on the Herdr build:
+// - with `spawn` (herdrdev/herdr-app#723), in this mod: the agent's stdio comes
+//   straight here, and <chat folder>/state.json is kept only to resume;
+// - without it, a mod's `exec` can't keep a program running, so bridge.mjs
+//   holds the session in a herdr-core terminal; this mod reads the chat from
+//   state.json and sends commands as files in <chat folder>/inbox/.
 //
 // Two faces:
 // - the launcher, as a dialog (`mod.open {"name": "acp-chat"}`): pick an agent
@@ -14,7 +17,12 @@
 import { View, div, list } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, TextView, Scrollbar, VirtualListScrollHandle } from "gpui-base";
 import { exec, hc, run, openOverlay, closeOverlay, appHome, home, focused, props, theme, settings, pickFolder, readTextFile, writeTextFile, watchFolder } from "herdr";
+import * as herdr from "herdr";
 import * as fs from "fs/promises";
+import { ChatSession } from "./session.js";
+
+// Older Herdr builds have no `spawn`; a named import of it would fail to load.
+const DIRECT = typeof herdr.spawn === "function";
 
 // Agents that speak ACP over stdio. `argv[0]` is looked up on PATH.
 const AGENTS = [
@@ -26,6 +34,9 @@ const AGENTS = [
 ];
 
 const LEASE_EVERY_MS = 60 * 1000;
+const DRAW_EVERY_MS = 80;
+const SAVE_EVERY_MS = 1000;
+const MAX_STATE_BYTES = 800 * 1024; // readTextFile reads at most 1 MiB
 const DETAIL_MAX = 4000;
 
 function newId() {
@@ -57,8 +68,9 @@ export default class AcpChat extends View {
     this.name = `acp-chat-${this.chatId}`;
     this.bridge = `${appHome()}/mods/acp-chat/bridge.mjs`;
 
-    this.state = null; // the bridge's state.json
-    this.alive = false; // the bridge terminal is running
+    this.state = null; // the session's state (from state.json without spawn)
+    this.alive = false; // the agent (or its bridge) is running
+    this.session = null; // with spawn: the ChatSession in this mod
     this.phase = "loading"; // loading | setup | starting | chat
     this.found = {}; // program -> absolute path
     this.cwd = p.cwd ?? focused()?.cwd ?? home();
@@ -89,12 +101,18 @@ export default class AcpChat extends View {
       return;
     }
     cx.spawn(async (cx) => {
-      await fs.mkdir(`${this.dir}/inbox`, { recursive: true });
+      await fs.mkdir(DIRECT ? this.dir : `${this.dir}/inbox`, { recursive: true });
       await this.detect();
       await this.reload(cx);
-      this.alive = await this.bridgeAlive();
-      this.phase = this.alive || this.state ? "chat" : "setup";
-      this.watch(cx);
+      if (DIRECT) {
+        // It ran in an earlier copy of this pane (a reload, or the app quit): continue it.
+        if (this.state && !["exited", "stopped"].includes(this.state.status)) return this.restart(cx);
+        this.phase = this.state ? "chat" : "setup";
+      } else {
+        this.alive = await this.bridgeAlive();
+        this.phase = this.alive || this.state ? "chat" : "setup";
+        this.watch(cx);
+      }
       if (this.phase === "setup" && p.agent) {
         const agent = AGENTS.find((a) => a.id === p.agent);
         const argv = Array.isArray(p.agent) ? p.agent : agent && this.found[agent.argv[0]] ? [this.found[agent.argv[0]], ...agent.argv.slice(1)] : null;
@@ -102,11 +120,21 @@ export default class AcpChat extends View {
       }
       cx.notify();
     });
-    cx.timer.every(LEASE_EVERY_MS, () => this.touchLease());
+    if (!DIRECT) cx.timer.every(LEASE_EVERY_MS, () => this.touchLease());
   }
 
   async close(_cx) {
-    if (!this.overlay && this.alive) await exec("hc", ["kill", this.name]);
+    if (this.overlay) return;
+    if (!DIRECT) {
+      if (this.alive) await exec("hc", ["kill", this.name]);
+      return;
+    }
+    if (!this.session) return;
+    // Keep the status as it is, so the next copy of this pane resumes the chat.
+    this.closing = true;
+    const text = this.session.snapshot(MAX_STATE_BYTES);
+    herdr.processKill(this.proc);
+    await fs.writeFile(`${this.dir}/state.json`, text);
   }
 
   // Bridge and files
@@ -170,11 +198,13 @@ export default class AcpChat extends View {
   }
 
   command(cmd) {
+    if (DIRECT) return this.session?.handle(cmd);
     const name = `${Date.now()}-${String(this.cmdSeq++).padStart(4, "0")}.json`;
     return writeTextFile(`${this.dir}/inbox/${name}`, JSON.stringify(cmd), null);
   }
 
   start(cx, argv, cwd = this.cwd) {
+    if (DIRECT) return this.startHere(cx, argv, cwd);
     if (!this.found.node) return;
     this.phase = "starting";
     this.alive = true;
@@ -198,6 +228,66 @@ export default class AcpChat extends View {
     });
   }
 
+  // With spawn: the agent runs as this copy's program, and stops with it.
+  startHere(cx, argv, cwd) {
+    let proc;
+    try {
+      proc = herdr.spawn(argv[0], argv.slice(1), { cwd });
+    } catch (e) {
+      this.phase = "setup";
+      this.startError = String(e?.message ?? e);
+      cx.notify();
+      return;
+    }
+    if (this.session) herdr.processKill(this.proc);
+    this.proc = proc;
+    this.alive = true;
+    this.follow = true;
+    this.phase = "chat";
+    this.startError = null;
+    cx.spawn(async (cx) => {
+      // Asked now, so killing it later can't lose the answer.
+      const exited = herdr.processExited(proc);
+      const session = new ChatSession({
+        argv, cwd, old: this.state,
+        write: (line) => herdr.processWrite(proc, line).catch(() => {}),
+        kill: () => herdr.processKill(proc),
+        changed: (urgent) => this.proc === proc && this.changed(cx, urgent),
+      });
+      this.session = session;
+      this.state = session.state;
+      cx.notify();
+      session.start();
+      for (let line; (line = await herdr.processNextLine(proc)) != null;) session.feed(line);
+      const exit = await exited;
+      if (this.proc !== proc || this.closing) return;
+      this.alive = false;
+      session.exited(exit.code == null ? "a signal" : `code ${exit.code}`, exit.stderr.slice(-2000));
+    });
+  }
+
+  // Draws at most every DRAW_EVERY_MS and saves at most every SAVE_EVERY_MS, both at once when urgent.
+  changed(cx, urgent) {
+    if (["exited", "stopped"].includes(this.state.status)) this.alive = false;
+    const save = () => fs.writeFile(`${this.dir}/state.json`, this.session.snapshot(MAX_STATE_BYTES)).catch(() => {});
+    const draw = () => {
+      if (this.follow) this.scroll.scroll_to_bottom();
+      cx.notify();
+    };
+    if (urgent) {
+      save();
+      return draw();
+    }
+    if (!this.drawSoon) {
+      this.drawSoon = true;
+      cx.timer.after(DRAW_EVERY_MS, () => { this.drawSoon = false; draw(); });
+    }
+    if (!this.saveSoon) {
+      this.saveSoon = true;
+      cx.timer.after(SAVE_EVERY_MS, () => { this.saveSoon = false; save(); });
+    }
+  }
+
   startChoice(cx) {
     const typed = this.custom.value().trim();
     const agent = AGENTS.find((a) => a.id === this.choice);
@@ -209,7 +299,7 @@ export default class AcpChat extends View {
     closeOverlay(this.overlay);
   }
 
-  // Same agent and folder; the bridge resumes the agent's session when it can.
+  // Same agent and folder; the session resumes the agent's own when it can.
   restart(cx) {
     this.start(cx, this.state.agentArgv, this.state.cwd);
   }
@@ -253,7 +343,7 @@ export default class AcpChat extends View {
   }
 
   setup(t) {
-    const node = this.found.node;
+    const node = DIRECT || this.found.node;
     return v_flex().flex_1().p(16).gap(12).overflow_y_scrollbar()
       .child(div().text_size(15).font_semibold().child("New agent chat"))
       .child(div().text_color(t.muted).child("Pick an agent that speaks ACP. It runs in this folder:"))

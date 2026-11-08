@@ -10,7 +10,7 @@ Layouts and mods for the [Herdr](https://herdr.dev) app, one folder each. A layo
 
 | Mod | |
 | --- | --- |
-| [ACP Chat](acp-chat/RECIPE.md) | A chat pane for agents that speak the Agent Client Protocol (omp, OpenCode, Claude Code and Codex adapters, Gemini CLI): markdown replies, tool cards, approval buttons, model and mode pickers, sessions that resume. Needs Node.js. |
+| [ACP Chat](acp-chat/RECIPE.md) | A chat pane for agents that speak the Agent Client Protocol (omp, OpenCode, Claude Code and Codex adapters, Gemini CLI): markdown replies, tool cards, approval buttons, model and mode pickers, sessions that resume. Needs Node.js, unless Herdr has `spawn`. |
 
 [Shepherdr](https://github.com/eliasstravik/shepherdr) gets the same look: [`shepherdr/`](shepherdr/README.md) is an LCARS theme plugin for its web app, and the LCARS layout shows Shepherdr's counts in its sidebar.
 
