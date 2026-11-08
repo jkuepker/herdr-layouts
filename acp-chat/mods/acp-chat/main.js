@@ -4,11 +4,16 @@
 // terminal; this mod reads the chat from <chat folder>/state.json and sends
 // commands as files in <chat folder>/inbox/.
 //
-// Open it beside a terminal: pane.split {"direction": "right", "mod": "acp-chat"}.
+// Two faces:
+// - the launcher, as a dialog (`mod.open {"name": "acp-chat"}`): pick an agent
+//   and a folder, then it splits a chat pane beside the focused one;
+// - a chat pane, `pane.split {"mod": "acp-chat", "props": {chat, agent, cwd}}`.
+//   The `chat` id keeps each pane's chat (and its localStorage, which Herdr
+//   keys by props) apart from every other pane's.
 
 import { View, div, list } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, TextView, Scrollbar, VirtualListScrollHandle } from "gpui-base";
-import { exec, hc, appHome, home, focused, props, theme, settings, pickFolder, readTextFile, writeTextFile, watchFolder } from "herdr";
+import { exec, hc, run, openOverlay, closeOverlay, appHome, home, focused, props, theme, settings, pickFolder, readTextFile, writeTextFile, watchFolder } from "herdr";
 import * as fs from "fs/promises";
 
 // Agents that speak ACP over stdio. `argv[0]` is looked up on PATH.
@@ -32,15 +37,21 @@ function shortPath(p) {
   return p && p.startsWith(h) ? "~" + p.slice(h.length) : p ?? "";
 }
 
+function openLauncher() {
+  openOverlay({ mod: "acp-chat", kind: "dialog", width: 560, height: 470 });
+}
+
 export default class AcpChat extends View {
-  // props (all optional): chat (an id to reopen), agent (an AGENTS id, or an argv
-  // array), cwd. With `agent`, a new chat starts at once instead of showing setup.
+  // Pane props (all optional): chat (its id), agent (an AGENTS id or an argv
+  // array), cwd. With `agent`, a chat that has never run starts at once. A pane
+  // without `chat` keeps one chat in its localStorage.
   init(_props, cx) {
     const p = props() ?? {};
+    this.overlay = p.overlay ?? null; // set when this copy is the launcher dialog
     this.chatId = p.chat ?? localStorage.getItem("chat");
-    if (!this.chatId || (p.agent && !p.chat)) {
+    if (!this.chatId) {
       this.chatId = newId();
-      localStorage.setItem("chat", this.chatId);
+      if (!this.overlay) localStorage.setItem("chat", this.chatId);
     }
     this.dir = `${appHome()}/data/acp-chat/chats/${this.chatId}`;
     this.name = `acp-chat-${this.chatId}`;
@@ -68,6 +79,15 @@ export default class AcpChat extends View {
     this.filter.on("change", (_e, cx) => cx.notify());
     this.scroll = VirtualListScrollHandle.new();
 
+    if (this.overlay) {
+      this.phase = "loading";
+      cx.spawn(async (cx) => {
+        await this.detect();
+        this.phase = "setup";
+        cx.notify();
+      });
+      return;
+    }
     cx.spawn(async (cx) => {
       await fs.mkdir(`${this.dir}/inbox`, { recursive: true });
       await this.detect();
@@ -86,7 +106,7 @@ export default class AcpChat extends View {
   }
 
   async close(_cx) {
-    if (this.alive) await exec("hc", ["kill", this.name]);
+    if (!this.overlay && this.alive) await exec("hc", ["kill", this.name]);
   }
 
   // Bridge and files
@@ -180,33 +200,18 @@ export default class AcpChat extends View {
 
   startChoice(cx) {
     const typed = this.custom.value().trim();
-    if (typed) return this.start(cx, typed.split(/\s+/));
     const agent = AGENTS.find((a) => a.id === this.choice);
-    if (!agent) return;
-    this.start(cx, [this.found[agent.argv[0]], ...agent.argv.slice(1)]);
+    const argv = typed ? typed.split(/\s+/) : agent ? [this.found[agent.argv[0]], ...agent.argv.slice(1)] : null;
+    if (!argv) return;
+    if (!this.overlay) return this.start(cx, argv);
+    // The launcher: a new pane with its own chat id, beside the pane under the dialog.
+    run("pane.split", { direction: "right", mod: "acp-chat", props: { chat: newId(), agent: argv, cwd: this.cwd } });
+    closeOverlay(this.overlay);
   }
 
   // Same agent and folder; the bridge resumes the agent's session when it can.
   restart(cx) {
     this.start(cx, this.state.agentArgv, this.state.cwd);
-  }
-
-  newChat(cx) {
-    if (this.alive) exec("hc", ["kill", this.name]);
-    this.chatId = newId();
-    localStorage.setItem("chat", this.chatId);
-    this.dir = `${appHome()}/data/acp-chat/chats/${this.chatId}`;
-    this.name = `acp-chat-${this.chatId}`;
-    this.state = null;
-    this.alive = false;
-    this.phase = "setup";
-    this.expanded = {};
-    cx.spawn(async (cx) => {
-      await fs.mkdir(`${this.dir}/inbox`, { recursive: true });
-      this.watch(cx);
-      cx.notify();
-    });
-    cx.notify();
   }
 
   send(cx) {
@@ -273,7 +278,9 @@ export default class AcpChat extends View {
       .child(Input.new(this.custom))
       .when(!node, (el) => el.child(div().text_color(t.blocked).child("Node.js isn't on PATH; the chat bridge needs it.")))
       .when(!!this.startError, (el) => el.child(div().text_color(t.blocked).child(this.startError)))
-      .child(h_flex().child(this.button(t, "start", "Start chat", (cx) => this.startChoice(cx), { primary: true, disabled: !node })));
+      .child(h_flex().gap(6)
+        .child(this.button(t, "start", this.overlay ? "Open chat" : "Start chat", (cx) => this.startChoice(cx), { primary: true, disabled: !node }))
+        .when(!!this.overlay, (el) => el.child(this.button(t, "cancel", "Cancel", () => closeOverlay(this.overlay)))));
   }
 
   header(t) {
@@ -291,7 +298,7 @@ export default class AcpChat extends View {
         .child(div().text_color(t.dim).child(status))
         .child(div().flex_1().truncate().text_size(11).text_color(t.dim).child(shortPath(s.cwd)))
         .when(usage?.size > 0, (el) => el.child(div().text_size(11).text_color(t.dim).child(`${Math.round((100 * usage.used) / usage.size)}% context`)))
-        .child(this.button(t, "new-chat", "New", (cx) => this.newChat(cx))))
+        .child(this.button(t, "new-chat", "New", () => openLauncher())))
       .when(s.configOptions?.length > 0, (el) => el.child(h_flex().gap(6).flex_wrap().children(
         s.configOptions.filter((o) => o.type === "select").map((o) => {
           const current = o.options.find((c) => c.value === o.currentValue);
@@ -410,7 +417,7 @@ export default class AcpChat extends View {
         .when(!!s.error, (el) => el.child(div().text_size(12).text_color(t.blocked).child(s.error)))
         .child(h_flex().gap(6)
           .child(this.button(t, "restart", "Restart agent", (cx) => this.restart(cx), { primary: true }))
-          .child(this.button(t, "new", "New chat", (cx) => this.newChat(cx))));
+          .child(this.button(t, "new", "New chat", () => openLauncher())));
     }
     const working = s.status === "working";
     return h_flex().px(12).py(8).gap(8).items_end().border_t(1).border_color(t.border).bg(t.chrome)
