@@ -1,6 +1,6 @@
 # ACP Chat
 
-A chat pane for coding agents that speak the [Agent Client Protocol](https://agentclientprotocol.com): Oh My Pi (`omp acp`), OpenCode (`opencode acp`), the Claude Code and Codex ACP adapters, Gemini CLI, or any command you type. `cmd-shift-j` opens a small dialog to pick the agent and folder; the chat then opens as a pane beside your terminal. It streams the agent's replies as markdown, shows each tool call as a card, puts approval requests up as buttons, and lets you switch the agent's model and mode, including local models your agent already knows about. Closing the pane stops the agent; reopening a chat resumes the agent's own session when the agent can load one.
+A chat pane for coding agents that speak the [Agent Client Protocol](https://agentclientprotocol.com): Oh My Pi (`omp acp`), Pi (through the `pi-acp` adapter), OpenCode (`opencode acp`), the Claude Code and Codex ACP adapters, Gemini CLI, or any command you type. `cmd-shift-j` opens a small dialog to pick the agent and folder; the chat then opens as a pane beside your terminal. It streams the agent's replies as markdown, shows each tool call as a card, puts approval requests up as buttons, and lets you switch the agent's model and mode, including local models your agent already knows about. Closing the pane stops the agent; reopening a chat resumes the agent's own session when the agent can load one.
 
 ![ACP Chat](preview.png)
 
@@ -52,7 +52,7 @@ The pane uses the theme's colours throughout (`surface` behind, `chrome` for the
 - Herdr keys a mod copy's `localStorage` by a hash of its props, so two panes opened with the same props share it: that's why every chat pane gets its own `chat` prop.
 - `list` rows can't hold their own click handlers: item clicks go through `on_item_click` by key, so the approval buttons live outside the list.
 - Agents differ: OpenCode doesn't ask before running tools by default; omp's default model may be one you have no access to (pick another in the Model chip). Some agents echo your message as `user_message_chunk`; the bridge ignores those while its own turn runs.
-- Claude Code and Codex need their ACP adapters installed separately (`claude-code-acp`, `codex-acp`).
+- Pi, Claude Code and Codex need their ACP adapters installed separately (`pi-acp`, `claude-code-acp`, `codex-acp`).
 
 ## Done when
 
