@@ -97,6 +97,19 @@ const seconds = (ms) => {
 // A finished turn's time, as T3 says it: "1.6s" under ten seconds.
 const took = (ms) => (ms < 10000 ? `${(Math.max(0, ms) / 1000).toFixed(1)}s` : seconds(ms));
 const isWork = (m) => m.kind === "thought" || m.kind === "tool";
+// What a chat keeps across a reload of its pane (and of the app) that isn't the agent's to remember:
+// shared("ht3-panels.kept")[chat id] = { allow: true } while "Always allow this session" is on.
+// Empty values aren't kept; a chat with nothing kept has no entry.
+const KEPT = `${MOD}.kept`;
+const keptOf = (id) => (id ? (shared(KEPT) ?? {})[id] ?? {} : {});
+function keep(id, patch) {
+  if (!id) return;
+  const all = { ...(shared(KEPT) ?? {}) }, next = { ...(all[id] ?? {}), ...patch };
+  for (const key of Object.keys(next)) if (next[key] == null || next[key] === false || (Array.isArray(next[key]) && !next[key].length)) delete next[key];
+  if (Object.keys(next).length) all[id] = next; else delete all[id];
+  if (JSON.stringify(all) !== JSON.stringify(shared(KEPT) ?? {})) setShared(KEPT, all);
+}
+
 // A project's badge, as T3's sidebar and header: two letters of its name ("fleetq" FL, "herdr-layouts" HL).
 const initials = (name) => {
   const words = String(name ?? "").split(/[^\p{L}\p{N}]+/u).filter(Boolean);
@@ -113,6 +126,8 @@ export class ChatPanel {
     this.picker = null; // option id whose choices are open
     this.since = null; // when the running turn was first seen
     this.hasText = false;
+    // "Always allow this session" stays on over a reload (it is the person's word, not the agent's).
+    this.autoAllow = keptOf(this.chatId).allow === true;
     // A chat tab's agent has no terminal: it tells the layout's lists how it is itself (report.js).
     // A side chat is no tab, and a terminal agent's chat has its terminal to speak for it.
     this.reporter = this.chatId && !p.terminal && !p.side ? new Reporter(this.chatId) : null;
@@ -451,7 +466,7 @@ export class ChatPanel {
           const rest = { ...answers };
           delete rest[t];
           setShared(`${MOD}.answers`, rest);
-          if (a.always) this.autoAllow = true;
+          if (a.always) this.allow(true);
           this.askWatch = false;
           this.source.answer(cx, a.optionId);
           return cx.notify();
@@ -474,7 +489,7 @@ export class ChatPanel {
     if (c === "stop") this.source?.stop();
     // allow-always: the drawer's "Always allow this session"; ask-again turns it off.
     if (c === "allow-always") this.allowAlways(cx);
-    if (c === "ask-again") this.autoAllow = false;
+    if (c === "ask-again") this.allow(false);
     // plan: the composer's Plan toggle; implement: the last plan card's "Implement this plan".
     if (c === "plan") this.togglePlan(cx);
     if (c === "implement") this.implementPlan(cx);
@@ -928,11 +943,16 @@ export class ChatPanel {
     this.send(cx);
   }
 
-  // "Always allow this session": this approval and every later one of this chat's agent, until the pane
-  // reloads or "Ask again" is pressed. The agent's own "always" option, when it has one, is a button of its own.
+  allow(on) {
+    this.autoAllow = on;
+    keep(this.chatId, { allow: on });
+  }
+
+  // "Always allow this session": this approval and every later one of this chat's agent, until
+  // "Ask again" is pressed; it is kept per chat, so a reload leaves it on. The agent's own "always" option, when it has one, is a button of its own.
   allowAlways(cx) {
     const p = this.source.state?.permission;
-    this.autoAllow = true;
+    this.allow(true);
     const yes = p?.options.find((o) => o.kind === "allow_once") ?? p?.options.find((o) => o.kind?.startsWith("allow"));
     if (yes) this.source.answer(cx, yes.optionId);
     cx.notify();
@@ -1136,7 +1156,7 @@ export class ChatPanel {
       // Said while it is on, with the way back.
       drawer = h_flex().mx(22).px(16).h(32).gap(6).items_center().rounded_t(16).border(1).border_color(line).bg(k.card).text_size(12).text_color(k.muted)
         .child(icon("shield-off").size(12).flex_none().text_color(k.warning)).child(div().flex_1().min_w(0).truncate().child("Approvals are allowed automatically this session"))
-        .child(button(k, "perm-ask-again", "Ask again", (cx) => { this.autoAllow = false; cx.notify(); }, { variant: "ghost-muted" }));
+        .child(button(k, "perm-ask-again", "Ask again", (cx) => { this.allow(false); cx.notify(); }, { variant: "ghost-muted" }));
     } else if (!v.alive && v.status !== "starting") {
       drawer = v_flex().mx(22).px(16).pt(8).pb(10).gap(8).rounded_t(16).border(1).border_color(alpha(k.destructive, 0.32)).bg(k.card)
         .when(!!v.error, (el) => el.child(div().text_size(12).line_height("18px").text_color(k.destructiveText).child(String(v.error).slice(0, 1200))))

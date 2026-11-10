@@ -146,6 +146,8 @@ export class Launcher {
     this.recent = this.recent.filter((x) => x.id !== c.id);
     const named = { ...(shared(`${MOD}.named`) ?? {}) };
     if (named[c.id]) { delete named[c.id]; setShared(`${MOD}.named`, named); }
+    const kept = { ...(shared(`${MOD}.kept`) ?? {}) };
+    if (kept[c.id]) { delete kept[c.id]; setShared(`${MOD}.kept`, kept); }
     if (/^[\w-]+$/.test(c.id)) exec("rm", ["-rf", `${appHome()}/data/${MOD}/chats/${c.id}`]).catch(() => {});
     cx.notify();
   }

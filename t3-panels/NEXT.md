@@ -38,6 +38,15 @@ Ranked from a survey of /opt/code/t3code/apps/web/src and apps/server/src agains
 
 - Project scripts: a Scripts row in the Project popover, edited in Settings, run in a side terminal. Left: no editing in place (remove and add again), no order, no icon or key per script; Settings edits the shown space's project only; not run on another machine; separate from the tab bar's Add action (`ht3-actions`), which keeps its own list for all projects; clicks and typing were driven by command.
 
+## Round 4 queue (in work; each item is one commit, and is ticked under Done when it lands)
+
+A. 1. Prompt stash: park the composer draft and recall it, per project, in shared state. 2. Stats and usage: a Usage surface, per-chat token totals and context share over time, totals per agent (ACP `usage_update`; Claude Code logs read-only; no cost unless the data has it).
+B. 3. "Always allow" survives a reload, per chat. 4. Queued messages survive a pane reload. 5. No toast for the chat that is the shown tab, even when Herdr isn't in front (the OS notice instead if the API allows, else nothing). 6. Edit a project script in place, and change their order. 7. A fork is named "<source> (fork)".
+C. 8. Survey T3 Code again for features not listed here; add a ranked "Next set" section with value and effort; commit it. 9. Build the top 4 of it, one commit each.
+Then: QA.md rows, light-theme shots, end state (Pi tab in 3-deborah-network, spaces/agents sidebar, side panel hidden, dark), test chats and spaces removed.
+
+- Round 4, 3. Always allow survives a reload: kept per chat in shared `ht3-panels.kept`. Left: turning it on from the Inbox card for an agent with its own allow-always answer is the agent's to remember, not ours.
+
 ## Candidates
 
 Each entry: what it does / T3 location / mod API support / value for multi-machine agent users / effort.
