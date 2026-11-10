@@ -6,6 +6,8 @@
 // - shared("ht3-panels.titles")[tab]: its name there: the chat's first message, as a T3 thread's title, and the agent's until there is one;
 // - shared("ht3-panels.programs")[tab]: { name, icon, tint, branch, machine }, that tab's agent and where it works, over the program above;
 // - shared("ht3-panels.turns")[tab]: how many turns have ended (new work brings a settled chat back).
+// - shared("ht3-panels.asks")[tab]: { id, title, options: [{ optionId, name, kind }] } while its agent waits for an approval,
+//   and shared("ht3-panels.answers")[tab]: { ask, optionId, always } is how a list answers it (chat.js takes it);
 // `keep: true` in the program tells them a chat pane is never theirs to close: Settle puts its card away and no more.
 // A chat of a terminal agent (props.terminal) reports nothing: its terminal already does.
 
@@ -54,7 +56,7 @@ export function prune() {
   const tabs = tabsNow();
   // Nothing listed yet (the app is starting) is not everything closed.
   if (!tabs.size) return;
-  for (const key of [STATUS, TITLES, PROGRAMS, TURNS]) {
+  for (const key of [STATUS, TITLES, PROGRAMS, TURNS, `${MOD}.asks`, `${MOD}.answers`]) {
     const all = shared(key) ?? {}, kept = Object.fromEntries(Object.entries(all).filter(([tab]) => tabs.has(tab)));
     put(key, kept);
   }
@@ -112,7 +114,7 @@ export class Reporter {
   }
 
   drop(tab) {
-    for (const key of [STATUS, TITLES, PROGRAMS, TURNS]) {
+    for (const key of [STATUS, TITLES, PROGRAMS, TURNS, `${MOD}.asks`, `${MOD}.answers`]) {
       const all = { ...(shared(key) ?? {}) };
       delete all[tab];
       put(key, all);

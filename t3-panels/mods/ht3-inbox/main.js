@@ -91,6 +91,7 @@ export default class Inbox extends View {
         else if (command === "clear") /** @type {any} */ (this).clearSettled?.();
         else if (command.startsWith("custom-snooze:")) /** @type {any} */ (this).customSnooze?.(command.slice("custom-snooze:".length), cx);
         else if (command === "undo") this.undo(cx);
+        else if (command.startsWith("ask:")) { const [, what, ...rest] = command.split(":"); /** @type {any} */ (this).answerAsk?.(what, rest.join(":")); }
         else if (command.startsWith("settle-card:")) /** @type {any} */ (this).settleCard?.(command.slice(12), cx);
         // `ht3-inbox.thread-menu:<address>`: a card's right-click menu, for scripts.
         else if (command.startsWith("thread-menu:")) /** @type {any} */ (this).threadMenu?.(command.slice(12));

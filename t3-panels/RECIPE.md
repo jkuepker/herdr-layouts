@@ -77,6 +77,8 @@ Everything uses T3 Code's sizes (1rem = 16px): 14px text on a 23px line, 8px con
 
 - **The `/` `$` `@` menu floats** over the end of the lane, its foot on the message box's top (an absolute child of the composer's wrapper, drawn after the lane), so opening it no longer moves the chat. **Copy icons show on hover**: a message's rows share one hover state (`on_hover` on each row, `this.over`), and its copy icon is invisible until the pointer is over the message (MessageCopyButton's `group-hover`); the last message's icon always shows, and a code block's Copy header always shows. `ht3-panels.hover:<item id>` stands in for the pointer in scripts.
 
+- **Approvals without opening the chat, and Always allow.** A blocked chat's Inbox card shows what the agent waits for and three buttons: **Approve** (the agent's allow-once), **Always allow** and **Decline** (its reject-once). The drawer has **Always allow this session** beside the agent's own answers: it allows this request and every later one of that chat, each noted in the lane ("Allowed automatically: <title>"), until **Ask again** (shown above the message box while it is on) or a reload. Always allow from the card uses the agent's own allow-always answer when it has one, else the same session rule. The chat tells the lists what it waits for in shared `ht3-panels.asks[tab]` and takes an answer from `ht3-panels.answers[tab]` (looked for three times a second only while an approval waits). Scripts: `ht3-inbox.ask:<approve|always|decline>:<address>`, and in the shown chat `allow-always` and `ask-again`.
+
 ## Built from
 
 - **One mod, `ht3-panels`**, with many faces picked in `main.js` by how a copy is opened (`mod.json`: `{"place": "none", "overlay": {"width": 512, "height": 520}}`):

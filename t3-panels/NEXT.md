@@ -26,6 +26,8 @@ Ranked from a survey of /opt/code/t3code/apps/web/src and apps/server/src agains
 - 8. Commit, Push and Create PR in the Project popover. Left: `gh pr create` itself was never run (only its command was shown); no commit message written by an agent; Commit takes everything (`git add -A`), there is no picking of files; no pull or sync; no toasts, the outcome shows in the popover only; not tried on another machine.
 - The acp-chat mod's chat follows its end too now (same pinned column).
 
+- Approvals from the Inbox card (Approve, Always allow, Decline) and "Always allow this session" in the drawer with Ask again. Left: the buttons were driven by command, not clicked; always-allow is forgotten on a reload; the Agents list rows have no buttons, only the Inbox cards; a terminal agent's chat has none.
+
 ## Candidates
 
 Each entry: what it does / T3 location / mod API support / value for multi-machine agent users / effort.

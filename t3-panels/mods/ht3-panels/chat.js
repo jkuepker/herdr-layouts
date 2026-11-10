@@ -422,6 +422,46 @@ export class ChatPanel {
       { cwd: s.cwd, machine: s.machine ?? null, crumb: this.crumb({ cwd: s.cwd, machine: s.machine, items: s.transcript.items, status: this.source.word(), permission: s.permission, usage: s.transcript.usage, name: "Agent" }) });
   }
 
+  // An approval the agent waits for: told to the lists (shared "ht3-panels.asks", report.js) so the Inbox card can
+  // answer it, and answered at once while "Always allow this session" is on. While it waits, the lists'
+  // answers (shared "ht3-panels.answers") are looked for three times a second; nothing polls otherwise.
+  asking(cx) {
+    if (this.source?.kind !== "acp") return;
+    const p = this.source.alive ? this.source.state?.permission ?? null : null, tab = this.reporter?.tab;
+    if (p && p !== this.askFor) { this.askFor = p; this.askId = `${Date.now()}`; }
+    if (!p) this.askFor = null;
+    if (p && this.autoAllow) {
+      const yes = p.options.find((o) => o.kind === "allow_once") ?? p.options.find((o) => o.kind?.startsWith("allow"));
+      if (yes) { addNotice(this.source.state.transcript, `Allowed automatically: ${p.title}`); return this.source.answer(cx, yes.optionId); }
+    }
+    if (!tab) return;
+    const all = shared(`${MOD}.asks`) ?? {}, mine = p ? { id: this.askId, title: p.title, options: p.options } : null;
+    if (JSON.stringify(all[tab] ?? null) !== JSON.stringify(mine)) {
+      const next = { ...all };
+      if (mine) next[tab] = mine; else delete next[tab];
+      setShared(`${MOD}.asks`, next);
+    }
+    if (p && !this.askWatch) {
+      this.askWatch = true;
+      const look = (cx) => {
+        const now = this.source.alive ? this.source.state?.permission : null, t = this.reporter?.tab;
+        if (!now) { this.askWatch = false; return; }
+        const answers = shared(`${MOD}.answers`) ?? {}, a = t ? answers[t] : null;
+        if (a && a.ask === this.askId) {
+          const rest = { ...answers };
+          delete rest[t];
+          setShared(`${MOD}.answers`, rest);
+          if (a.always) this.autoAllow = true;
+          this.askWatch = false;
+          this.source.answer(cx, a.optionId);
+          return cx.notify();
+        }
+        cx.timer.after(300, look);
+      };
+      cx.timer.after(300, look);
+    }
+  }
+
   // "focus" from pane.go. For scripts, as the `+` menu's key:<key>: `ht3-panels.say:<text>` sends a
   // message in the shown chat, `pick:<option id>` (pick:model) opens or closes that control's choices,
   // `choose:<option id>=<value>` picks one, `answer:<answer id>` answers an approval, `stop` is the stop
@@ -432,6 +472,9 @@ export class ChatPanel {
     if (c.startsWith("pick:")) { this.picker = this.picker === c.slice(5) ? null : c.slice(5); this.filter.set_value(""); }
     if (c.startsWith("answer:")) this.source?.answer(cx, c.slice(7));
     if (c === "stop") this.source?.stop();
+    // allow-always: the drawer's "Always allow this session"; ask-again turns it off.
+    if (c === "allow-always") this.allowAlways(cx);
+    if (c === "ask-again") this.autoAllow = false;
     if (c.startsWith("choose:")) { const at = c.indexOf("=", 7); if (at > 0) { this.source?.setOption(c.slice(7, at), c.slice(at + 1)); this.picker = null; } }
     if (c.startsWith("fold:")) this.expanded[c.slice(5)] = !this.expanded[c.slice(5)];
     // For scripts, what the Copy buttons, a right-click and Cmd+V do: copy:last (the last reply),
@@ -480,6 +523,7 @@ export class ChatPanel {
     this.clock();
     this.turnEnded(cx);
     this.drain(cx);
+    this.asking(cx);
     const draw = (cx) => {
       cx.notify();
     };
@@ -848,6 +892,16 @@ export class ChatPanel {
     openOverlay({ mod: MOD, kind: "popup", at: { x: at.x, y: at.y }, width: 180, height: fork ? 64 : 36, props: { menu: "copy", text: String(text ?? "").slice(0, 400000), fork } });
   }
 
+  // "Always allow this session": this approval and every later one of this chat's agent, until the pane
+  // reloads or "Ask again" is pressed. The agent's own "always" option, when it has one, is a button of its own.
+  allowAlways(cx) {
+    const p = this.source.state?.permission;
+    this.autoAllow = true;
+    const yes = p?.options.find((o) => o.kind === "allow_once") ?? p?.options.find((o) => o.kind?.startsWith("allow"));
+    if (yes) this.source.answer(cx, yes.optionId);
+    cx.notify();
+  }
+
   // Fork this thread into a new chat tab: all of it, or up to and with item `upto`.
   fork(cx, upto = null) {
     if (this.source.kind !== "acp" || !this.chatId) return;
@@ -1035,8 +1089,15 @@ export class ChatPanel {
           .child(icon("shield").size(12).text_color(k.warning)).child("Waiting for approval"))
         .child(div().text_size(14).line_height("23px").child(p.title))
         .when(!!p.note, (el) => el.child(div().text_size(12).text_color(k.muted).child(p.note)))
-        .child(h_flex().gap(6).flex_wrap().justify_end().children(p.options.map((o) =>
-          button(k, `perm-${o.optionId}`, o.name, (cx) => this.source.answer(cx, o.optionId), { variant: o.kind?.startsWith("allow") ? "default" : "outline" }))));
+        .child(h_flex().gap(6).flex_wrap().justify_end()
+          .when(this.source.kind === "acp" && p.options.some((o) => o.kind?.startsWith("allow")), (el) => el.child(button(k, "perm-always-session", "Always allow this session", (cx) => this.allowAlways(cx), { variant: "ghost-muted" })))
+          .children(p.options.map((o) =>
+            button(k, `perm-${o.optionId}`, o.name, (cx) => this.source.answer(cx, o.optionId), { variant: o.kind?.startsWith("allow") ? "default" : "outline" }))));
+    } else if (this.autoAllow && v.alive) {
+      // Said while it is on, with the way back.
+      drawer = h_flex().mx(22).px(16).h(32).gap(6).items_center().rounded_t(16).border(1).border_color(line).bg(k.card).text_size(12).text_color(k.muted)
+        .child(icon("shield-off").size(12).flex_none().text_color(k.warning)).child(div().flex_1().min_w(0).truncate().child("Approvals are allowed automatically this session"))
+        .child(button(k, "perm-ask-again", "Ask again", (cx) => { this.autoAllow = false; cx.notify(); }, { variant: "ghost-muted" }));
     } else if (!v.alive && v.status !== "starting") {
       drawer = v_flex().mx(22).px(16).pt(8).pb(10).gap(8).rounded_t(16).border(1).border_color(alpha(k.destructive, 0.32)).bg(k.card)
         .when(!!v.error, (el) => el.child(div().text_size(12).line_height("18px").text_color(k.destructiveText).child(String(v.error).slice(0, 1200))))

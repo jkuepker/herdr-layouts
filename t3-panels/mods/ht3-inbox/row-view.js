@@ -1,6 +1,6 @@
 import { div, svg } from "gpui-kit";
 import { v_flex, h_flex, Popup } from "gpui-base";
-import { settings, openOverlay, shared } from "herdr";
+import { settings, openOverlay, shared, setShared } from "herdr";
 import { namer } from "./name.js";
 import { projectMark } from "./project.js";
 import { glow, tip, tipMark, keyOf } from "./tip.js";
@@ -10,6 +10,22 @@ import { programIcon } from "./program.js";
 import { stop, within } from "./focus.js";
 import { snoozeButton } from "./snooze.js";
 import { SLIM } from "./list-view.js";
+
+// A blocked chat's approval, answered from its card (T3's approval buttons on the thread row). The chat's
+// mod says what it waits for in shared("<mod>.asks")[tab] and takes the answer from shared("<mod>.answers")[tab].
+// `what`: approve (the agent's allow-once), decline (its reject-once), always (its allow-always if it has one,
+// else approve and every later approval of that chat's session).
+export function answerAsk(a, what) {
+  const ask = a?.mod ? shared(`${a.mod}.asks`)?.[a.tab] : null;
+  if (!ask) return false;
+  const by = (...kinds) => kinds.map((k) => ask.options.find((o) => o.kind === k)).find(Boolean);
+  const yes = by("allow_once") ?? ask.options.find((o) => o.kind?.startsWith("allow")), no = by("reject_once") ?? ask.options.find((o) => o.kind?.startsWith("reject"));
+  const own = what === "always" ? by("allow_always") : null;
+  const pick = what === "decline" ? no : own ?? yes;
+  if (!pick) return false;
+  setShared(`${a.mod}.answers`, { ...(shared(`${a.mod}.answers`) ?? {}), [a.tab]: { ask: ask.id, optionId: pick.optionId, always: what === "always" && !own, at: Date.now() } });
+  return true;
+}
 
 // A card's right-click menu, when the T3 panels mod is there to draw it. A chat is known by its id
 // (shared("ht3-panels.places"): chat -> its pane), a terminal agent by its tab.
@@ -50,6 +66,8 @@ export function inboxRowView(view, t, model, actions, drag) {
   const { dragging, plan, verb, badge, swept, row, open, sweepFrom, justDropped } = drag;
   const zoom = Number(settings()?.zoom) || 1;
   const title = namer();
+  // `ht3-inbox.ask:<approve|always|decline>:<address>`: a blocked chat card's buttons, for scripts.
+  view.answerAsk = (what, address) => { const a = model.every?.find((x) => x.address === address); if (a) answerAsk(a, what); };
   view.threadMenu = (address) => { const a = model.every?.find((x) => x.address === address); if (a) threadMenu(a, title(a), { x: 120, y: 160 }, !!settledAt(a)); };
   const hover = (a) => (on, cx) => {
     if (on) { view.hovered = a.address; detailsFor(view, a.address, cx); }
@@ -163,12 +181,17 @@ export function inboxRowView(view, t, model, actions, drag) {
         .child(svg("mods/ht3-inbox/icons/check.svg").size(14).flex_none().text_color(lit(id, t.muted)))
         .child("Settle")
         .when(offer, (el) => stop(view, t, id, el, 6)), { action: on ? settleKey() : undefined, delay }))));
+    const ask = !ghost && st === "blocked" && a.mod ? shared(`${a.mod}.asks`)?.[a.tab] ?? null : null;
+    const askButton = (what, label, lead) => h_flex().id(`ask-${what}-${a.address}`).h(22).px(8).flex_none().items_center().rounded(6).border_1().border_color(lead ? t.foreground : t.border)
+      .bg(lead ? t.foreground : "#00000000").text_size(12).text_color(lead ? t.chrome : t.foreground).cursor_pointer().role("button").accessibility_label(`${label}: ${ask.title}`)
+      .hover((s) => s.opacity(0.85)).on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .on_click((_e, cx) => { cx.stop_propagation(); answerAsk(a, what); cx.notify(); }).child(label);
     // T3's card row: 10 and 8 in, rounded-md, its lines 20, 20 and 16 tall, 4 and 2 apart: 78 with all three.
     const base = v_flex().id(`${ghost ? "ghost-" : ""}card-${a.address}`).px(10).py(8).flex_none().rounded(6)
       // A working row recedes until it's hovered or in view, as T3's.
       .when(!ghost, (el) => el.opacity(running(a) && !woke(a) && !on && !over ? 0.7 : 1).transition("opacity", MOTION));
     return (ghost ? base : row(base, a, details).role("button").accessibility_label(title(a)).on_hover(hover(a))
-      .on_click(open(a)).on_size_change((size) => { view.cardH = size.height / zoom; })
+      .on_click(open(a)).on_size_change((size) => { if (!ask) view.cardH = size.height / zoom; })
       // T3's thread menu, drawn by the panels mod: Rename thread, Settle.
       .on_mouse_down("right", (e) => threadMenu(a, title(a), e.position, !!settledAt(a))))
       .when(on, (el) => el.bg(t.selected))
@@ -188,6 +211,13 @@ export function inboxRowView(view, t, model, actions, drag) {
         // T3's MiddleTruncate: a branch's start and end tell it apart.
         .child(div().flex_1().min_w(0).overflow_hidden().whitespace_nowrap().text_ellipsis_middle().child(meta))
         .when(Boolean(marks), (m) => m.child(marks))))
+      // What a blocked chat waits for, and its answer, without opening the chat.
+      .when(Boolean(ask), (el) => el.child(v_flex().mt(6).gap(6)
+        .child(div().text_size(12).line_height("16px").text_color(t.muted).truncate().child(ask.title))
+        .child(h_flex().gap(6).items_center()
+          .child(askButton("approve", "Approve", true))
+          .when(ask.options.some((o) => o.kind?.startsWith("allow")), (b) => b.child(askButton("always", "Always allow", false)))
+          .child(askButton("decline", "Decline", false)))))
       .when(!ghost, (el) => stop(view, t, `card-${a.address}`, el));
   };
 
