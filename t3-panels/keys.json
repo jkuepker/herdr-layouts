@@ -14,7 +14,9 @@
     "ctrl-shift-6": "ht3-tabs.chat:6",
     "ctrl-shift-7": "ht3-tabs.chat:7",
     "ctrl-shift-8": "ht3-tabs.chat:8",
-    "ctrl-shift-9": "ht3-tabs.chat:9"
+    "ctrl-shift-9": "ht3-tabs.chat:9",
+    "cmd-alt-enter": "ht3-panels.send:new",
+    "cmd-alt-shift-enter": "ht3-panels.send:background"
   },
   "mod:ht3-panels": {
     "cmd-s": "ht3-panels.save"

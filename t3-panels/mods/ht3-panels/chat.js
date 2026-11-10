@@ -9,7 +9,7 @@
 
 import { div, list, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, TextView, Scrollbar, VirtualListScrollHandle } from "gpui-base";
-import { run, openOverlay, appHome, home, exec, layout, settings, shared, setShared, notify } from "herdr";
+import { run, openOverlay, appHome, home, exec, layout, settings, shared, setShared, notify, focused } from "herdr";
 import { MOD, tokens, alpha, icon, agentMark, button, iconButton, control, badge, workLine, divider, shortPath } from "./look.js";
 import { AcpSource, detect, argvOf, forkChat } from "./agent-acp.js";
 import { TermSource } from "./agent-term.js";
@@ -86,7 +86,9 @@ const LOCAL_COMMANDS = [
   { name: "stash", description: "Park this draft, or bring one back", local: true },
   { name: "find", description: "Find in this thread", local: true },
   { name: "copy", description: "Copy this thread as Markdown", local: true },
-  { name: "new", description: "New chat on this branch: same agent, same folder", local: true },
+  { name: "branch", description: "New chat on this branch: same agent, same folder", local: true },
+  { name: "send-new", description: "Send this draft as a new chat, and go there", local: true },
+  { name: "send-background", description: "Send this draft as a new chat, and stay here", local: true },
   { name: "usage", description: "Tokens and context: this chat and every agent", local: true },
 ];
 
@@ -424,7 +426,8 @@ export class ChatPanel {
       if (item.name === "usage") run(`${MOD}.usage`);
       if (item.name === "find") return this.setFind(cx, true);
       if (item.name === "copy") this.copyThread(cx);
-      if (item.name === "new" && this.source.kind === "acp") chatLike(this.source.state);
+      if (item.name === "branch" && this.source.kind === "acp") chatLike(this.source.state);
+      if (item.name === "send-new" || item.name === "send-background") return this.sendNew(cx, item.name === "send-background", before);
       // With a draft before "/stash" it is parked; alone, the parked drafts open.
       if (item.name === "stash") { if (before.trim()) this.stash(cx); else this.picker = "__stash"; }
     } else {
@@ -533,7 +536,9 @@ export class ChatPanel {
     if (c === "stash:menu") this.picker = this.picker === "__stash" ? null : "__stash";
     if (c.startsWith("unstash:")) this.unstash(cx, Number(c.slice(8)));
     if (c.startsWith("stash:drop:")) this.dropStash(cx, Number(c.slice(11)));
-    // new:here is "/new": a new chat with this one's agent in this one's folder (its branch).
+    // send:new and send:background: the draft becomes the first message of a new chat (sendNew); the layout's keys.
+    if (c === "send:new" || c === "send:background") this.sendNew(cx, c === "send:background");
+    // new:here is "/branch": a new chat with this one's agent in this one's folder (its branch).
     if (c === "new:here" && this.source.kind === "acp") chatLike(this.source.state);
     // copy:thread is "/copy": the thread as Markdown on the clipboard.
     if (c === "copy:thread") this.copyThread(cx);
@@ -795,6 +800,27 @@ export class ChatPanel {
         .child(`${Math.round((100 * v.usage.used) / v.usage.size)}% context`)))
       .when(!!v.terminal, (el) => el.child(iconButton(k, "to-term", "square-terminal", () => run("pane.focus", { terminal: v.terminal }), { tip: `Go to its terminal (${v.terminal})` })))
       .child(iconButton(k, "new-chat", "square-pen", () => openLauncher(), { tip: "New chat" }));
+  }
+
+  // T3's composer.sendAndNewThread and composer.sendBackground: the draft is not sent here. It becomes the first
+  // message of a new chat with this one's agent, in this one's folder. In the background the new chat's tab is made
+  // and this one is shown again at once; a toast says it started.
+  sendNew(cx, background, draft = null) {
+    const text = (draft ?? this.input.value()).trim(), s = this.source.kind === "acp" ? this.source.state : null;
+    if (!text || !s) return;
+    const here = this.reporter?.tab ?? focused()?.tab;
+    if (!chatLike(s, focused()?.space, text)) return;
+    this.input.set_value("");
+    this.hasText = false;
+    this.trig = null;
+    this.attached = [];
+    if (background) {
+      // The new chat learns its pane by being drawn in the shown tab (report.js `place`), so it gets a moment in front
+      // before this tab is shown again; without it its card would have no name or state until it is looked at.
+      if (here) cx.timer.after(450, () => run("tab.select", { id: here }));
+      notify({ title: "Started in the background", body: text.split("\n")[0].slice(0, 120), level: "info", timeout: 3000 });
+    }
+    cx.notify();
   }
 
   // "/copy": the whole thread as Markdown on the clipboard (transcript.js `toMarkdown`), said by a toast.

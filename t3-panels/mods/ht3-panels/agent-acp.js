@@ -104,11 +104,12 @@ export function argvOf(agent, found) {
 // `handoff`). Reads the chat as it was last saved (at most a second old). -> the new chat's id, or null.
 // "New chat on this branch" (T3's thread menu): a fresh chat with the same agent in the same folder, which is that
 // branch's checkout (a worktree chat's own folder), as a tab of `space` (default: the shown one). `from`: a chat's state.
-export function chatLike(from, space = focused()?.space) {
+// `prompt`: its first message, sent as soon as the agent is up.
+export function chatLike(from, space = focused()?.space, prompt = null) {
   if (!Array.isArray(from?.agentArgv) || !from.agentArgv.length) return false;
   const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   run("tab.new", { mod: "ht3-panels", ...(space ? { space } : {}), name: from.agentInfo?.title ?? from.agentInfo?.name ?? agentOf(from.agentArgv)?.name ?? "Chat",
-    props: { panel: "chat", chat: id, agent: from.agentArgv, cwd: from.cwd ?? null, machine: from.machine ?? null } });
+    props: { panel: "chat", chat: id, agent: from.agentArgv, cwd: from.cwd ?? null, machine: from.machine ?? null, ...(prompt ? { prompt } : {}) } });
   return true;
 }
 
