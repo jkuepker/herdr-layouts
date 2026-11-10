@@ -91,6 +91,8 @@ Everything uses T3 Code's sizes (1rem = 16px): 14px text on a 23px line, 8px con
 
 - **Queued messages outlive a reload.** The queue is kept per chat (shared `ht3-panels.kept[<chat id>].queue`: text, `@` file links and attachments by path). After the pane or Herdr reloads, the queued messages show again and go out in order as soon as the agent is back and ready. The turn that was running when the pane reloaded is not resumed (its agent ended with the pane).
 
+- **A fork is named after its source**: "<source's name> (fork)" in the header, the lists and Earlier chats (shared `ht3-panels.named`, set when the fork is made; a fork of a fork doesn't stack the word). `/rename` changes it like any name.
+
 ## Built from
 
 - **One mod, `ht3-panels`**, with many faces picked in `main.js` by how a copy is opened (`mod.json`: `{"place": "none", "overlay": {"width": 512, "height": 660}}`):

@@ -20,7 +20,7 @@ Ranked from a survey of /opt/code/t3code/apps/web/src and apps/server/src agains
 - 2. `@` files: picker, chips, `resource_link` blocks. Left: folders can't be picked, only files; the chip sits where the text ended (no caret position); not tried on another machine.
 - 3. Attachments: drop, `+`, paste a picture; image blocks and resource links. Left: a real drop, the file dialog and Cmd+V were not done by hand (driven by `attach:` and `paste-image`); a chat on another machine gets resource links to paths of this computer for non-pictures; thumbnails are not cleaned up.
 - 4. Thread names (`/rename`, Inbox right-click menu) and Earlier chats with search, reopen and delete in the New chat dialog. Left: the right-click itself and typing in the rename field were driven by command, not by hand; search reads at most the 60 newest chats; chats on another machine reopen only if that machine is reachable.
-- 5. Fork a thread: `/fork`, "Fork from here" on a message. A replay, not a native fork: the new session is told the earlier messages as text. Left: a fork has the same name as its source until renamed; no `session/fork` for agents that have one; a terminal agent's chat can't be forked.
+- 5. Fork a thread: `/fork`, "Fork from here" on a message. A replay, not a native fork: the new session is told the earlier messages as text. Left: no `session/fork` for agents that have one; a terminal agent's chat can't be forked.
 - 6. Checkpoints: a snapshot before and after each turn, a changed-files row with View diff and Revert. Left: no button to undo a revert (the `undo-<time>` ref is there, by hand); checkpoint refs are never pruned; nothing in the Settings dialog (only `set:checkpoints=false`); the snapshot runs `git add -A` into a private index before every message, which will be slow in a very large repository; not tried on another machine or with a terminal agent.
 - 7. Queued messages, send-now and a steer setting. Left: the queue can't be reordered and is lost on a reload; steer is cancel-then-send, not a message into the running turn; a terminal agent's chat sends mid-turn as before; the buttons were driven by command.
 - 8. Commit, Push and Create PR in the Project popover. Left: `gh pr create` itself was never run (only its command was shown); no commit message written by an agent; Commit takes everything (`git add -A`), there is no picking of files; no pull or sync; no toasts, the outcome shows in the popover only; not tried on another machine.
@@ -48,6 +48,8 @@ Then: QA.md rows, light-theme shots, end state (Pi tab in 3-deborah-network, spa
 - Round 4, 3. Always allow survives a reload: kept per chat in shared `ht3-panels.kept`. Left: turning it on from the Inbox card for an agent with its own allow-always answer is the agent's to remember, not ours.
 
 - Round 4, 4. Queued messages survive a reload (shared `ht3-panels.kept`). Left: an attachment whose file went away in between is sent without it; the queue still can't be reordered.
+
+- Round 4, 7. A fork is named "<source> (fork)".
 
 ## Candidates
 

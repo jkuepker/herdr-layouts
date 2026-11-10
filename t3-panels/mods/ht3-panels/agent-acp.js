@@ -4,7 +4,7 @@
 // the drawing taken out. In a space on another machine the local program is ssh, and the
 // agent runs there under that user's login shell.
 
-import { exec, hc, spawn, processWrite, processNextLine, processExited, processKill, home, readTextFile, appHome, run, focused } from "herdr";
+import { exec, hc, spawn, processWrite, processNextLine, processExited, processKill, home, readTextFile, appHome, run, focused, shared, setShared } from "herdr";
 import * as fs from "fs/promises";
 import { ChatSession } from "./session.js";
 
@@ -117,6 +117,11 @@ export async function forkChat(chatId, upto = null) {
     transcript: { items: kept, dropped: old.transcript?.dropped ?? 0, usage: null, commands: [], nextId: old.transcript?.nextId ?? kept.length + 1 } };
   await fs.mkdir(`${root}/${id}`, { recursive: true });
   await fs.writeFile(`${root}/${id}/state.json`, JSON.stringify(state));
+  // Its name in the lists and in Earlier chats: the source's, marked as a fork ("fix login (fork)"), until it is renamed.
+  const names = shared("ht3-panels.named") ?? {};
+  const first = String(items.find((m) => m.kind === "user")?.text ?? "").trim().split("\n")[0];
+  const from = String(names[chatId] || first).replace(/( \(fork\))+$/, "");
+  if (from) setShared("ht3-panels.named", { ...names, [id]: `${from.length > 72 ? from.slice(0, 72) + "…" : from} (fork)` });
   const space = focused()?.space;
   run("tab.new", { mod: "ht3-panels", ...(space ? { space } : {}), name: old.agentInfo?.title ?? old.agentInfo?.name ?? "Fork",
     props: { panel: "chat", chat: id, agent: old.agentArgv, cwd: old.cwd ?? null, machine: old.machine ?? null } });
