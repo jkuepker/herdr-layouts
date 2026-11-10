@@ -11,7 +11,7 @@
 // `keep: true` in the program tells them a chat pane is never theirs to close: Settle puts its card away and no more.
 // A chat of a terminal agent (props.terminal) reports nothing: its terminal already does.
 
-import { shared, setShared, spaces, panes, focused, window, machines, notify, playSound } from "herdr";
+import { shared, setShared, spaces, panes, focused, window, machines, notify, playSound, exec } from "herdr";
 import { MOD } from "./look.js";
 import { agentOf } from "./agent-acp.js";
 import { toastsOn, soundsOn } from "./settings.js";
@@ -150,6 +150,9 @@ export class Reporter {
       : tab?.named && tab.name && tab.name.toLowerCase() !== name.toLowerCase() ? `${name} · ${tab.name}` : name;
     // Herdr toasts a terminal agent that ends or asks while it isn't looked at; a chat's agent has no terminal,
     // so the chat does: once per turn that ended unseen, once per approval. A click on the toast shows the chat.
+    // A toast is drawn in Herdr's window, so it is for a chat in a hidden tab. The shown tab's chat tells nothing
+    // inside the window (you will see the chat itself when you come back); with Herdr behind another app it posts
+    // the system's notification instead (macOS, through osascript: mods have no call for one), and nothing elsewhere.
     const told = this.word === "done" && was !== "done" ? "done" : this.word === "blocked" && was !== "blocked" && !this.looking() ? "blocked" : null;
     if (told) this.tell(told, name, more.ask);
     this.publish();
@@ -157,8 +160,17 @@ export class Reporter {
 
   tell(what, name, ask) {
     const space = spaces().find((x) => x.tabs.some((c) => c.id === this.tab));
+    const title = what === "done" ? `${name} finished` : `${name} needs you`, body = [what === "blocked" && ask ? ask : this.title, space?.name].filter(Boolean).join(" · ");
+    if (focused()?.tab === this.tab) {
+      if (toastsOn() && !window().active && window().platform === "macos") {
+        const q = (t) => JSON.stringify(String(t).replace(/[\u0000-\u001f]/g, " ").slice(0, 200));
+        exec("osascript", ["-e", `display notification ${q(body)} with title ${q(title)}`], { timeout: 5000 }).catch(() => {});
+      }
+      if (soundsOn()) playSound(what);
+      return;
+    }
     if (toastsOn()) {
-      notify({ title: what === "done" ? `${name} finished` : `${name} needs you`, body: [what === "blocked" && ask ? ask : this.title, space?.name].filter(Boolean).join(" · "),
+      notify({ title, body,
         level: what === "done" ? "success" : "warning", ...(this.program?.icon ? { icon: this.program.icon } : {}), action: { name: "pane.focus", args: { pane: this.pane } } });
     }
     if (soundsOn()) playSound(what);

@@ -51,6 +51,8 @@ Then: QA.md rows, light-theme shots, end state (Pi tab in 3-deborah-network, spa
 
 - Round 4, 7. A fork is named "<source> (fork)".
 
+- Round 4, 5. No toast for the shown tab's chat; with Herdr behind another app, a macOS notification instead. Left: the system notification was posted by the test but not seen (it is outside the window shots, and macOS may ask to allow Script Editor's notifications first); it can't bring Herdr forward when clicked.
+
 ## Candidates
 
 Each entry: what it does / T3 location / mod API support / value for multi-machine agent users / effort.
