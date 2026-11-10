@@ -32,7 +32,7 @@ const PARSE = ["auto", "json", "lines", "text", "number"];
 const FORMATS = ["number", "percent", "bytes", "age", "since", "text"];
 
 // A settings field: { key (a dotted place in the widget), label, kind, hint, options }.
-// kind: text, path (a path or a template), pathOnly, number, json, bool, choice, lines (text over several lines).
+// kind: text, path (a path or a template), pathOnly, pick (chips the surface fills in), number, json, bool, choice, lines (text over several lines).
 const SOURCE_FIELDS = {
   prometheus: [
     { key: "source.query", label: "Query", kind: "text", hint: "PromQL, e.g. sum by (host) (up)" },
@@ -87,14 +87,19 @@ const TYPE_FIELDS = {
   status: [{ key: "label", label: "Label", kind: "path" }, { key: "state", label: "State", kind: "path" }, { key: "sub", label: "Note", kind: "path" }],
 };
 // What the widget types added later bring (dash-widgets.js, dash-mods.js) is registered here by them.
+// source: true (needs one), false (has none: a link, a terminal button), "optional" (a text: written in the file, or from a source).
 export function registerWidget(info, fields, { source = true } = {}) {
   if (!WIDGETS.some((w) => w.type === info.type)) WIDGETS.push(info);
   TYPE_FIELDS[info.type] = fields;
   if (!TYPES.includes(info.type)) TYPES.push(info.type);
-  if (!source) NO_SOURCE.add(info.type);
+  if (source === false) NO_SOURCE.add(info.type);
+  if (source === "optional") OPTIONAL_SOURCE.add(info.type);
 }
-// Types that need no source (a link, a terminal button).
+// Types that have no source, and types that may go without one.
 export const NO_SOURCE = new Set();
+export const OPTIONAL_SOURCE = new Set();
+// The source kinds a type's settings offer: "none" where it may go without.
+export const sourceKindsFor = (type) => (OPTIONAL_SOURCE.has(type) ? ["none", ...SOURCE_KINDS] : SOURCE_KINDS);
 
 const COMMON_HEAD = [{ key: "title", label: "Title", kind: "text" }];
 const COMMON_DATA = [
@@ -109,13 +114,15 @@ const COMMON_DATA = [
 
 export function sourceKindOf(widget) {
   if (typeof widget?.source === "string") return "named";
-  return SOURCE_KINDS.includes(widget?.source?.type) ? widget.source.type : widget?.source ? "static" : "static";
+  if (!widget?.source && OPTIONAL_SOURCE.has(widget?.type)) return "none";
+  return SOURCE_KINDS.includes(widget?.source?.type) ? widget.source.type : "static";
 }
 // The fields of a widget's settings, in order: [{ group, fields }].
 export function fieldsFor(type, sourceKind) {
   const own = TYPE_FIELDS[type] ?? [];
   const groups = [{ group: "Widget", fields: [...COMMON_HEAD, ...own] }];
-  if (!NO_SOURCE.has(type)) {
+  if (sourceKind === "none") groups.push({ group: "Source", fields: [] });
+  else if (!NO_SOURCE.has(type)) {
     groups.push({ group: "Source", fields: SOURCE_FIELDS[sourceKind] ?? [] });
     groups.push({ group: "Data", fields: COMMON_DATA });
   }
@@ -161,6 +168,7 @@ export function fieldValue(f, text) {
     return v;
   }
   if (f.kind === "bool") return /^(yes|true|1|on)$/i.test(t) ? true : undefined;
+  if (f.kind === "pick") return t; // one of a list the surface knows only while it runs (xo's projects)
   if (f.kind === "choice") {
     if (!f.options.includes(t)) throw new Error(`One of: ${f.options.join(", ")}`);
     return f.json ? JSON.parse(t) : t;
@@ -183,7 +191,8 @@ export function fieldValue(f, text) {
 // A source of another kind than before starts empty, so the old kind's fields don't stay behind.
 export function applyForm(widget, sourceKind, texts) {
   const next = JSON.parse(JSON.stringify(widget)), errors = {};
-  if (!NO_SOURCE.has(widget.type)) {
+  if (sourceKind === "none") delete next.source;
+  else if (!NO_SOURCE.has(widget.type)) {
     if (sourceKind === "named") next.source = typeof widget.source === "string" ? widget.source : "";
     else if (sourceKindOf(widget) !== sourceKind || typeof next.source !== "object" || !next.source) next.source = { type: sourceKind };
     else next.source.type = sourceKind;

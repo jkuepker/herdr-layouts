@@ -322,6 +322,7 @@ export function openScript({ command, on, cwd }) {
     await sleep(cx, 600);
     const r = await hc(["send", addr, command]);
     if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim().split("\n")[0] || "The script wasn't typed.");
+    return addr;
   });
 }
 

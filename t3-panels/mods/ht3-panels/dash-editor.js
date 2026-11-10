@@ -13,7 +13,7 @@ import { exec, readTextFile, writeTextFile, run } from "herdr";
 import { MOD, alpha, icon, button, shortPath } from "./look.js";
 import { send } from "./side.js";
 import { readDashboard } from "./dash-data.js";
-import { WIDGETS, SOURCE_KINDS, fieldsFor, fieldText, sourceKindOf, applyForm, edit, checked, fileName, blank } from "./dash-edit.js";
+import { WIDGETS, sourceKindsFor, NO_SOURCE, fieldsFor, fieldText, sourceKindOf, applyForm, edit, checked, fileName, blank } from "./dash-edit.js";
 
 const CONFIRM_MS = 5000;
 
@@ -129,7 +129,7 @@ export const editor = {
       if (f.inputs.has(x.key) || x.key in f.values) continue;
       // A widget whose source was of another kind has nothing to say about this kind's fields.
       const text = x.key.startsWith("source") && sourceKindOf(w) !== f.kind ? "" : fieldText(w, x);
-      if (x.kind === "bool" || x.kind === "choice") f.values[x.key] = text;
+      if (x.kind === "bool" || x.kind === "choice" || x.kind === "pick") f.values[x.key] = text;
       else if (x.kind === "json" || x.kind === "lines") { const s = TextareaState.new({ value: text }); s.set_auto_grow(1, 8); f.inputs.set(x.key, s); }
       else f.inputs.set(x.key, InputState.new({ value: text, placeholder: x.hint ?? "" }));
     }
@@ -146,7 +146,7 @@ export const editor = {
   },
   setSourceKind(kind) {
     const f = this.form, w = this.current()?.raw.widgets?.[f?.i];
-    if (!f || !w || !SOURCE_KINDS.includes(kind)) return;
+    if (!f || !w || !sourceKindsFor(f.type).includes(kind)) return;
     f.kind = kind;
     f.errors = {};
     this.fillForm(w);
@@ -265,6 +265,12 @@ export const editor = {
       const err = f.errors[x.key], wide = x.kind === "json" || x.kind === "lines" || x.key === "source.query" || x.key === "source.shell";
       let control;
       if (x.kind === "bool") control = h_flex().gap(4).child(chip(`df-${x.key}-yes`, "Yes", f.values[x.key] === "yes", () => { f.values[x.key] = "yes"; })).child(chip(`df-${x.key}-no`, "No", f.values[x.key] !== "yes", () => { f.values[x.key] = ""; }));
+      else if (x.kind === "pick") {
+        // Chips for what the surface knows now (pickOptions), and the value in the file even when it isn't among them.
+        const opts = [...new Set([...(this.pickOptions?.(x.from) ?? []), ...(f.values[x.key] ? [f.values[x.key]] : [])])];
+        control = opts.length ? h_flex().flex_wrap().gap(4).children(opts.map((o) => chip(`df-${x.key}-${o}`, o, f.values[x.key] === o, () => { f.values[x.key] = f.values[x.key] === o ? "" : o; })))
+          : div().text_size(11).text_color(k.dim).child(x.none ?? "Nothing to pick from yet");
+      }
       else if (x.kind === "choice") control = h_flex().flex_wrap().gap(4).children(x.options.map((o) => chip(`df-${x.key}-${o}`, o, f.values[x.key] === o, () => { f.values[x.key] = f.values[x.key] === o ? "" : o; })));
       else if (x.kind === "json" || x.kind === "lines") control = div().min_h(28).px(8).py(4).rounded(6).border(1).border_color(err ? k.destructive : k.input).bg(k.background).font_family(k.mono).text_size(12).line_height("18px").child(Textarea.new(f.inputs.get(x.key)));
       else control = div().h(28).px(8).rounded(6).border(1).border_color(err ? k.destructive : k.input).bg(k.background).text_size(12).child(Input.new(f.inputs.get(x.key)));
@@ -272,7 +278,7 @@ export const editor = {
         .child(div().text_size(11).text_color(k.muted).child(x.label))
         .child(control)
         .when(!!err, (el) => el.child(div().text_size(11).line_height("15px").text_color(k.destructiveText).child(err)))
-        .when(!err && !!x.hint && (x.kind === "json" || x.kind === "bool" || x.kind === "choice" || x.kind === "lines"), (el) => el.child(div().text_size(10.5).line_height("14px").text_color(k.dim).child(x.hint)));
+        .when(!err && !!x.hint && (x.kind === "json" || x.kind === "bool" || x.kind === "choice" || x.kind === "lines" || x.kind === "pick"), (el) => el.child(div().text_size(10.5).line_height("14px").text_color(k.dim).child(x.hint)));
     };
     const groups = fieldsFor(f.type, f.kind);
     return v_flex().id("dash-form").mx(12).mt(12).p(12).gap(10).flex_none().rounded(10).border(1).border_color(k.primary).bg(k.popover)
@@ -286,7 +292,7 @@ export const editor = {
       .children(groups.map((g) => v_flex().gap(6)
         .child(h_flex().gap(8).items_center()
           .child(div().flex_none().text_size(11).font_medium().text_color(k.muted).child(g.group.toUpperCase()))
-          .when(g.group === "Source", (el) => el.child(h_flex().flex_wrap().gap(4).children(SOURCE_KINDS.map((s) => chip(`ds-${s}`, s, f.kind === s, () => this.setSourceKind(s)))))))
+          .when(g.group === "Source", (el) => el.child(h_flex().flex_wrap().gap(4).children(sourceKindsFor(f.type).map((s) => chip(`ds-${s}`, s, f.kind === s, () => this.setSourceKind(s)))))))
         .when(g.fields.length > 0, (el) => el.child(h_flex().flex_wrap().gap(10).items_start().children(g.fields.map(field))))
         .when(!g.fields.length && g.group === "Source", (el) => el.child(div().text_size(11).text_color(k.dim).child("This source has nothing to set.")))));
   },

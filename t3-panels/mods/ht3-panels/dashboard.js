@@ -17,6 +17,9 @@ import { showing } from "./side.js";
 import { pick, field, num, show, level, stateLevel, keep, sortRows, age, readDashboard } from "./dash-data.js";
 import { fetchSource } from "./dash-sources.js";
 import { editor } from "./dash-editor.js";
+import "./dash-types.js";
+import { widgets as moreWidgets, DIRECT } from "./dash-widgets.js";
+import { TYPES } from "./dash-data.js";
 
 const TICK_MS = 5000, SHARE_MS = 4000; // widgets asking for the same source within a tick share one answer
 const KEEP = 40; // values a stat keeps for its sparkline
@@ -45,6 +48,11 @@ export class DashboardPanel {
     else if (c.startsWith("dashboard:")) this.choose(cx, c.slice(10));
     else if (c === "dashboard-refresh") this.loadFiles(cx, true);
     else if (c === "dashboard-menu") this.menu = !this.menu;
+    else if (c.startsWith("dashboard-press:") && showing(this.group, "dashboard")) {
+      // dashboard-press:<widget>[:<arg>]: a click on that widget's button (a link, a terminal, the nth chat).
+      const [wi, ...arg] = c.slice(16).split(":"), w = this.current()?.dash.widgets[Number(wi)];
+      if (w) this[`press_${w.type}`]?.(w, cx, arg.join(":"));
+    }
     else if (c.startsWith("dashboard-row:") && showing(this.group, "dashboard")) {
       // dashboard-row:<widget>:<row>, both from 0: a click on that row of that table.
       const [wi, ri] = c.slice(14).split(":").map(Number), w = this.current()?.dash.widgets[wi], rows = w ? this.state.get(w.id)?.data : null;
@@ -109,8 +117,10 @@ export class DashboardPanel {
       st.loading = true;
       cx.spawn(async (cx) => {
         try {
-          const raw = await this.ask(w.source, cur.dash);
-          let data = pick(raw, w.pick);
+          // A type with load_<type> gets its data itself; one that may go without a source has none to ask.
+          const load = this[`load_${w.type}`];
+          const raw = load ? await load.call(this, w, cur.dash) : w.source || !DIRECT.has(w.type) ? await this.ask(w.source, cur.dash) : null;
+          let data = load || !w.source ? raw : pick(raw, w.pick);
           if (Array.isArray(data)) data = sortRows(keep(data, w.filter), w.sort);
           if (Array.isArray(data) && w.limit) data = data.slice(0, Math.max(1, Number(w.limit) || 1));
           // count: how many rows are left (a stat of "jobs running"); none is 0, not "No data".
@@ -186,7 +196,8 @@ export class DashboardPanel {
   widget(k, w, i = 0, n = 1) {
     const st = this.of(w.id), has = st.data !== undefined;
     const empty = has && (st.data == null || (Array.isArray(st.data) && !st.data.length));
-    const body = !w.type ? this.say(k, `No widget type "${w.typeName}". There are: stat, table, list, bars, line, status.`, k.destructiveText)
+    const body = !w.type ? this.say(k, `No widget type "${w.typeName}". There are: ${TYPES.join(", ")}.`, k.destructiveText)
+      : DIRECT.has(w.type) ? this.safely(k, () => this[`draw_${w.type}`](k, w, st))
       : !has ? this.say(k, st.error ?? "Loading…", st.error ? k.destructiveText : k.muted)
         : empty ? this.say(k, w.empty ?? "No data", k.muted)
           : this.safely(k, () => this[`draw_${w.type}`](k, w, st));
@@ -334,4 +345,4 @@ export class DashboardPanel {
     }));
   }
 }
-Object.assign(DashboardPanel.prototype, editor);
+Object.assign(DashboardPanel.prototype, editor, moreWidgets);

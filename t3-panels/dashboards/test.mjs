@@ -78,6 +78,13 @@ assert.throws(() => d.readDashboard("{}", "empty"), /widgets/);
 
 // ---- edit mode's save path (dash-edit.js): a change is an edit(), then checked() gives the text to write ----
 const e = await import(join(here, "../mods/ht3-panels/dash-edit.js"));
+await import(join(here, "../mods/ht3-panels/dash-types.js")); // registers gauge, text, log, heatmap, link, terminal, chat, xo-map
+assert.ok(["gauge", "text", "log", "heatmap", "link", "terminal", "chat"].every((x) => e.WIDGETS.some((w) => w.type === x) && d.TYPES.includes(x)));
+// A text may go without a source ("none"); a link has none at all, and its form never adds one.
+assert.equal(e.sourceKindOf({ type: "text", text: "x" }), "none");
+assert.equal(e.applyForm({ type: "text", text: "x", source: { type: "static", data: 1 } }, "none", { text: "y" }).widget.source, undefined);
+assert.deepEqual(e.applyForm({ type: "link", url: "https://example.com" }, "static", { label: "Go" }).widget, { type: "link", url: "https://example.com", label: "Go" });
+assert.ok(e.sourceKindsFor("text").includes("none") && !e.sourceKindsFor("stat").includes("none"));
 let raw = e.blank("  My fleet ");
 assert.equal(raw.title, "My fleet");
 assert.equal(e.fileName("My fleet!", ["my-fleet", "my-fleet-2"]), "my-fleet-3");
@@ -134,8 +141,8 @@ for (const f of readdirSync(here).filter((x) => x.endsWith(".json"))) {
   for (const w of dash.widgets) {
     if (w.broken) continue; // kit.json shows what a mistake looks like
     assert.ok(w.type, `${f}: unknown widget type "${w.typeName}"`);
-    assert.ok(w.source?.type, `${f}: "${w.title}" has no source`);
-    const paths = [w.pick, w.value, w.label, w.state, w.text, w.sub, w.max, w.legend, w.filter?.path, ...(w.columns ?? []).map((c) => c.value)];
+    assert.ok(w.source?.type || e.NO_SOURCE.has(w.type) || e.OPTIONAL_SOURCE.has(w.type), `${f}: "${w.title}" has no source`);
+    const paths = [w.pick, w.value, w.label, w.state, w.type === "text" ? null : w.text, w.sub, w.max, w.legend, w.filter?.path, ...(Array.isArray(w.columns) ? w.columns : []).map((c) => c.value)];
     for (const p of paths) if (typeof p === "string") { if (d.isPath(p)) d.pick({}, p); else for (const m of p.matchAll(/\{([^{}]+)\}/g)) d.pick({}, m[1].trim()); }
   }
 }
