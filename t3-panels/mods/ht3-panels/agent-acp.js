@@ -22,6 +22,16 @@ export const AGENTS = [
 // The AGENTS entry an argv starts (its program by name, wherever it is installed), or null.
 export const agentOf = (argv) => AGENTS.find((a) => a.argv[0] === String(argv?.[0] ?? "").split("/").pop()) ?? null;
 
+// Why an agent that ended before it had a session didn't start: its program is missing (the shell's
+// 127, or its "not found"), or it gave up by itself.
+export function startFailure(argv, exit, machine) {
+  const name = String(argv?.[0] ?? "the agent").split("/").pop(), on = machine ? ` on ${machine}` : "";
+  const err = String(exit?.stderr ?? "").trim().slice(-2000);
+  if (exit?.code === 127 || /not found|no such file or directory/i.test(err.split("\n").pop() ?? ""))
+    return `Couldn't start ${name}: not found${on}. Pick another agent with New chat, or see which are on in Settings.`;
+  return `${name} ended before it started a session (${exit?.code == null ? "a signal" : `code ${exit.code}`}).` + (err ? `\n\n${err}` : "");
+}
+
 const SAVE_EVERY_MS = 1000;
 const MAX_STATE_BYTES = 800 * 1024; // readTextFile reads at most 1 MiB
 
@@ -171,7 +181,8 @@ export class AcpSource {
       this.session = session;
       this.state = session.state;
       cx.notify();
-      session.start().then(async (ok) => {
+      const started = session.start();
+      started.then(async (ok) => {
         if (!ok) return;
         for (const [id, value] of Object.entries(set ?? {})) await session.setConfig(id, value);
         if (first) session.handle({ type: "prompt", text: first });
@@ -181,6 +192,8 @@ export class AcpSource {
       if (this.proc !== proc || this.closing) return;
       this.alive = false;
       session.exited(exit.code == null ? "a signal" : `code ${exit.code}`, exit.stderr.slice(-2000));
+      // It ended before it had a session: say why (session.js only knows "agent exited").
+      if (!(await started.catch(() => false)) && session.state.status !== "stopped") session.failed(startFailure(argv, exit, this.machine));
     });
   }
 

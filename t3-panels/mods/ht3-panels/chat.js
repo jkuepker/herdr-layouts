@@ -486,7 +486,8 @@ export class ChatPanel {
         .when(!!v.error, (el) => el.child(div().text_size(12).line_height("18px").text_color(k.destructiveText).child(String(v.error).slice(0, 1200))))
         .child(h_flex().gap(6).justify_end()
           .when(this.source.kind === "acp" && !!this.source.state, (el) => el.child(button(k, "restart", "Restart agent", (cx) => this.source.restart(cx), { variant: "default", glyph: "rotate-ccw" })))
-          .child(button(k, "drawer-new", "New chat", () => openLauncher(), { variant: "outline" })));
+          .child(button(k, "drawer-new", "New chat", () => openLauncher(), { variant: "outline" }))
+          .when(this.source.kind === "acp", (el) => el.child(button(k, "drawer-settings", "Settings", () => run(`${MOD}.settings`), { variant: "outline" }))));
     }
 
     const working = v.status === "working";
