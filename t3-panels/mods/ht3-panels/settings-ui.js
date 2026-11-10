@@ -33,6 +33,7 @@ export class Settings {
     }
     // Project scripts: the shown space's project, and the two fields a new one is typed into.
     this.project = null;
+    this.editing = null; // the script whose pen was pressed
     this.scriptName = InputState.new({ placeholder: "Name, e.g. Dev" });
     this.scriptCommand = InputState.new({ placeholder: "Command, e.g. npm run dev" });
     for (const f of [this.scriptName, this.scriptCommand]) { f.on("change", (_e, cx) => cx.notify()); f.on("submit", (_e, cx) => { this.addScript(); cx.notify(); }); }
@@ -63,6 +64,10 @@ export class Settings {
     // ui:script:<name>=<command> adds a project script (same name: replaces it), ui:unscript:<n> removes the nth.
     else if (what === "script") { const at = rest.indexOf("="); if (at > 0) { this.scriptName.set_value(rest.slice(0, at)); this.scriptCommand.set_value(rest.slice(at + 1)); this.addScript(); } }
     else if (what === "unscript") this.dropScript(Number(rest));
+    // ui:edit:<n> puts the nth script into the fields to change it (ui:script: then saves it in its place; ui:edit: alone gives up),
+    // ui:move:<n>:<up|down> moves it one place.
+    else if (what === "edit") this.editScript(rest === "" ? null : Number(rest));
+    else if (what === "move") { const [n, way] = rest.split(":"); this.moveScript(Number(n), way === "up" ? -1 : 1); }
     // ui:skip folds Agents and Editors away (and back), so a script's picture shows the sections under them.
     else if (what === "skip") this.skip = !this.skip;
     else if (what === "close") closeOverlay(this.overlay);
@@ -101,17 +106,38 @@ export class Settings {
     this.add[id].set_value("");
   }
 
+  // Add, or, while one is being edited, Save: the changed script stays in its place.
   addScript() {
     const name = this.scriptName.value().trim(), command = this.scriptCommand.value().trim();
     if (!this.project || !name || !command) return;
-    setScripts(this.project.key, [...scriptsOf(this.project.key).filter((s) => s.name !== name), { name, command }]);
-    this.scriptName.set_value("");
-    this.scriptCommand.set_value("");
+    const list = scriptsOf(this.project.key), at = this.editing;
+    if (at != null && list[at]) setScripts(this.project.key, list.map((s, i) => (i === at ? { name, command } : s)).filter((s, i) => i === at || s.name !== name));
+    else setScripts(this.project.key, [...list.filter((s) => s.name !== name), { name, command }]);
+    this.editScript(null);
+  }
+
+  // The pen: the script goes into the two fields; null leaves them empty again.
+  editScript(i) {
+    const s = i == null || !this.project ? null : scriptsOf(this.project.key)[i];
+    this.editing = s ? i : null;
+    this.scriptName.set_value(s?.name ?? "");
+    this.scriptCommand.set_value(s?.command ?? "");
+    if (s) this.scriptCommand.focus();
+  }
+
+  moveScript(i, by) {
+    if (!this.project) return;
+    const list = [...scriptsOf(this.project.key)], to = i + by;
+    if (!list[i] || to < 0 || to >= list.length) return;
+    [list[i], list[to]] = [list[to], list[i]];
+    setScripts(this.project.key, list);
+    if (this.editing === i) this.editing = to; else if (this.editing === to) this.editing = i;
   }
 
   dropScript(i) {
     if (!this.project) return;
     setScripts(this.project.key, scriptsOf(this.project.key).filter((_s, n) => n !== i));
+    if (this.editing != null) this.editScript(null);
   }
 
   // ui/switch.tsx: 28 by 16, a 12px thumb.
@@ -214,12 +240,16 @@ export class Settings {
           this.row(icon("volume-2").size(16).flex_none().text_color(k.muted), "Sound", "Play Herdr's done or blocked sound then.",
             [this.toggle(k, "set-sounds", soundsOn(), "Sound", () => setPref("sounds", soundsOn() ? undefined : true))])]))
         .when(!!this.project, (el) => el.child(this.section(k, "Project scripts", `Commands for ${this.project.name} (${shortPath(this.project.root)}${this.project.on ? ` on ${this.project.on}` : ""}), the project of the shown space. The Project popover runs them in a side terminal.`,
-          [...scriptsOf(this.project.key).map((s, i) => this.row(icon("square-terminal").size(16).flex_none().text_color(k.muted), s.name, s.command,
-            [iconButton(k, `script-drop-${i}`, "trash-2", (cx) => { this.dropScript(i); cx.notify(); }, { tip: `Remove ${s.name}` })])),
+          [...scriptsOf(this.project.key).map((s, i, all) => this.row(icon("square-terminal").size(16).flex_none().text_color(k.muted), s.name, s.command,
+            [...(all.length > 1 ? [iconButton(k, `script-up-${i}`, "chevron-up", (cx) => { this.moveScript(i, -1); cx.notify(); }, { tip: "Move up" }).opacity(i ? 1 : 0.3),
+              iconButton(k, `script-down-${i}`, "chevron-down", (cx) => { this.moveScript(i, 1); cx.notify(); }, { tip: "Move down" }).opacity(i < all.length - 1 ? 1 : 0.3)] : []),
+              iconButton(k, `script-edit-${i}`, "pen-line", (cx) => { this.editScript(this.editing === i ? null : i); cx.notify(); }, { tip: `Change ${s.name}`, on: this.editing === i }),
+              iconButton(k, `script-drop-${i}`, "trash-2", (cx) => { this.dropScript(i); cx.notify(); }, { tip: `Remove ${s.name}` })])),
           h_flex().min_h(52).px(12).py(8).gap(8).items_center()
             .child(div().w(150).flex_none().h(30).px(8).rounded(8).border(1).border_color(k.input).text_size(13).child(Input.new(this.scriptName)))
             .child(div().flex_1().min_w(0).h(30).px(8).rounded(8).border(1).border_color(k.input).text_size(13).font_family(k.mono).child(Input.new(this.scriptCommand)))
-            .child(button(k, "script-add", "Add", (cx) => { this.addScript(); cx.notify(); }, { size: "sm", disabled: !this.scriptName.value().trim() || !this.scriptCommand.value().trim() }))])))
+            .when(this.editing != null, (e) => e.child(button(k, "script-cancel", "Cancel", (cx) => { this.editScript(null); cx.notify(); }, { size: "sm", variant: "outline" })))
+            .child(button(k, "script-add", this.editing != null ? "Save" : "Add", (cx) => { this.addScript(); cx.notify(); }, { size: "sm", variant: this.editing != null ? "default" : "outline", disabled: !this.scriptName.value().trim() || !this.scriptCommand.value().trim() }))])))
         .child(this.section(k, "Side panel", "How the right panel comes up.",
           [this.row(icon("panel-right").size(16).flex_none().text_color(k.muted), "Start hidden in new spaces", "A space shown for the first time comes up without the side panel.",
             [this.toggle(k, "set-side", sideStartsHidden(), "Start hidden in new spaces", () => this.flipSide())])])))
