@@ -101,6 +101,34 @@ export const openIn = (ed, folder) => (ed
   ? ed.how === "app" ? exec("open", ["-a", ed.app, folder]) : exec(ed.bin, [folder])
   : exec("open", [folder]));
 
+// The right-click menu of a chat message (ui/menu.tsx): Copy puts `props.text` on the clipboard.
+// Enter or C copies, Esc closes; `ht3-panels.key:enter` presses for scripts.
+export class CopyMenu {
+  init(p, cx) {
+    this.overlay = p.overlay;
+    this.text = String(p.text ?? "");
+    this.focus = cx.focus_handle();
+    cx.timer.after(0, () => this.focus.focus());
+  }
+  close() {}
+  command(c, cx) {
+    if (c.startsWith("key:")) this.key(c.slice(4), cx);
+  }
+  key(key, cx) {
+    if (key === "enter" || key === "c") cx.write_to_clipboard(this.text);
+    if (key === "enter" || key === "c" || key === "escape") closeOverlay(this.overlay);
+  }
+  render() {
+    const k = tokens();
+    return v_flex().id("ht3-copy-menu").size_full().p(4).bg(k.popover).text_color(k.foreground).text_size(14)
+      .track_focus(this.focus)
+      .on_key_down((e, cx) => this.key(e.key.toLowerCase(), cx))
+      .child(h_flex().id("copy-row").h(28).px(8).gap(8).items_center().rounded(4).cursor_pointer().role("button").accessibility_label("Copy")
+        .hover((s) => s.bg(k.accent)).on_click((_e, cx) => this.key("enter", cx))
+        .child(icon("copy").size(16).flex_none().text_color(k.muted)).child(div().flex_1().child("Copy")));
+  }
+}
+
 export class ProjectMenu {
   init(p, cx) {
     this.overlay = p.overlay;

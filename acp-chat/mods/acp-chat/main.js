@@ -53,6 +53,24 @@ function startFailure(argv, exit, machine, threw = false) {
   return `${name} ended before it started a session (${exit?.code == null ? "a signal" : `code ${exit.code}`}).` + (err ? `\n\n${err}` : "");
 }
 
+// A reply's text cut at its fenced code blocks, so each block can carry its own Copy row:
+// [{ code, lang, text }]. A fence left open (still streaming) is a block to its end.
+function segments(text) {
+  const out = [];
+  let buf = [], code = null;
+  const flush = () => { if (buf.join("\n").trim()) out.push({ code: false, text: buf.join("\n") }); buf = []; };
+  for (const line of String(text ?? "").split("\n")) {
+    const f = /^ {0,3}(`{3,}|~{3,})\s*([^\s`]*)[^`]*$/.exec(line);
+    if (!code && f) { flush(); code = { fence: f[1], lang: f[2], lines: [] }; }
+    else if (code && f && f[1][0] === code.fence[0] && f[1].length >= code.fence.length && !f[2]) { out.push({ code: true, lang: code.lang, text: code.lines.join("\n") }); code = null; }
+    else if (code) code.lines.push(line);
+    else buf.push(line);
+  }
+  if (code) out.push({ code: true, lang: code.lang, text: code.lines.join("\n") });
+  flush();
+  return out;
+}
+
 const SAVE_EVERY_MS = 1000;
 const MAX_STATE_BYTES = 800 * 1024; // readTextFile reads at most 1 MiB
 const DETAIL_MAX = 4000;
@@ -144,6 +162,18 @@ export default class AcpChat extends View {
     // A textarea's Enter inserts a newline and then submits; Shift+Enter submits with `shift`.
     this.input.on("submit", (e, cx) => {
       if (!e?.shift) this.send(cx);
+    });
+    // For scripts (`herdr-app do acp-chat.<command>`), what the Copy rows and Cmd+V do: copy:last (the
+    // last reply), copy:code (its last code block), paste (the clipboard's text into the message box).
+    if (typeof herdr.nextCommand === "function") cx.spawn(async (cx) => {
+      for (;;) {
+        const c = await herdr.nextCommand();
+        const last = [...(this.state?.transcript?.items ?? [])].reverse().find((m) => m.kind === "agent");
+        if (c === "copy:last" && last) this.copy(cx, `${last.id}:cp`, last.text);
+        if (c === "copy:code" && last) { const g = segments(last.text).filter((x) => x.code).pop(); if (g) this.copy(cx, `${last.id}:cp`, g.text); }
+        if (c === "paste") { const text = cx.read_from_clipboard(); if (text) this.input.replace(text); }
+        cx.notify();
+      }
     });
     this.custom = InputState.new({ placeholder: "or a command, e.g. my-agent --acp" });
     this.filter = InputState.new({ placeholder: "Filter…" });
@@ -544,10 +574,33 @@ export default class AcpChat extends View {
         .child(Scrollbar.vertical(`pick-${opt.id}`).absolute().inset_0()));
   }
 
+  // Copies, and the row that did says so for a moment.
+  copy(cx, id, text) {
+    cx.write_to_clipboard(String(text ?? ""));
+    this.copied = id;
+    cx.notify();
+    cx.timer.after(1500, (cx) => { if (this.copied === id) { this.copied = null; cx.notify(); } });
+  }
+
   messages(t) {
     const tr = this.state.transcript;
-    const items = tr.items;
     const mono = settings().font_family;
+    // A handler can't sit inside a list row, so Copy is a row of its own: one under each message
+    // (all of it), and one over each code block of a reply (that block). A right-click on a
+    // message copies all of it.
+    const items = [], busy = ["working", "blocked"].includes(this.state.status), lastItem = tr.items[tr.items.length - 1];
+    for (const m of tr.items) {
+      if (m.kind === "agent") {
+        segments(m.text).forEach((g, i) => {
+          if (g.code) items.push({ id: `${m.id}:h${i}`, kind: "copy", text: g.text, label: "Copy code", right: true });
+          items.push({ id: `${m.id}:s${i}`, kind: "seg", code: g.code, lang: g.lang, text: g.text, whole: m.text });
+        });
+        if (m.text && !(busy && m === lastItem)) items.push({ id: `${m.id}:cp`, kind: "copy", text: m.text, label: "Copy" });
+      } else if (m.kind === "user") {
+        items.push(m);
+        if (!m.pending) items.push({ id: `${m.id}:cp`, kind: "copy", text: m.text, label: "Copy" });
+      } else items.push(m);
+    }
     return v_flex().relative().flex_1().min_h(0)
       .on_scroll_wheel((e, cx) => {
         if (e.delta.y > 0 && this.follow) { this.follow = false; cx.notify(); }
@@ -555,8 +608,15 @@ export default class AcpChat extends View {
       .child(list("acp-msgs", items.length, (i) => items[i].id, (i) => this.item(t, items[i], i === 0 ? tr.dropped : 0, mono))
         .track_scroll(this.scroll)
         .on_item_click((id, cx) => {
+          const m = items.find((x) => x.id === id);
+          if (m?.kind === "copy") return this.copy(cx, id, m.text);
           this.expanded[id] = !this.expanded[id];
           cx.notify();
+        })
+        .on_item_secondary_click((id, _e, cx) => {
+          const m = items.find((x) => x.id === id);
+          const text = !m ? null : m.kind === "seg" ? m.whole : m.kind === "tool" ? m.detail : ["user", "thought", "copy"].includes(m.kind) ? m.text : null;
+          if (text) this.copy(cx, m.kind === "copy" ? id : `${String(id).split(":")[0]}:cp`, text);
         }))
       .child(Scrollbar.vertical("acp-msgs").absolute().inset_0())
       .when(!this.follow, (el) => el.child(div().absolute().bottom(8).right(16)
@@ -573,8 +633,13 @@ export default class AcpChat extends View {
     switch (m.kind) {
       case "user":
         return row.child(div().px(10).py(6).rounded(8).bg(t.raised).child(m.text));
-      case "agent":
-        return row.child(TextView.markdown(`md-${m.id}`, m.text).selectable(true));
+      case "seg":
+        return row.child(TextView.markdown(`md-${m.id}`, m.code ? "```" + m.lang + "\n" + m.text + "\n```" : m.text).selectable(true));
+      case "copy": {
+        const done = this.copied === m.id;
+        return v_flex().px(12).child(h_flex().when(!!m.right, (el) => el.justify_end())
+          .child(div().px(6).rounded(4).cursor_pointer().text_size(11).text_color(done ? t.done : t.dim).hover((s) => s.bg(t.raised)).child(done ? "✓ Copied" : `⧉ ${m.label}`)));
+      }
       case "thought": {
         const open = this.expanded[m.id];
         const text = open ? m.text : m.text.split("\n").slice(-2).join(" ").slice(-240);

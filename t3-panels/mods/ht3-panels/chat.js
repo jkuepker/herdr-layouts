@@ -24,6 +24,25 @@ const DETAIL_MAX = 4000;
 const TOOL_GLYPH = { read: "eye", edit: "square-pen", delete: "trash-2", move: "file", search: "search", execute: "terminal", think: "brain", fetch: "globe", switch_mode: "list-todo", other: "wrench" };
 const OPTION_GLYPH = { model: "sparkles", mode: "lock", thought_level: "brain" };
 
+// A message's text cut at its fenced code blocks, so each block can carry its own Copy button
+// (chat/MessageCopyButton.tsx, ChatMarkdown's code header): [{ code, lang, text }]. A fence left
+// open (still streaming) is a block to its end.
+export function segments(text) {
+  const out = [];
+  let buf = [], code = null;
+  const flush = () => { if (buf.join("\n").trim()) out.push({ code: false, text: buf.join("\n") }); buf = []; };
+  for (const line of String(text ?? "").split("\n")) {
+    const f = /^ {0,3}(`{3,}|~{3,})\s*([^\s`]*)[^`]*$/.exec(line);
+    if (!code && f) { flush(); code = { fence: f[1], lang: f[2], lines: [] }; }
+    else if (code && f && f[1][0] === code.fence[0] && f[1].length >= code.fence.length && !f[2]) { out.push({ code: true, lang: code.lang, text: code.lines.join("\n") }); code = null; }
+    else if (code) code.lines.push(line);
+    else buf.push(line);
+  }
+  if (code) out.push({ code: true, lang: code.lang, text: code.lines.join("\n") });
+  flush();
+  return out;
+}
+
 export function openLauncher() {
   openOverlay({ mod: MOD, kind: "dialog", width: 512, height: 520 });
 }
@@ -191,6 +210,18 @@ export class ChatPanel {
     if (c === "stop") this.source?.stop();
     if (c.startsWith("choose:")) { const at = c.indexOf("=", 7); if (at > 0) { this.source?.setOption(c.slice(7, at), c.slice(at + 1)); this.picker = null; } }
     if (c.startsWith("fold:")) this.expanded[c.slice(5)] = !this.expanded[c.slice(5)];
+    // For scripts, what the Copy buttons, a right-click and Cmd+V do: copy:last (the last reply),
+    // copy:code (its last code block), copy:<row id>, ctx:last (the right-click menu of the last
+    // reply), paste (the clipboard's text into the message box, at the caret).
+    if (c.startsWith("copy:") || c === "ctx:last") {
+      const items = this.view?.items ?? [], what = c.slice(c.indexOf(":") + 1);
+      const last = [...items].reverse().find((m) => m.kind === "agent");
+      const m = what === "last" || what === "code" ? last : items.find((x) => String(x.id) === what);
+      const text = what === "code" ? segments(m?.text).filter((x) => x.code).pop()?.text : m?.text;
+      if (text != null && c.startsWith("ctx:")) this.copyMenu({ x: 600, y: 300 }, text);
+      else if (text != null) this.copy(cx, `${m.id}:cp`, text);
+    }
+    if (c === "paste") { const text = cx.read_from_clipboard(); if (text) { this.input.replace(text); this.hasText = !!this.input.value().trim(); } }
     cx.notify();
   }
 
@@ -335,7 +366,25 @@ export class ChatPanel {
       at = end;
     }
     // The same note several times running (a session begun anew at each restart) is said once.
-    return rows.filter((m, i) => !(m.kind === "notice" && rows[i - 1]?.kind === "notice" && rows[i - 1].text === m.text));
+    const said = rows.filter((m, i) => !(m.kind === "notice" && rows[i - 1]?.kind === "notice" && rows[i - 1].text === m.text));
+    // A handler can't sit inside a list row (gpui-kit: one on_item_click for the list), so what T3
+    // draws as buttons on a message are rows of their own here: a reply is one row per stretch of
+    // text and per code block, each block under a header row that copies it, and every message
+    // ends in a slim row that copies all of it (chat/MessageCopyButton.tsx).
+    const out = [], lastItem = items[items.length - 1];
+    for (const m of said) {
+      if (m.kind === "agent") {
+        segments(m.text || "(empty response)").forEach((g, i) => {
+          if (g.code) out.push({ id: `${m.id}:h${i}`, kind: "codehead", lang: g.lang, text: g.text });
+          out.push({ id: `${m.id}:s${i}`, kind: "seg", code: g.code, lang: g.lang, text: g.text, whole: m.text });
+        });
+        if (m.text && !(busy && m === lastItem)) out.push({ id: `${m.id}:cp`, kind: "copy", text: m.text });
+      } else if (m.kind === "user") {
+        out.push(m);
+        if (!m.pending) out.push({ id: `${m.id}:cp`, kind: "copy", text: m.text, right: true });
+      } else out.push(m);
+    }
+    return out;
   }
 
   timeline(k, v) {
@@ -354,11 +403,18 @@ export class ChatPanel {
           const m = rows.find((r) => r.id === id);
           if (!m) return;
           if (m.kind === "earlier") return this.source.earlier?.(cx);
+          if (m.kind === "copy" || m.kind === "codehead") return this.copy(cx, id, m.text);
           if (m.kind === "fold") { this.expanded[id] = !this.expanded[id]; return cx.notify(); }
           if (m.kind !== "tool" && m.kind !== "thought") return;
           this.expanded[id] = !this.expanded[id];
           if (this.expanded[id]) this.source.expand(cx, m);
           cx.notify();
+        })
+        // A right-click on a message, a thought or a tool's output: Copy, for all of it.
+        .on_item_secondary_click((id, e) => {
+          const m = rows.find((r) => r.id === id);
+          const text = !m ? null : m.kind === "seg" ? m.whole : m.kind === "tool" ? m.detail : ["user", "thought", "codehead", "copy", "notice"].includes(m.kind) ? m.text : null;
+          if (text) this.copyMenu(e.position, text);
         }))
       .child(Scrollbar.vertical("ht3-chat-rows").absolute().inset_0())
       // chat/TimelineOverlays.tsx: the glass pill over the end of the lane.
@@ -367,6 +423,27 @@ export class ChatPanel {
           .bg(k.card).shadow_sm().text_size(12).font_medium().cursor_pointer().role("button").accessibility_label("Scroll to end").hover((s) => s.border_color(k.border))
           .on_click((_e, cx) => { this.follow = true; this.scroll.scroll_to_bottom(); cx.notify(); })
           .child(icon("chevron-down").size(14)).child("Scroll to end"))));
+  }
+
+  // Copies, and the button that did shows a check for a moment (chat/MessageCopyButton.tsx).
+  copy(cx, id, text) {
+    cx.write_to_clipboard(String(text ?? ""));
+    this.copied = id;
+    cx.notify();
+    cx.timer.after(1500, (cx) => { if (this.copied === id) { this.copied = null; cx.notify(); } });
+  }
+
+  // The mark of a row that copies: the icon, a check for a moment once it did.
+  copyMark(k, id, label = null) {
+    const done = this.copied === id;
+    return h_flex().h(20).px(4).gap(4).flex_none().items_center().rounded(4).cursor_pointer().text_size(12).text_color(done ? k.successText : alpha(k.muted, 0.8))
+      .hover((s) => s.bg(k.accent).text_color(done ? k.successText : k.foreground))
+      .child(icon(done ? "check" : "copy").size(12).flex_none()).when(label != null || done, (el) => el.child(done ? "Copied" : label));
+  }
+
+  // A right-click on a message: a one-row Copy menu at the pointer (menus.js CopyMenu).
+  copyMenu(at, text) {
+    openOverlay({ mod: MOD, kind: "popup", at: { x: at.x, y: at.y }, width: 160, height: 36, props: { menu: "copy", text: String(text ?? "").slice(0, 400000) } });
   }
 
   // One timeline row in the lane. Rows carry their own space below, as T3's do (16 after a
@@ -380,9 +457,18 @@ export class ChatPanel {
       case "user":
         return lane(h_flex().w_full().justify_end()
           .child(div().max_w("80%").min_w(0).p(12).rounded(16).bg(k.message).text_size(14).line_height("23px")
-            .when(m.pending, (el) => el.opacity(0.6)).child(m.text)), 16);
-      case "agent":
-        return lane(div().px(4).py(2).text_size(14).line_height("23px").child(TextView.markdown(`md-${m.id}`, m.text || "(empty response)").selectable(true)), 16);
+            .when(m.pending, (el) => el.opacity(0.6)).child(m.text)), m.pending ? 16 : 2);
+      case "seg":
+        // A stretch of a reply: text you can select, or one code block (under its header row).
+        return lane(div().px(4).py(m.code ? 0 : 2).text_size(14).line_height("23px")
+          .child(TextView.markdown(`md-${m.id}`, m.code ? "```" + m.lang + "\n" + m.text + "\n```" : m.text).selectable(true)), 4);
+      case "codehead":
+        // ChatMarkdown's code header: Copy at the right (the block names its language itself).
+        return lane(h_flex().mx(4).mt(4).h(28).pl(12).pr(6).items_center().justify_end().rounded_t(8).border(1).border_color(alpha(k.border, 0.6)).bg(alpha(k.muted, 0.08))
+          .child(this.copyMark(k, m.id, "Copy")), 0);
+      case "copy":
+        // chat/MessageCopyButton.tsx, under the message: its right edge for yours, its left for a reply.
+        return lane(h_flex().w_full().px(m.right ? 0 : 2).when(!!m.right, (el) => el.justify_end()).child(this.copyMark(k, m.id)), 12);
       case "thought": {
         const open = this.expanded[m.id];
         // T3: the thought itself on one muted line; it opens to the whole of it.
