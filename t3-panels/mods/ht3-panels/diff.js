@@ -239,7 +239,11 @@ export class DiffPanel {
     this.follow(cx);
     // A chat's "View diff" on a turn (chat.js turnDiff): that turn's two snapshots, as a third scope.
     const turn = shared("ht3-panels.turn");
-    if (turn && turn.at !== this.turn?.at) { this.turn = turn; this.scope = "turn"; this.files = null; this.stale = true; }
+    // Only a fresh request: a Diff opened later starts on Changes, not on a turn someone looked at before.
+    if (turn && turn.at !== this.turnSeen) {
+      this.turnSeen = turn.at;
+      if (Date.now() - turn.at < 15000) { this.turn = turn; this.scope = "turn"; this.files = null; this.stale = true; }
+    }
     if (this.stale) this.refresh(cx);
     const k = tokens(), colors = syntax();
     const root = v_flex().id("ht3-diff").size_full().min_h(0).bg(k.background).text_color(k.foreground).text_size(12);
