@@ -13,7 +13,7 @@ export const AGENTS = [
   { id: "omp", name: "Oh My Pi", argv: ["omp", "acp"] },
   { id: "pi", name: "Pi", argv: ["pi-acp"], hint: "npm i -g pi-acp" },
   { id: "opencode", name: "OpenCode", argv: ["opencode", "acp"] },
-  { id: "claude", name: "Claude Code", argv: ["claude-code-acp"], hint: "npm i -g @zed-industries/claude-code-acp" },
+  { id: "claude", name: "Claude Code", argv: ["claude-agent-acp"], hint: "npm i -g @agentclientprotocol/claude-agent-acp" },
   { id: "codex", name: "Codex", argv: ["codex-acp"], hint: "github.com/zed-industries/codex-acp" },
   { id: "gemini", name: "Gemini CLI", argv: ["gemini", "--experimental-acp"] },
 ];

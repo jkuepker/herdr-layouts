@@ -53,7 +53,7 @@ The pane uses the theme's colours throughout (`surface` behind, `chrome` for the
 - Herdr keys a mod copy's `localStorage` by a hash of its props, so two panes opened with the same props share it: that's why every chat pane gets its own `chat` prop.
 - `list` rows can't hold their own click handlers: item clicks go through `on_item_click` by key, so the approval buttons live outside the list.
 - Agents differ: OpenCode doesn't ask before running tools by default; omp's default model may be one you have no access to (pick another in the Model chip). Some agents echo your message as `user_message_chunk`; the bridge ignores those while its own turn runs.
-- Pi, Claude Code and Codex need their ACP adapters installed separately (`pi-acp`, `claude-code-acp`, `codex-acp`).
+- Pi, Claude Code and Codex need their ACP adapters installed separately (`pi-acp`, `claude-agent-acp`, `codex-acp`).
 
 ## Done when
 
