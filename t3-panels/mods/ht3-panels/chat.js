@@ -419,7 +419,7 @@ export class ChatPanel {
     const s = this.source?.state;
     if (this.reporter && s) this.reporter.update(s.permission && this.source.alive ? "blocked" : this.source.word(), s.agentArgv, s.agentInfo?.title ?? s.agentInfo?.name,
       this.named() ?? s.transcript.items.find((m) => m.kind === "user")?.text,
-      { cwd: s.cwd, machine: s.machine ?? null, crumb: this.crumb({ cwd: s.cwd, machine: s.machine, items: s.transcript.items, status: this.source.word(), permission: s.permission, usage: s.transcript.usage, name: "Agent" }) });
+      { cwd: s.cwd, machine: s.machine ?? null, ask: s.permission?.title ?? null, crumb: this.crumb({ cwd: s.cwd, machine: s.machine, items: s.transcript.items, status: this.source.word(), permission: s.permission, usage: s.transcript.usage, name: "Agent" }) });
   }
 
   // An approval the agent waits for: told to the lists (shared "ht3-panels.asks", report.js) so the Inbox card can

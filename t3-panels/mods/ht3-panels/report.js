@@ -11,9 +11,10 @@
 // `keep: true` in the program tells them a chat pane is never theirs to close: Settle puts its card away and no more.
 // A chat of a terminal agent (props.terminal) reports nothing: its terminal already does.
 
-import { shared, setShared, spaces, panes, focused, window, machines } from "herdr";
+import { shared, setShared, spaces, panes, focused, window, machines, notify, playSound } from "herdr";
 import { MOD } from "./look.js";
 import { agentOf } from "./agent-acp.js";
+import { toastsOn, soundsOn } from "./settings.js";
 
 const STATUS = `${MOD}.status`, TITLES = `${MOD}.titles`, PROGRAM = `${MOD}.program`, PLACES = `${MOD}.places`, PROGRAMS = `${MOD}.programs`, TURNS = `${MOD}.turns`;
 const PROGRAM_IS = { name: "Chat", icon: `mods/${MOD}/icons/message-square.svg`, tint: true, inbox: true, keep: true };
@@ -147,7 +148,20 @@ export class Reporter {
     const line = String(thread ?? "").trim().split("\n")[0];
     this.title = line ? (line.length > 80 ? line.slice(0, 80) + "…" : line)
       : tab?.named && tab.name && tab.name.toLowerCase() !== name.toLowerCase() ? `${name} · ${tab.name}` : name;
+    // Herdr toasts a terminal agent that ends or asks while it isn't looked at; a chat's agent has no terminal,
+    // so the chat does: once per turn that ended unseen, once per approval. A click on the toast shows the chat.
+    const told = this.word === "done" && was !== "done" ? "done" : this.word === "blocked" && was !== "blocked" && !this.looking() ? "blocked" : null;
+    if (told) this.tell(told, name, more.ask);
     this.publish();
+  }
+
+  tell(what, name, ask) {
+    const space = spaces().find((x) => x.tabs.some((c) => c.id === this.tab));
+    if (toastsOn()) {
+      notify({ title: what === "done" ? `${name} finished` : `${name} needs you`, body: [what === "blocked" && ask ? ask : this.title, space?.name].filter(Boolean).join(" · "),
+        level: what === "done" ? "success" : "warning", ...(this.program?.icon ? { icon: this.program.icon } : {}), action: { name: "pane.focus", args: { pane: this.pane } } });
+    }
+    if (soundsOn()) playSound(what);
   }
 
   // From the view's timer and its drawing: a "done" that is looked at.

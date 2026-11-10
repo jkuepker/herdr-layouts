@@ -15,7 +15,7 @@ import { closeOverlay } from "herdr";
 import { tokens, alpha, icon, agentMark, button, iconButton, shortPath } from "./look.js";
 import { AGENTS, detect } from "./agent-acp.js";
 import { EDITORS, editors } from "./menus.js";
-import { prefs, agentOn, modelsOf, knownModels, editorOn, sideStartsHidden, firstAgent, setPref, settingsFile, followUp, checkpointsOn } from "./settings.js";
+import { prefs, agentOn, modelsOf, knownModels, editorOn, sideStartsHidden, firstAgent, setPref, settingsFile, followUp, checkpointsOn, toastsOn, soundsOn } from "./settings.js";
 
 export const SETTINGS_SIZE = { width: 640, height: 680 };
 
@@ -50,6 +50,8 @@ export class Settings {
     else if (what === "side") this.flipSide();
     else if (what === "steer") setPref("followUp", followUp() === "steer" ? undefined : "steer");
     else if (what === "checkpoints") setPref("checkpoints", checkpointsOn() ? false : undefined);
+    else if (what === "notifications") setPref("notifications", toastsOn() ? false : undefined);
+    else if (what === "sounds") setPref("sounds", soundsOn() ? undefined : true);
     else if (what === "close") closeOverlay(this.overlay);
     cx.notify();
   }
@@ -179,7 +181,11 @@ export class Settings {
           [this.row(icon("rows-2").size(16).flex_none().text_color(k.muted), "Steer instead of queue", "A message sent while the agent works interrupts it. Off: it waits for the turn to end.",
             [this.toggle(k, "set-steer", followUp() === "steer", "Steer instead of queue", () => setPref("followUp", followUp() === "steer" ? undefined : "steer"))]),
           this.row(icon("rotate-ccw").size(16).flex_none().text_color(k.muted), "Checkpoints", "In a Git repository, snapshot the files before and after each turn, for its diff and for Revert.",
-            [this.toggle(k, "set-checkpoints", checkpointsOn(), "Checkpoints", () => setPref("checkpoints", checkpointsOn() ? false : undefined))])]))
+            [this.toggle(k, "set-checkpoints", checkpointsOn(), "Checkpoints", () => setPref("checkpoints", checkpointsOn() ? false : undefined))]),
+          this.row(icon("bell").size(16).flex_none().text_color(k.muted), "Notify", "A notification when a chat you aren't looking at finishes or needs an approval. A click on it shows the chat.",
+            [this.toggle(k, "set-notifications", toastsOn(), "Notify", () => setPref("notifications", toastsOn() ? false : undefined))]),
+          this.row(icon("volume-2").size(16).flex_none().text_color(k.muted), "Sound", "Play Herdr's done or blocked sound then.",
+            [this.toggle(k, "set-sounds", soundsOn(), "Sound", () => setPref("sounds", soundsOn() ? undefined : true))])]))
         .child(this.section(k, "Side panel", "How the right panel comes up.",
           [this.row(icon("panel-right").size(16).flex_none().text_color(k.muted), "Start hidden in new spaces", "A space shown for the first time comes up without the side panel.",
             [this.toggle(k, "set-side", sideStartsHidden(), "Start hidden in new spaces", () => this.flipSide())])])))

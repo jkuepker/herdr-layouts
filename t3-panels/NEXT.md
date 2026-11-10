@@ -28,6 +28,8 @@ Ranked from a survey of /opt/code/t3code/apps/web/src and apps/server/src agains
 
 - Approvals from the Inbox card (Approve, Always allow, Decline) and "Always allow this session" in the drawer with Ask again. Left: the buttons were driven by command, not clicked; always-allow is forgotten on a reload; the Agents list rows have no buttons, only the Inbox cards; a terminal agent's chat has none.
 
+- Notifications for chat tabs: a toast (click shows the chat) and an optional sound when a hidden chat finishes or needs an approval; two switches in Settings → Chats. Left: the toast's click was run as its command (`pane.focus`), not clicked; the sound was triggered but not listened to; a chat in a space that was never shown since the app started has no running agent, so it has nothing to tell.
+
 ## Candidates
 
 Each entry: what it does / T3 location / mod API support / value for multi-machine agent users / effort.

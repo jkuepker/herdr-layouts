@@ -11,6 +11,7 @@
 // - agents.<id>.models (absent: all): the models that agent's chats list in their model picker.
 // - defaultAgent (absent: the first installed): the agent those two come up with.
 // - editors.<id> (true): whether the Project popover lists that editor (ids: menus.js EDITORS).
+// - notifications (true): a toast when a chat that isn't looked at finishes or needs an approval; sounds (false): a sound then.
 // - sidePanelHiddenInNewSpaces (false): a space shown for the first time starts with the side panel hidden.
 // Anything left out is its default; unknown keys are kept as they are.
 
@@ -41,6 +42,10 @@ export const editorOn = (id) => plain(prefs().editors)[id] !== false;
 export const sideStartsHidden = () => prefs().sidePanelHiddenInNewSpaces === true;
 // "checkpoints": false turns the per-turn snapshots (checkpoint.js) off.
 export const checkpointsOn = () => prefs().checkpoints !== false;
+// "notifications": false: no toast when a chat that isn't looked at ends its turn or asks for an approval.
+// "sounds": true: Herdr's done / blocked sound with it (or alone).
+export const toastsOn = () => prefs().notifications !== false;
+export const soundsOn = () => prefs().sounds === true;
 // "followUp": "steer" makes a message sent while the agent works interrupt it; the default queues it.
 export const followUp = () => (prefs().followUp === "steer" ? "steer" : "queue");
 
