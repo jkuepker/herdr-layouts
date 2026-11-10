@@ -6,6 +6,7 @@ import { div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { exec, shared, setShared } from "herdr";
 import { tokens, alpha, icon, button, iconButton } from "./look.js";
+import { showing } from "./side.js";
 
 const RECENT = "ht3-browser.recent";
 
@@ -24,14 +25,16 @@ export function openUrl(url) {
 }
 
 export class BrowserPanel {
-  init(_p, cx) {
+  init(p, cx) {
+    this.group = p.group ?? "a";
     this.input = InputState.new({ placeholder: "Enter a URL, or localhost:3000" });
     this.input.on("submit", (_e, cx) => this.go(cx));
     this.input.on("change", (_e, cx) => { this.error = null; cx.notify(); });
     this.servers = null;
     this.error = null;
     this.scan(cx);
-    cx.timer.every(15000, (cx) => this.scan(cx));
+    // Looks for servers only while the tab shows.
+    cx.timer.every(15000, (cx) => { if (showing(this.group, "browser")) this.scan(cx); });
   }
   close() {}
   command() {}

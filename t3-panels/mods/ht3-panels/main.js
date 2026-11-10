@@ -13,21 +13,19 @@
 import { View } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { props, nextCommand, run, openOverlay, shared, setShared } from "herdr";
-import { tokens, iconButton } from "./look.js";
+import { MOD, tokens, iconButton } from "./look.js";
 import { ChatPanel, openLauncher } from "./chat.js";
 import { FilePanel } from "./editor.js";
 import { Launcher } from "./launcher.js";
-import { Strip } from "./strip.js";
+import { Strip, ADD_MENU } from "./strip.js";
 import { AddMenu, ProjectMenu } from "./menus.js";
 import { DiffPanel } from "./diff.js";
 import { PrPanel } from "./pr.js";
 import { BrowserPanel } from "./browser.js";
-import { SideChat } from "./sidechat.js";
+import { SideChat, beginChat } from "./sidechat.js";
 import { Empty } from "./empty.js";
-import { beginChat } from "./sidechat.js";
 import { detect } from "./agent-acp.js";
-import { SIDE, read, sideShown, bottomShown, reconcile, sweep, toggleMax, toggleBottom, toggleSplit, openSurface, closeTab, activate, activeSpace, spaceState } from "./side.js";
-import { MOD } from "./look.js";
+import { SIDE, read, sideShown, bottomShown, reconcile, keep, toggleMax, toggleBottom, toggleSplit, openSurface, openBottom, closeTab, activate, activeSpace } from "./side.js";
 
 export { SIDE };
 
@@ -36,21 +34,24 @@ export { SIDE };
 class Buttons {
   init(_p, cx) {
     this.space = null;
-    cx.timer.every(1000, (cx) => { reconcile(); sweep(cx); });
+    cx.spawn((cx) => keep(cx));
   }
   close() {}
 
   // Commands for keys.json and scripts (`herdr-app do "ht3-panels.<command>"`; this copy is always
-  // shown): add:<kind>[:<group>], activate:<group>:<tab id>, close:<group>:<tab id>, split, max,
-  // bottom, chat:<agent id>[:<group>] (starts the group's side chat with that agent), menu:add[:<group>], menu:project, pin:<folder> (the folder Files, Diff and the pull
-  // request surfaces look at for the shown space; pin: with none goes back to the terminal's).
+  // shown), and for the panel's other copies, which send them here (side.js): add:<kind>[:<group>]
+  // (add:terminal:bottom: the bottom panel's terminal), activate:<group>:<tab id>,
+  // close:<group>:<tab id>, split, max, bottom, chat:<agent id>[:<group>] (starts the group's side
+  // chat with that agent), menu:add[:<group>], menu:project, pin:<folder> (the folder Files, Diff
+  // and the pull request surfaces look at for the shown space; pin: with none goes back to the
+  // terminal's).
   command(c, cx) {
     const [name, a, b] = c.split(":");  // (pin keeps its whole path)
     const fail = (e) => console.log(`ht3-panels.${c}: ${String(e?.message ?? e)}`);
-    if (name === "add") cx.spawn(async (cx) => { try { await openSurface(cx, b ?? "a", a); } catch (e) { fail(e); } cx.notify(); });
+    if (name === "add") cx.spawn(async (cx) => { try { await (b === "bottom" ? openBottom() : openSurface(b ?? "a", a)); } catch (e) { fail(e); } cx.notify(); });
     else if (name === "activate") activate(a, b);
-    else if (name === "close") cx.spawn(async (cx) => { try { await closeTab(cx, a, b); } catch (e) { fail(e); } cx.notify(); });
-    else if (name === "split") cx.spawn(async (cx) => { try { await toggleSplit(cx); } catch (e) { fail(e); } cx.notify(); });
+    else if (name === "close") cx.spawn(async (cx) => { try { await closeTab(a, b); } catch (e) { fail(e); } cx.notify(); });
+    else if (name === "split") cx.spawn(async (cx) => { try { await toggleSplit(); } catch (e) { fail(e); } cx.notify(); });
     else if (name === "chat") cx.spawn(async (cx) => { const d = await detect(activeSpace()?.machine ?? null); beginChat(b ?? "a", a, d.found); cx.notify(); });
     else if (name === "max") toggleMax();
     else if (name === "pin") {
@@ -58,8 +59,8 @@ class Buttons {
       if (dir) all[sp?.id ?? ""] = { root: dir, on: sp?.machine ?? null }; else delete all[sp?.id ?? ""];
       setShared("ht3-files.pinned", all);
     }
-    else if (name === "bottom") cx.spawn(async (cx) => { try { await toggleBottom(cx); } catch (e) { fail(e); } cx.notify(); });
-    else if (name === "menu") openOverlay({ mod: MOD, kind: "popup", at: { x: 900, y: 48 }, width: a === "project" ? 344 : 296, height: a === "project" ? 460 : 296, props: { menu: a, group: b ?? "a" } });
+    else if (name === "bottom") cx.spawn(async (cx) => { try { await toggleBottom(); } catch (e) { fail(e); } cx.notify(); });
+    else if (name === "menu") openOverlay({ mod: MOD, kind: "popup", at: { x: 900, y: 48 }, width: a === "project" ? 344 : ADD_MENU.w, height: a === "project" ? 460 : ADD_MENU.h, props: { menu: a, group: b ?? "a" } });
     cx.notify();
   }
 
@@ -71,7 +72,7 @@ class Buttons {
     return h_flex().id("ht3-panel-buttons").size_full().gap(4).items_center().justify_end().pr(4)
       .child(iconButton(k, "open-chat", "message-square", () => openLauncher(), { size: "sm", tip: "New chat (Cmd+Shift+O)" }))
       .child(iconButton(k, "side-max", maxed ? "minimize-2" : "maximize-2", () => toggleMax(), { size: "sm", on: maxed && shown, tip: maxed ? "Restore the panel" : "Maximize the panel" }))
-      .child(iconButton(k, "side-bottom", "panel-bottom", (cx) => { cx.spawn(async (cx) => { try { await toggleBottom(cx); } catch (e) { console.log(String(e?.message ?? e)); } cx.notify(); }); }, { size: "sm", on: bottomShown() === true, ring: true, tip: "Toggle the bottom panel" }))
+      .child(iconButton(k, "side-bottom", "panel-bottom", (cx) => { cx.spawn(async (cx) => { try { await toggleBottom(); } catch (e) { console.log(String(e?.message ?? e)); } cx.notify(); }); }, { size: "sm", on: bottomShown() === true, ring: true, tip: "Toggle the bottom panel" }))
       .child(iconButton(k, "open-files", "panel-right", () => run("layout.toggle", { id: SIDE }), { size: "sm", on: shown, ring: true, tip: "Right panel (Cmd+Shift+E)" }));
   }
 }

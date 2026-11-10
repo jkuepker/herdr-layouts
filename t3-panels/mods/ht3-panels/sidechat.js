@@ -8,7 +8,7 @@ import { v_flex, h_flex } from "gpui-base";
 import { exec, appHome } from "herdr";
 import { MOD, tokens, alpha, icon, button } from "./look.js";
 import { ChatPanel } from "./chat.js";
-import { AGENTS, detect, argvOf } from "./agent-acp.js";
+import { AGENTS, detect } from "./agent-acp.js";
 import { GROUPS, read, change, activeSpace, placeOf } from "./side.js";
 
 const newId = () => "side-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
@@ -47,14 +47,18 @@ export class SideChat {
     });
   }
 
-  // Stops the chats whose tab is gone (this copy is not drawn while another tab shows).
+  // Stops the chats whose tab left this group (this copy is not drawn while another tab shows). A
+  // tab that moved to the other group (the groups merged) is run by that group's copy from then
+  // on, so two agents never answer for one chat; only a closed chat's saved conversation goes.
   sweep(cx) {
-    const live = new Set(GROUPS.flatMap((g) => Object.values(read().spaces).flatMap((s) => s[g].tabs.map((t) => t.chat?.id).filter(Boolean))));
+    const ids = (groups) => new Set(groups.flatMap((g) => Object.values(read().spaces).flatMap((s) => (s[g]?.tabs ?? []).map((t) => t.chat?.id).filter(Boolean))));
+    const here = ids([this.group]), anywhere = ids(GROUPS);
     for (const [id, panel] of this.panels) {
-      if (live.has(id)) continue;
+      if (here.has(id)) continue;
       this.panels.delete(id);
-      // Closing a side chat ends it: its saved conversation goes too.
-      panel.close(cx).then(() => exec("rm", ["-rf", `${appHome()}/data/${MOD}/chats/${id}`])).catch(() => {});
+      const done = panel.close(cx);
+      if (!anywhere.has(id)) done.then(() => exec("rm", ["-rf", `${appHome()}/data/${MOD}/chats/${id}`])).catch(() => {});
+      else done.catch(() => {});
     }
   }
 
@@ -66,7 +70,7 @@ export class SideChat {
     for (const panel of this.panels.values()) panel.command?.(c, cx);
   }
 
-  start(cx, tab) {
+  start(cx) {
     beginChat(this.group, this.choice, this.found);
     cx.notify();
   }
@@ -113,6 +117,6 @@ export class SideChat {
       .when(!this.found, (el) => el.child(div().text_size(12).text_color(k.muted).child("Looking for installed agents…")))
       .when(!!this.error, (el) => el.child(div().text_size(12).text_color(k.destructiveText).child(this.error)))
       .child(v_flex().gap(2).children(AGENTS.map(row)))
-      .child(h_flex().pt(8).child(button(k, "sc-start", "Start chat", (cx) => this.start(cx, tab), { variant: "default", size: "default", disabled: !this.choice })));
+      .child(h_flex().pt(8).child(button(k, "sc-start", "Start chat", (cx) => this.start(cx), { variant: "default", size: "default", disabled: !this.choice })));
   }
 }

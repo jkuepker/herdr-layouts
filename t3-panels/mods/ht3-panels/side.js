@@ -7,12 +7,17 @@
 //
 // State is one shared value, `ht3-side.state`, kept by Herdr across reloads:
 //   { v: 1, max: false, spaces: { <space id>: { split, w (the panel's px), ha (the first group's px), a: { tabs, active }, b: { tabs, active }, bottom } } }
-// A tab is { id, kind, addr? }: kind is files, diff, pr, prs, browser, chat or terminal (addr: the
-// terminal's address). `bottom` is the address of the space's bottom-panel terminal, or null.
+// A tab is { id, kind, addr?, n?, at?, chat? }: kind is files, diff, pr, prs, browser, chat or terminal
+// (addr: the terminal's address, n: its number, at: when it started). `bottom` is the address of the
+// space's bottom-panel terminal, or null.
+//
+// The state is the truth and the layout file follows it: a terminal tab is written to the state,
+// and syncBlocks() gives every terminal tab its block and removes the blocks no tab holds.
 
-import { shared, setShared, spaces, layout, run, hc, appHome, readTextFile, writeTextFile, terminals, focused, panes, home } from "herdr";
+import { MOD } from "./look.js";
+import { shared, setShared, spaces, machines, layout, run, notify, hc, appHome, readTextFile, writeTextFile, terminals, focused, panes, home } from "herdr";
 
-export const SIDE = "ht3-side", CENTER = "ht3-center", BOTTOM = "ht3-bottom", BOTTOM_EMPTY = "ht3-bottom-empty", WORK_BODY = "work-body";
+export const SIDE = "ht3-side", CENTER = "ht3-center", BOTTOM = "ht3-bottom", BOTTOM_EMPTY = "ht3-bottom-empty";
 export const KEY = "ht3-side.state";
 export const GROUPS = ["a", "b"];
 
@@ -48,10 +53,10 @@ export function change(id, mut) {
   setShared(KEY, all);
   return st;
 }
+// `mut` may return false to say it changed nothing.
 export function changeAll(mut) {
   const all = clone(read());
-  mut(all);
-  setShared(KEY, all);
+  if (mut(all) !== false) setShared(KEY, all);
 }
 
 export const activeSpace = () => spaces().find((s) => s.active) ?? null;
@@ -67,6 +72,12 @@ export function childId(g, tab) {
   return g === "a" && tab.kind === "files" ? "ht3-files" : `ht3-${g}-${tab.kind}`;
 }
 export const activeTab = (st, g) => st[g].tabs.find((t) => t.id === st[g].active) ?? null;
+// Whether a group shows this kind of surface now: the faces stay alive behind other tabs, and
+// ask before they poll.
+export function showing(group, kind) {
+  const st = spaceState(activeSpace()?.id);
+  return sideShown() === true && (group === "a" || st.split) && activeTab(st, group)?.kind === kind;
+}
 
 export function find(node, id) {
   if (!node || typeof node !== "object") return null;
@@ -94,28 +105,104 @@ export function placeOf(space) {
   return { on: space?.machine ?? null, cwd: pane?.cwd || f?.cwd || other?.cwd || space?.folder || (space?.machine ? null : home()) };
 }
 
+// ---- the keeper's jobs ----
+
+// Everything here that takes time (starting or ending a terminal, writing the layout file) runs in
+// the keeper: the buttons block of main.js, which is always there, one job after the other.
+// Another copy must not start such work, nor hand the keeper a function to run: what a copy
+// started is dropped when it closes (the `+` menu closes itself), and a keeper waiting on it would
+// wait for ever. So the other copies send() the keeper a command, the same ones scripts use
+// (main.js: add, close, split, bottom), and only the keeper calls the functions below that ask().
+export const send = (command) => { run(`${MOD}.${command}`); };
+
+const jobs = [];
+let wake = null;
+function ask(job) {
+  return new Promise((resolve, reject) => { jobs.push({ job, resolve, reject }); wake?.(); });
+}
+const sleep = (cx, ms) => new Promise((r) => cx.timer.after(ms, () => r()));
+
+// The keeper's loop: the jobs asked for, then the layout made to match the state, once a second
+// and at once when a job arrives. A failed job says so in a toast.
+export async function keep(cx) {
+  for (let tick = 0; ; tick++) {
+    while (jobs.length) {
+      const j = jobs.shift();
+      try { j.resolve(await j.job(cx)); } catch (e) { notify({ title: "Side panel", body: String(e?.message ?? e), level: "error" }); j.reject(e); }
+    }
+    try {
+      reconcile();
+      await syncBlocks();
+      if (tick % 4 === 0) await sweep();
+    } catch (e) { console.log(`ht3-panels: ${String(e?.message ?? e)}`); }
+    if (!jobs.length) await new Promise((r) => { wake = r; cx.timer.after(1000, () => r()); });
+  }
+}
+
 // ---- the layout file ----
 
 const layoutPath = () => `${appHome()}/layouts/${shared("layout")}.json`;
+const OURS = /^ht3-b?term-/;
 
-// One edit of the layout file, written only if it is unchanged since read (else read again).
-async function editLayout(mutate) {
-  for (let i = 0; ; i++) {
+// The terminal blocks the state asks for: block id -> { stack, addr }.
+function wantedBlocks() {
+  const want = new Map();
+  for (const st of Object.values(read().spaces)) {
+    for (const g of GROUPS) for (const t of st[g]?.tabs ?? []) if (t.kind === "terminal") want.set(termBlock(t.addr), { stack: bodyId(g), addr: t.addr });
+    if (st.bottom) want.set(bottomBlock(st.bottom), { stack: BOTTOM, addr: st.bottom });
+  }
+  return want;
+}
+
+// Makes a layout tree's terminal blocks match: a block per terminal tab in its group's stack (it
+// follows its tab when the groups merge), none without a tab. Says whether anything changed.
+function settle(tree, want) {
+  let changed = false;
+  const have = new Set();
+  for (const id of [bodyId("a"), bodyId("b"), BOTTOM]) {
+    const stack = find(tree, id);
+    if (!stack?.children) continue;
+    const keep = stack.children.filter((c) => {
+      if (!OURS.test(c.id ?? "")) return true;
+      const w = want.get(c.id);
+      if (!w || w.stack !== id || have.has(c.id)) return false;
+      have.add(c.id);
+      return true;
+    });
+    if (keep.length !== stack.children.length) { stack.children = keep; changed = true; }
+  }
+  for (const [id, w] of want) {
+    const stack = have.has(id) ? null : find(tree, w.stack);
+    if (!stack?.children) continue;
+    stack.children.push({ id, type: "block", content: { terminal: w.addr } });
+    changed = true;
+  }
+  return changed;
+}
+
+// The only writer of the layout file here. It writes what the state says, whatever was there:
+// read, change, and write only if the file is still as read (else read again), so an edit by
+// another mod (ht3-chrome moves the window buttons on zoom) or by hand in between is kept. Run
+// twice, the second run changes nothing. Herdr's own clicks (sizes, shown, a stack's child) go to
+// layouts/.state/, not to this file.
+async function syncBlocks() {
+  if (shared(KEY)?.v !== 1 || !find(layout(), SIDE)) return;
+  if (!settle(clone(layout()), wantedBlocks())) return;
+  for (let i = 0; i < 5; i++) {
     const text = await readTextFile(layoutPath());
     const tree = JSON.parse(text ?? "null");
     if (!tree) throw new Error("The layout file is unreadable.");
-    if (mutate(tree) === false) return;
-    try { await writeTextFile(layoutPath(), JSON.stringify(tree, null, 2), text); return; }
-    catch (e) { if (i >= 2) throw e; }
+    if (!settle(tree, wantedBlocks())) return;
+    try { await writeTextFile(layoutPath(), JSON.stringify(tree, null, 2), text); return; } catch (e) { if (i === 4) throw e; }
   }
 }
 async function waitFor(test, cx) {
-  for (let i = 0; i < 40 && !test(); i++) await new Promise((r) => cx.timer.after(100, () => r()));
+  for (let i = 0; i < 40 && !test(); i++) await sleep(cx, 100);
   return test();
 }
 
 async function startTerminal(space, cwd, on) {
-  const args = ["run", "--bg", "--json", "--no-parent", "--keep", "--label", `ht3.side=${space.id.replace(/^.*\//, "")}`];
+  const args = ["run", "--bg", "--json", "--no-parent", "--keep", "--label", `ht3.side=${space.id.replace(/^.*\//, "")}`, "--label", `ht3.home=${appHome()}`];
   if (on) args.push("--on", on);
   if (cwd) args.push("--cwd", cwd);
   const r = await hc(args);
@@ -127,61 +214,41 @@ async function endTerminal(addr) {
   await hc(["kill", addr]).catch(() => {});
   await hc(["rm", addr]).catch(() => {});
 }
-async function addBlock(stack, id, addr, cx) {
-  await editLayout((tree) => {
-    const body = find(tree, stack);
-    if (!body) throw new Error("This layout has no side panel.");
-    if (body.children.some((c) => c.id === id)) return false;
-    body.children.push({ id, type: "block", content: { terminal: addr } });
-  });
-  await waitFor(() => find(layout(), id), cx);
-}
-async function dropBlocks(ids) {
-  if (!ids.length) return;
-  await editLayout((tree) => {
-    let did = false;
-    for (const id of ids) {
-      const parent = (function up(n) { for (const c of n.children ?? []) { if (c.id === id) return n; const r = up(c); if (r) return r; } return null; })(tree);
-      if (parent) { parent.children = parent.children.filter((c) => c.id !== id); did = true; }
-    }
-    return did;
-  });
-}
 
 // ---- tabs ----
 
 // Opens a surface in a group of the shown space: an open one of the same kind is shown instead.
-export async function openSurface(cx, group, kind, extra = {}) {
+// A terminal takes a moment: the promise settles when it shows (or says why it didn't start).
+// The keeper's: other copies send(`add:<kind>:<group>`).
+export function openSurface(group, kind) {
   const space = activeSpace();
-  if (!space) return;
-  if (kind === "terminal") return openTerminal(cx, group, space);
-  const id = kind;
+  if (!space || !GROUPS.includes(group) || !surface(kind) || surface(kind).off) return Promise.resolve();
+  if (kind === "terminal") { const where = placeOf(space); return ask((cx) => openTerminal(cx, group, space, where)); }
   change(space.id, (st) => {
     const g = st[group];
-    if (!g.tabs.some((t) => t.id === id)) g.tabs.push({ id, kind, ...extra });
-    g.active = id;
+    if (!g.tabs.some((t) => t.id === kind)) g.tabs.push({ id: kind, kind });
+    g.active = kind;
   });
   ensureShown();
   reconcile();
+  return Promise.resolve();
 }
 
-async function openTerminal(cx, group, space) {
-  const { on, cwd } = placeOf(space);
-  try {
-    const addr = await startTerminal(space, cwd, on);
-    await addBlock(bodyId(group), termBlock(addr), addr, cx);
-    change(space.id, (st) => {
-      const n = 1 + Math.max(0, ...GROUPS.flatMap((g) => st[g].tabs.map((t) => t.n ?? 0)));
-      st[group].tabs.push({ id: addr, kind: "terminal", addr, n });
-      st[group].active = addr;
-    });
-    ensureShown();
-    reconcile();
-    run("pane.focus", { terminal: addr });
-  } catch (e) {
-    run("layout.show", { id: SIDE });
-    throw e;
-  }
+// The state first, the block second: the tab is there at once and its body follows when Herdr
+// has read the layout file. Stopped halfway, the keeper finishes it (a tab without a block gets
+// one; a terminal without a tab is ended by sweep()).
+async function openTerminal(cx, group, space, { on, cwd }) {
+  const addr = await startTerminal(space, cwd, on);
+  change(space.id, (st) => {
+    const n = 1 + Math.max(0, ...GROUPS.flatMap((g) => st[g].tabs.map((t) => t.n ?? 0)));
+    st[group].tabs.push({ id: addr, kind: "terminal", addr, n, at: Date.now() });
+    st[group].active = addr;
+  });
+  if (activeSpace()?.id === space.id) ensureShown();
+  await syncBlocks();
+  await waitFor(() => find(layout(), termBlock(addr)), cx);
+  reconcile();
+  if (activeSpace()?.id === space.id) run("pane.focus", { terminal: addr });
 }
 
 export function ensureShown() {
@@ -194,12 +261,13 @@ export function activate(group, id) {
   reconcile();
 }
 
-// Closes a tab. A terminal tab ends its terminal.
-export async function closeTab(cx, group, id) {
+// Closes a tab. A terminal tab ends its terminal (its block goes with the tab). The keeper's:
+// other copies send(`close:<group>:<tab id>`).
+export function closeTab(group, id) {
   const space = activeSpace();
   let gone = null;
   change(space?.id, (st) => {
-    const g = st[group], at = g.tabs.findIndex((t) => t.id === id);
+    const g = st[group], at = g?.tabs.findIndex((t) => t.id === id) ?? -1;
     if (at < 0) return;
     gone = g.tabs[at];
     g.tabs.splice(at, 1);
@@ -207,10 +275,7 @@ export async function closeTab(cx, group, id) {
     tidy(st);
   });
   reconcile();
-  if (gone?.kind === "terminal") {
-    await endTerminal(gone.addr);
-    await dropBlocks([termBlock(gone.addr)]).catch(() => {});
-  }
+  return gone?.kind === "terminal" ? ask(() => endTerminal(gone.addr)) : Promise.resolve();
 }
 
 // The second group goes when empty; an empty first group takes the second one's tabs.
@@ -219,24 +284,27 @@ function tidy(st) {
   if (!st.b.tabs.length) st.split = false;
 }
 
-// Shows the second group, with a terminal in it when it has no tabs yet.
-export async function toggleSplit(cx) {
+// Shows the second group, with a terminal in it when it has no tabs yet; again merges its tabs
+// into the first. The keeper's: other copies send("split").
+export function toggleSplit() {
   const space = activeSpace();
-  if (!space) return;
+  if (!space) return Promise.resolve();
   const st = spaceState(space.id);
-  if (st.split) {
-    // Merges the second group's tabs into the first.
-    change(space.id, (s) => {
+  change(space.id, (s) => {
+    if (st.split) {
       for (const t of s.b.tabs) if (!s.a.tabs.some((x) => x.id === t.id)) s.a.tabs.push(t);
       s.b = { tabs: [], active: null };
-      s.split = false;
-    });
-    return reconcile();
-  }
-  change(space.id, (s) => { s.split = true; });
+    }
+    s.split = !st.split;
+  });
   ensureShown();
   reconcile();
-  if (!st.b.tabs.length) await openTerminal(cx, "b", space);
+  if (st.split || st.b.tabs.length) return Promise.resolve();
+  const where = placeOf(space);
+  return ask(async (cx) => {
+    // A terminal that didn't start leaves no empty second group behind.
+    try { await openTerminal(cx, "b", space, where); } catch (e) { change(space.id, tidy); reconcile(); throw e; }
+  });
 }
 
 export function toggleMax() {
@@ -250,57 +318,36 @@ export function toggleMax() {
 
 // ---- the bottom panel ----
 
-export async function toggleBottom(cx) {
+export function toggleBottom() {
   const space = activeSpace();
-  if (!space) return;
-  if (bottomShown()) return void run("layout.hide", { id: BOTTOM });
+  if (!space) return Promise.resolve();
+  if (bottomShown()) { run("layout.hide", { id: BOTTOM }); return Promise.resolve(); }
   run("layout.show", { id: BOTTOM });
-  if (!spaceState(space.id).bottom) await openBottom(cx);
-  else reconcile();
-}
-export async function openBottom(cx) {
-  const space = activeSpace();
-  if (!space) return;
-  const { on, cwd } = placeOf(space);
-  const addr = await startTerminal(space, cwd, on);
-  await addBlock(BOTTOM, bottomBlock(addr), addr, cx);
-  change(space.id, (st) => { st.bottom = addr; });
+  if (!spaceState(space.id).bottom) return openBottom();
   reconcile();
-  run("pane.focus", { terminal: addr });
+  return Promise.resolve();
+}
+export function openBottom() {
+  const space = activeSpace();
+  if (!space) return Promise.resolve();
+  const { on, cwd } = placeOf(space);
+  return ask(async (cx) => {
+    if (spaceState(space.id).bottom) return;
+    const addr = await startTerminal(space, cwd, on);
+    change(space.id, (st) => { st.bottom = addr; st.bottomAt = Date.now(); });
+    await syncBlocks();
+    await waitFor(() => find(layout(), bottomBlock(addr)), cx);
+    reconcile();
+    if (activeSpace()?.id === space.id) run("pane.focus", { terminal: addr });
+  });
 }
 
 // ---- making the layout match ----
 
-// A terminal's block lives in the stack of the group that holds its tab; when a tab changes group
-// (the groups merge, or the first one empties) the block moves with it, in the layout file.
-let moving = false;
-function relocate() {
-  if (moving) return;
-  const tree = layout(), all = read();
-  const moves = [];
-  for (const st of Object.values(all.spaces)) for (const g of GROUPS) for (const t of st[g].tabs) {
-    if (t.kind !== "terminal") continue;
-    const id = termBlock(t.addr);
-    if (!find(find(tree, bodyId(g)), id) && find(tree, id)) moves.push({ id, stack: bodyId(g) });
-  }
-  if (!moves.length) return;
-  moving = true;
-  editLayout((tree) => {
-    for (const m of moves) {
-      const from = (function up(n) { for (const c of n.children ?? []) { if (c.id === m.id) return n; const r = up(c); if (r) return r; } return null; })(tree);
-      const to = find(tree, m.stack);
-      if (!from || !to || from === to) continue;
-      const block = from.children.find((c) => c.id === m.id);
-      from.children = from.children.filter((c) => c !== block);
-      to.children.push(block);
-    }
-  }).catch(() => {}).finally(() => { moving = false; });
-}
-
 let lastSpace = null, lastApplied = null, lastSplit = false, lastHa = null;
 
-// Idempotent: shows what the shown space's state says. Called by the always-present buttons block
-// every second, and by whatever changes the state.
+// Idempotent and instant (commands only): shows what the shown space's state says. Called by the
+// keeper every second, and by whatever changes the state.
 export function reconcile() {
   const space = activeSpace();
   const tree = layout();
@@ -310,7 +357,6 @@ export function reconcile() {
   if (!side) return;
   const switched = lastSpace !== space.id;
   lastSpace = space.id;
-  relocate();
 
   // Each group shows its active tab (or its empty face); the second only when split.
   for (const g of GROUPS) {
@@ -368,52 +414,68 @@ export function reconcile() {
   }
 }
 
-// Housekeeping, now and then: tabs whose terminal ended go; a closed space's terminals end; blocks
-// no tab owns go.
-let tick = 0;
-export function sweep(cx) {
-  if (++tick % 4 !== 0) return;
-  const live = terminals();
-  const sp = spaces();
-  if (!live.length || !sp.length) return;
-  const all = read();
+// Housekeeping, every few seconds, in the keeper: a tab whose terminal ended goes; a closed
+// space's terminals end and its state goes; a terminal of ours that no tab holds ends (a start cut
+// short: the app quit, or the mod was saved, between `hc run` and the tab).
+const GRACE = 20000;
+const lost = new Set(); // other machines' terminals `hc get` no longer knows
+let sweeps = 0;
+async function sweep() {
+  const live = terminals(), sp = spaces();
+  if (!live.length || !sp.length || shared(KEY)?.v !== 1) return;
+  const now = Date.now();
   const known = new Map(live.map((t) => [t.address, t]));
-  const dead = (addr) => { const t = known.get(addr); return t ? t.state !== "live" : !String(addr).includes("/"); };
+  // terminals() lists this computer's only: another machine's is asked for by address.
+  const dead = (addr, at) => {
+    const t = known.get(addr);
+    if (t) return t.state !== "live";
+    if (now - (at ?? 0) < GRACE) return false;
+    return String(addr).includes("/") ? lost.has(addr) : true;
+  };
+  // A space is gone when its machine's spaces are known and it isn't among them.
+  const ready = new Set(machines().filter((m) => m.layout === "ready").map((m) => m.name ?? ""));
   const ids = new Set(sp.map((s) => s.id));
-  const owned = new Set();
-  let closing = [];
-  for (const [sid, st] of Object.entries(all.spaces)) {
-    const gone = sid && !ids.has(sid);
-    for (const g of GROUPS) for (const t of st[g].tabs) if (t.kind === "terminal") {
-      if (gone || dead(t.addr)) closing.push({ sid, g, t, gone }); else owned.add(termBlock(t.addr));
+  const gone = (sid) => !!sid && !ids.has(sid) && ready.has(sid.includes("/") ? sid.split("/")[0] : "");
+  const owned = new Set(), ending = [], remote = [];
+  let changed = false;
+  changeAll((all) => {
+    for (const [sid, st] of Object.entries(all.spaces)) {
+      const off = gone(sid), before = ending.length;
+      for (const g of GROUPS) {
+        if (!st[g]) continue;
+        st[g].tabs = st[g].tabs.filter((t) => {
+          if (t.kind !== "terminal") return true;
+          if (!off && !dead(t.addr, t.at)) { owned.add(t.addr); return true; }
+          ending.push(t.addr);
+          return false;
+        });
+        if (!st[g].tabs.some((t) => t.id === st[g].active)) st[g].active = st[g].tabs[0]?.id ?? null;
+      }
+      if (st.bottom) {
+        if (off || dead(st.bottom, st.bottomAt)) { ending.push(st.bottom); st.bottom = null; } else owned.add(st.bottom);
+      }
+      if (off) { delete all.spaces[sid]; changed = true; }
+      else if (ending.length > before) { tidy(st); changed = true; }
     }
-    if (st.bottom) {
-      if (gone || dead(st.bottom)) closing.push({ sid, bottom: st.bottom, gone }); else owned.add(bottomBlock(st.bottom));
-    }
-    if (gone && !closing.some((c) => c.sid === sid)) closing.push({ sid, gone });
-  }
-  if (!closing.length) {
-    // Blocks nobody owns (a crash between writing the layout and the state).
-    const orphans = [];
-    const tree = layout();
-    for (const stack of [bodyId("a"), bodyId("b"), BOTTOM]) for (const c of find(tree, stack)?.children ?? []) if (/^ht3-b?term-/.test(c.id) && !owned.has(c.id)) orphans.push(c.id);
-    if (orphans.length) dropBlocks(orphans).catch(() => {});
-    return;
-  }
-  const dropIds = [];
-  changeAll((a) => {
-    for (const c of closing) {
-      const st = a.spaces[c.sid];
-      if (!st) continue;
-      if (c.t) { st[c.g].tabs = st[c.g].tabs.filter((x) => x.id !== c.t.id); if (st[c.g].active === c.t.id) st[c.g].active = st[c.g].tabs[0]?.id ?? null; dropIds.push(termBlock(c.t.addr)); tidy(st); }
-      if (c.bottom) { st.bottom = null; dropIds.push(bottomBlock(c.bottom)); }
-    }
-    for (const c of closing) if (c.gone) delete a.spaces[c.sid];
+    return changed;
   });
-  for (const c of closing) {
-    const addr = c.t?.addr ?? c.bottom;
-    if (addr && c.gone) endTerminal(addr);
+  for (const addr of owned) if (addr.includes("/") && !known.has(addr)) remote.push(addr);
+  // Ours, here, and held by no tab.
+  const mine = appHome();
+  for (const t of live) {
+    const l = t.labels ?? {};
+    if (l["ht3.side"] == null || (l["ht3.home"] ?? mine) !== mine || owned.has(t.address) || ending.includes(t.address)) continue;
+    if (t.state !== "live" || now - (t.created_ms ?? 0) > GRACE) ending.push(t.address);
   }
-  reconcile();
-  dropBlocks(dropIds).catch(() => {});
+  if (ending.length) reconcile();
+  for (const addr of ending) { lost.delete(addr); await endTerminal(addr); }
+  // Asked now and then only: each is a round trip to its machine.
+  if (sweeps++ % 5 !== 0) return;
+  for (const addr of remote) {
+    const r = await hc(["get", addr, "--json"]).catch(() => null);
+    if (!r) continue;
+    let got = null;
+    try { got = JSON.parse(r.stdout || r.stderr || "null"); } catch { /* not JSON: unknown */ }
+    if (got?.error?.kind === "not_found" || (got?.state && got.state !== "live")) lost.add(addr);
+  }
 }

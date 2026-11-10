@@ -41,7 +41,7 @@ where `GROUP(g)` is a column that never resizes itself, with a 40px strip and a 
         { "id": "ht3-<g>-empty",   "type": "block", "content": { "mod": "ht3-panels", "props": { "panel": "empty",   "group": "<g>" } } } ] } ] }
 ```
 
-`<files>` is `ht3-files` for group `a` (with props `{"panel": "editor"}` only) and `ht3-b-files` for `b`. Terminal blocks (`ht3-term-<address>` in a group's stack, `ht3-bterm-<address>` in `ht3-bottom`) are not in the fragment: the mod writes them into the layout file when a terminal is opened and removes them when it ends.
+`<files>` is `ht3-files` for group `a` (with props `{"panel": "editor"}` only) and `ht3-b-files` for `b`. Terminal blocks (`ht3-term-<address>` in a group's stack, `ht3-bterm-<address>` in `ht3-bottom`) are not in the fragment: the mod keeps them in step with its tabs, in the layout file. Every terminal tab has one, in its group's stack; a block with one of these ids that no tab holds is removed, so don't add your own under these names. The mod reads the file right before it writes and writes only if it is unchanged since, so other edits to the file are kept.
 
 3. On the root, the themes:
 
@@ -53,4 +53,4 @@ The ids `ht3-side`, `ht3-center`, `ht3-bottom`, `ht3-a`, `ht3-b` and the stacks 
 
 ## Panes have no frame, only a split line
 
-A pane has no `border` and no `focus` frame, and no `radius`: T3 Code's chat has none. Herdr's pane look has no divider of its own (`divider` is for `row` and `column` nodes only, and a `divider` key in `pane` is ignored), so the line between two panes is the 1px `gap` between them with the `main` block's `background` (`"border"`, the theme's border color) showing through. The pane fill (`"background"`) covers the rest of the block.
+A pane has no `border` and no `focus` frame, and no `radius`: T3 Code's chat has none. Herdr's pane look has no divider of its own (`divider` is for `row` and `column` nodes only, and a `divider` key in `pane` is ignored), so the line between two panes is the 1px `gap` between them with the `main` block's `background` (`"border"`, the theme's border color) showing through. The pane fill (`"background"`) covers the rest of the block. The line still drags: Herdr takes a drag on a band of `max(6px, the line's width)` centered on it, whatever the gap (Herdr 0.1.14), so the gap stays at 1.

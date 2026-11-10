@@ -5,12 +5,8 @@
 import { div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { closeOverlay, exec } from "herdr";
-import { tokens, alpha, icon, iconButton, shortPath } from "./look.js";
-import { SURFACES, openSurface, placeOf, activeSpace } from "./side.js";
-
-// A letter in the corner of a row, as T3 Code's Kbd.
-const kbd = (k, text) => div().flex_none().h(18).min_w(18).px(4).flex().items_center().justify_center().rounded(4).bg(alpha(k.foreground, 0.07))
-  .text_size(11).font_medium().text_color(k.muted).child(text);
+import { tokens, icon, iconButton, shortPath } from "./look.js";
+import { SURFACES, send, placeOf, activeSpace } from "./side.js";
 
 export class AddMenu {
   init(p, cx) {
@@ -21,15 +17,30 @@ export class AddMenu {
     cx.timer.after(0, () => this.focus.focus());
   }
   close() {}
-  command() {}
+  // `ht3-panels.key:<key>` presses a key in the open menu, for scripts.
+  command(c, cx) {
+    if (c.startsWith("key:")) this.key(c.slice(4), cx);
+  }
 
-  pick(s, cx) {
+  // The keeper opens the surface (side.js), so the menu goes at once: work started by this copy
+  // would be dropped with it.
+  pick(s) {
     if (s.off) return;
-    // Close only after the surface is open: closing the overlay first drops this view and its task.
-    cx.spawn(async (cx) => {
-      try { await openSurface(cx, this.group, s.kind); } catch (e) { console.log(String(e?.message ?? e)); }
-      finally { closeOverlay(this.overlay); }
-    });
+    send(`add:${s.kind}:${this.group}`);
+    closeOverlay(this.overlay);
+  }
+
+  // Esc closes; the arrows move over the surfaces that can open and Enter opens the marked one;
+  // a surface's letter opens it.
+  key(key, cx) {
+    const can = SURFACES.map((s, i) => (s.off ? -1 : i)).filter((i) => i >= 0);
+    const step = (by) => { const at = can.indexOf(this.hot); this.hot = can[at < 0 ? (by > 0 ? 0 : can.length - 1) : (at + by + can.length) % can.length]; cx.notify(); };
+    if (key === "escape") return closeOverlay(this.overlay);
+    if (key === "down") return step(1);
+    if (key === "up") return step(-1);
+    if (key === "enter") return this.hot >= 0 ? this.pick(SURFACES[this.hot]) : undefined;
+    const s = SURFACES.find((x) => x.key === key);
+    if (s) this.pick(s);
   }
 
   render(_cx) {
@@ -37,24 +48,19 @@ export class AddMenu {
     return v_flex().id("ht3-add-menu").size_full().p(4).bg(k.popover).text_color(k.foreground).text_size(14)
       .track_focus(this.focus)
       .on_key_down((e, cx) => {
-        const key = e.key.toLowerCase();
         if (e.modifiers?.platform || e.modifiers?.control || e.modifiers?.alt) return;
-        if (key === "escape") return closeOverlay(this.overlay);
-        if (key === "down") { this.hot = (this.hot + 1) % SURFACES.length; return cx.notify(); }
-        if (key === "up") { this.hot = (this.hot - 1 + SURFACES.length) % SURFACES.length; return cx.notify(); }
-        if (key === "enter" && this.hot >= 0) return this.pick(SURFACES[this.hot], cx);
-        const s = SURFACES.find((x) => x.key === key);
-        if (s) this.pick(s, cx);
+        this.key(e.key.toLowerCase(), cx);
       })
       .children(SURFACES.map((s, i) => {
-        const el = h_flex().id(`add-${s.kind}`).h(32).px(8).gap(8).flex_none().items_center().rounded(8)
+        // ui/menu.tsx MenuItem: 28 high, 4 round, a 16px icon; MenuShortcut: the bare letter, 12px medium.
+        const el = h_flex().id(`add-${s.kind}`).h(28).px(8).gap(8).flex_none().items_center().rounded(4)
           .bg(this.hot === i ? k.accent : "#00000000").text_size(14)
-          .child(icon(s.glyph).size(16).flex_none().text_color(s.off ? k.dim : k.muted))
-          .child(div().flex_1().min_w(0).truncate().text_color(s.off ? k.dim : k.foreground).child(s.label))
-          .child(kbd(k, s.key.toUpperCase()));
-        if (s.off) return el.opacity(0.5).tooltip(s.off);
+          .child(icon(s.glyph).size(16).flex_none().text_color(k.muted))
+          .child(div().flex_1().min_w(0).truncate().child(s.label))
+          .child(div().flex_none().text_size(12).font_medium().text_color(k.muted).child(s.key.toUpperCase()));
+        if (s.off) return el.opacity(0.64).tooltip(s.off);
         return el.role("button").accessibility_label(s.label).cursor_pointer()
-          .hover((st) => st.bg(k.accent)).on_click((_e, cx) => this.pick(s, cx));
+          .hover((st) => st.bg(k.accent)).on_click(() => this.pick(s));
       }));
   }
 }

@@ -10,15 +10,17 @@ import { div } from "gpui-kit";
 import { v_flex, h_flex, TextView } from "gpui-base";
 import { exec } from "herdr";
 import { tokens, alpha, icon, button, iconButton, badge } from "./look.js";
-import { activeSpace, placeOf } from "./side.js";
+import { activeSpace, placeOf, showing } from "./side.js";
 
 const FIELDS = "number,title,state,isDraft,url,author,headRefName,baseRefName,mergeable,reviewDecision,statusCheckRollup,reviews,additions,deletions,changedFiles,body,updatedAt";
 const LIST_FIELDS = "number,title,state,isDraft,url,author,headRefName,reviewDecision,statusCheckRollup,updatedAt";
 
-// What went wrong, in words: gh missing, not signed in, no remote, no pull request.
-export function explain(err, branch) {
+// What went wrong, in words: gh missing, not signed in, no remote, no pull request. Herdr's exec
+// rejects with "cannot run gh: No such file or directory (os error 2)" here and "cannot start gh: …"
+// on another machine when the program is missing.
+export function explain(err, branch, on = null) {
   const text = String(err?.message ?? err ?? "");
-  if (/ENOENT|not found|No such file|can't start|cannot start|failed to spawn/i.test(text) && !/pull request/i.test(text)) return { kind: "missing", text: "The GitHub CLI (gh) isn't installed here. Install it from cli.github.com, then sign in with gh auth login." };
+  if (/ENOENT|not found|No such file|can't start|cannot start|failed to spawn/i.test(text) && !/pull request/i.test(text)) return { kind: "missing", text: `The GitHub CLI (gh) isn't installed ${on ? `on ${on}` : "here"}. Install it from cli.github.com, then sign in with gh auth login.` };
   if (/gh auth login|not logged in|authentication|GH_TOKEN|HTTP 401/i.test(text)) return { kind: "auth", text: "gh isn't signed in. Run gh auth login in a terminal." };
   if (/no pull requests? found|could not find any pull request/i.test(text)) return { kind: "none", text: branch ? `No pull request for ${branch} yet.` : "No pull request for this branch yet." };
   if (/none of the git remotes|no git remotes|not a git repository|not a github|could not determine|unknown owner|Could not resolve to a Repository/i.test(text)) return { kind: "remote", text: "This folder has no GitHub repository to ask about." };
@@ -56,7 +58,9 @@ const open = (url) => exec("open", [url]).catch(() => {});
 export class PrPanel {
   constructor(linked) { this.linked = linked; }
 
-  init(_p, cx) {
+  init(p, cx) {
+    this.group = p.group ?? "a";
+    this.stale = false;
     this.seen = null;
     this.cwd = null;
     this.on = null;
@@ -65,7 +69,8 @@ export class PrPanel {
     this.problem = null;
     this.loading = false;
     this.follow(cx);
-    cx.timer.every(30000, (cx) => this.load(cx));
+    // Asks GitHub only while its tab shows; back in view, it asks at once.
+    cx.timer.every(30000, (cx) => { if (showing(this.group, this.linked ? "prs" : "pr")) this.load(cx); else this.stale = true; });
   }
   close() {}
   command() {}
@@ -92,10 +97,14 @@ export class PrPanel {
         const args = this.linked ? ["pr", "list", "--author", "@me", "--state", "open", "--limit", "30", "--json", LIST_FIELDS] : ["pr", "view", "--json", FIELDS];
         const r = await exec("gh", args, { cwd, on, timeout: 25000 });
         if (this.seen !== seen) return;
-        if (r.code !== 0) { this.data = null; this.problem = explain(r.stderr || r.stdout, this.branch); }
+        if (r.code !== 0) { this.data = null; this.problem = explain(r.stderr || r.stdout, this.branch, on); }
         else { this.data = JSON.parse(r.stdout || "null"); this.problem = null; }
       } catch (e) {
-        if (this.seen === seen) { this.data = null; this.problem = explain(e, this.branch); }
+        if (this.seen !== seen) return;
+        this.data = null;
+        this.problem = explain(e, this.branch, on);
+        // A folder that is gone fails the same way as a missing gh.
+        if (this.problem.kind === "missing" && (await exec("test", ["-d", cwd], { on }).catch(() => null))?.code === 1) this.problem = { kind: "folder", text: `The folder ${cwd} is gone.` };
       } finally { this.loading = false; cx.notify(); }
     });
   }
@@ -120,6 +129,7 @@ export class PrPanel {
 
   render(cx) {
     this.follow(cx);
+    if (this.stale) { this.stale = false; this.load(cx); }
     const k = tokens();
     const root = v_flex().id(this.linked ? "ht3-prs" : "ht3-pr").size_full().min_h(0).bg(k.background).text_color(k.foreground).text_size(13);
     const title = this.linked ? "Linked pull requests" : "Pull request";

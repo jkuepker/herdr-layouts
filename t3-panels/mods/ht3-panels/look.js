@@ -1,6 +1,10 @@
 // T3 Code's look in gpui-kit: its tokens read from the theme, and its button, chip and
 // work-log primitives. Sizes are T3's (apps/web/src, 1rem = 16px): buttons from
 // ui/button.tsx, the work log from chat/WorkLog.tsx, the composer controls from
+// ui/kbd.tsx: a key in a chip, 20 high, 12px medium.
+export const kbd = (k, text) => h_flex().flex_none().h(20).min_w(20).px(4).items_center().justify_center().rounded(4)
+  .bg(alpha(k.foreground, 0.07)).text_size(12).font_medium().text_color(k.muted).child(text);
+
 // chat/ComposerControl.tsx.
 
 import { div, svg } from "gpui-kit";

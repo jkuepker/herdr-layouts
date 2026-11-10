@@ -11,7 +11,7 @@ import { v_flex, h_flex, Scrollbar } from "gpui-base";
 import { exec, watchFolder } from "herdr";
 import { tokens, alpha, icon, iconButton } from "./look.js";
 import { fileIcon } from "./fileicons.js";
-import { activeSpace, placeOf } from "./side.js";
+import { activeSpace, placeOf, showing } from "./side.js";
 import { syntax } from "./editor.js";
 
 const MAX_FILES = 200, MAX_LINES_FILE = 1500, MAX_ROWS = 12000, MAX_UNTRACKED = 40;
@@ -87,7 +87,9 @@ export function highlight(text, ext, colors) {
 const extOf = (path) => (path.includes(".") ? path.split(".").pop().toLowerCase() : "");
 
 export class DiffPanel {
-  init(_p, cx) {
+  init(p, cx) {
+    this.group = p.group ?? "a";
+    this.stale = false;
     this.root = null;
     this.on = null;
     this.files = null;
@@ -95,8 +97,8 @@ export class DiffPanel {
     this.loading = false;
     this.shut = new Set(); // collapsed files
     this.watched = null;
+    this.more = 0;
     this.seen = null;
-    this.scroll = null;
     this.follow(cx);
     cx.timer.every(15000, (cx) => this.refresh(cx));
   }
@@ -123,22 +125,26 @@ export class DiffPanel {
     });
   }
 
+  // One watch at a time: the loop of a folder left behind ends at its next wake.
   watch(cx) {
     const root = this.root;
     if (this.on || this.watched === root) return;
     this.watched = root;
     cx.spawn(async (cx) => {
       try {
-        for (;;) {
+        while (this.watched === root) {
           await watchFolder(root);
           if (this.root === root) this.refresh(cx);
         }
-      } catch { this.watched = null; }
+      } catch { if (this.watched === root) this.watched = null; }
     });
   }
 
+  // Runs git only while the tab shows; back in view, at once.
   refresh(cx) {
     if (!this.root || this.loading) return;
+    if (!showing(this.group, "diff")) { this.stale = true; return; }
+    this.stale = false;
     const root = this.root, on = this.on;
     this.loading = true;
     cx.spawn(async (cx) => {
@@ -160,7 +166,7 @@ export class DiffPanel {
   }
 
   // The rows of the list: a header per file, then its hunks' lines.
-  rows(k, colors) {
+  rows() {
     const rows = [];
     for (const f of this.files) {
       const open = !this.shut.has(f.path);
@@ -172,8 +178,9 @@ export class DiffPanel {
         h.lines.forEach((l, li) => rows.push({ id: `l:${f.path}:${hi}:${li}`, kind: "line", l, ext: extOf(f.path) }));
       });
       if (f.cut) rows.push({ id: `c:${f.path}`, kind: "note", text: `Only the first ${MAX_LINES_FILE} changed lines are shown.` });
-      if (rows.length > MAX_ROWS) { rows.push({ id: "cut", kind: "note", text: "More changes than fit: the rest is not shown." }); break; }
+      if (rows.length > MAX_ROWS) { rows.push({ id: "cut", kind: "note", text: "More changes than fit: the rest is not shown." }); return rows; }
     }
+    if (this.more > 0) rows.push({ id: "more", kind: "note", text: `${this.more} more changed file${this.more === 1 ? " is" : "s are"} not shown.` });
     return rows;
   }
 
@@ -181,15 +188,15 @@ export class DiffPanel {
     const f = r.f, dark = k.dark;
     const at = f.path.lastIndexOf("/");
     const mark = { A: ["Added", k.successText], D: ["Deleted", k.destructiveText], R: ["Renamed", k.info], M: [null, null] }[f.status];
-    return h_flex().h(32).px(8).gap(6).items_center().bg(k.card).border_b(1).border_color(alpha(k.border, 0.6))
+    return h_flex().h(32).pl(8).pr(12).gap(6).items_center().bg(k.card).border_b(1).border_color(alpha(k.border, 0.6))
       .child(icon(r.open ? "chevron-down" : "chevron-right").size(14).flex_none().text_color(k.muted))
       .child(fileIcon(f.path.slice(at + 1), dark, 14))
       .child(h_flex().flex_1().min_w(0).items_center().overflow_hidden().text_size(12)
         .when(at >= 0, (el) => el.child(div().min_w(0).truncate().text_color(k.muted).child(f.path.slice(0, at + 1))))
         .child(div().flex_none().font_medium().child(f.path.slice(at + 1))))
       .when(!!mark[0], (el) => el.child(div().flex_none().text_size(11).text_color(mark[1]).child(mark[0])))
-      .when(f.add > 0, (el) => el.child(div().flex_none().text_size(12).text_color(k.successText).child(`+${f.add}`)))
-      .when(f.del > 0, (el) => el.child(div().flex_none().text_size(12).text_color(k.destructiveText).child(`−${f.del}`)));
+      .when(f.add > 0, (el) => el.child(div().flex_none().font_family(k.mono).text_size(11).text_color(k.successText).child(`+${f.add}`)))
+      .when(f.del > 0, (el) => el.child(div().flex_none().font_family(k.mono).text_size(11).text_color(k.destructiveText).child(`−${f.del}`)));
   }
 
   lineRow(k, r, colors) {
@@ -207,6 +214,7 @@ export class DiffPanel {
 
   render(cx) {
     this.follow(cx);
+    if (this.stale) this.refresh(cx);
     const k = tokens(), colors = syntax();
     const root = v_flex().id("ht3-diff").size_full().min_h(0).bg(k.background).text_color(k.foreground).text_size(12);
     const say = (text, color = k.muted) => root.child(v_flex().flex_1().items_center().justify_center().px(24).gap(8).text_size(12).text_color(color).child(text));
@@ -215,22 +223,21 @@ export class DiffPanel {
     if (!this.files) return say("Looking at the changes…");
     const files = this.files;
     const add = files.reduce((n, f) => n + f.add, 0), del = files.reduce((n, f) => n + f.del, 0);
-    const rows = files.length ? this.rows(k, colors) : [];
+    const rows = files.length ? this.rows() : [];
     const allShut = files.length > 0 && files.every((f) => this.shut.has(f.path));
-    if (!this.scroll) this.scroll = null;
     return root
-      .child(h_flex().h(36).flex_none().px(12).gap(8).items_center().border_b(1).border_color(alpha(k.border, 0.6))
+      .child(h_flex().h(40).flex_none().px(16).gap(8).items_center().border_b(1).border_color(alpha(k.border, 0.6))
         .child(icon("file-diff").size(14).flex_none().text_color(k.muted))
         .child(div().flex_none().font_medium().text_size(13).child("Working tree"))
         .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(k.muted)
           .child(files.length ? `${files.length} file${files.length === 1 ? "" : "s"} changed` : "No changes"))
-        .when(files.length > 0, (el) => el.child(h_flex().flex_none().gap(6).text_size(12)
+        .when(files.length > 0, (el) => el.child(h_flex().flex_none().gap(6).mr(4).font_family(k.mono).text_size(11)
           .child(div().text_color(k.successText).child(`+${add}`)).child(div().text_color(k.destructiveText).child(`−${del}`))))
         .child(iconButton(k, "diff-collapse", allShut ? "chevrons-up-down" : "chevrons-down-up", (cx) => {
           if (allShut) this.shut.clear(); else for (const f of files) this.shut.add(f.path);
           cx.notify();
-        }, { tip: allShut ? "Expand all files" : "Collapse all files" }))
-        .child(iconButton(k, "diff-refresh", "refresh-cw", (cx) => this.refresh(cx), { tip: this.loading ? "Refreshing…" : "Refresh" })))
+        }, { size: "sm", tip: allShut ? "Expand all files" : "Collapse all files" }))
+        .child(iconButton(k, "diff-refresh", "refresh-cw", (cx) => this.refresh(cx), { size: "sm", tip: this.loading ? "Refreshing…" : "Refresh" })))
       .when(this.error, (el) => el.child(div().px(12).py(4).text_size(11).text_color(k.destructiveText).child(this.error)))
       .when(!files.length, (el) => el.child(v_flex().flex_1().items_center().justify_center().text_color(k.muted).child("The working tree matches HEAD.")))
       .when(files.length > 0, (el) => el.child(v_flex().relative().flex_1().min_h(0)
