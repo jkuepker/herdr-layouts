@@ -260,7 +260,7 @@ export class AcpSource {
     };
   }
 
-  send(_cx, text) { this.session?.handle({ type: "prompt", text }); }
+  send(_cx, text, blocks = []) { this.session?.handle({ type: "prompt", text, blocks }); }
   stop() { this.session?.handle({ type: "cancel" }); }
   answer(_cx, optionId) { this.session?.handle({ type: "permission", optionId }); }
   setOption(id, value) { this.session?.handle({ type: "config", configId: id, value }); }

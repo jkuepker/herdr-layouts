@@ -14,6 +14,7 @@ import { MOD, tokens, alpha, icon, agentMark, button, iconButton, control, badge
 import { AcpSource, detect, argvOf } from "./agent-acp.js";
 import { TermSource } from "./agent-term.js";
 import { Reporter } from "./report.js";
+import { fileIcon } from "./fileicons.js";
 import { addNotice } from "./transcript.js";
 import { limitModels, rememberModels } from "./settings.js";
 import { agentOf } from "./agent-acp.js";
@@ -53,6 +54,13 @@ export function trigger(text) {
   if (word.startsWith("$")) return /^\$[A-Za-z_-][\w:.-]*$|^\$$/.test(word) ? { kind: "skill", query: word.slice(1), start } : null;
   if (word.startsWith("@")) return { kind: "path", query: word.slice(1), start };
   return null;
+}
+
+// Whether the letters of `q` come in `s` in that order.
+function subseq(q, s) {
+  let at = 0;
+  for (const ch of q) { at = s.indexOf(ch, at) + 1; if (!at) return false; }
+  return true;
 }
 
 // T3's own commands (composer-logic.ts ComposerSlashCommand) that have a place here.
@@ -205,7 +213,7 @@ export class ChatPanel {
   typed(cx) {
     const t = trigger(this.input.value()), was = this.trig;
     this.trig = t;
-    if (t?.kind !== was?.kind || t?.query !== was?.query) { this.hot = 0; if (t?.kind === "skill") this.findSkills(cx); return true; }
+    if (t?.kind !== was?.kind || t?.query !== was?.query) { this.hot = 0; if (t?.kind === "skill") this.findSkills(cx); if (t?.kind === "path") this.findFiles(cx); return true; }
     return false;
   }
 
@@ -225,12 +233,43 @@ export class ChatPanel {
     });
   }
 
+  // The files "@" can name: the folder's tracked and untracked files (not the ignored), where the
+  // chat runs; without git, what `find` gives. Listed when "@" is typed, again after 30 seconds.
+  findFiles(cx) {
+    const v = this.view, f = this.files;
+    if (!v?.cwd || f?.loading || (f?.list && Date.now() - f.at < 30000)) return;
+    this.files = { list: f?.list ?? null, at: f?.at ?? 0, loading: true };
+    const opt = { cwd: v.cwd, on: v.machine ?? undefined };
+    cx.spawn(async (cx) => {
+      let list = [];
+      try {
+        let r = await exec("git", ["ls-files", "-co", "--exclude-standard"], opt).catch(() => null);
+        if (r?.code !== 0) r = await exec("sh", ["-c", "find . -type f -not -path './.git/*' -not -path '*/node_modules/*' | head -n 20000 | sed 's|^\\./||'"], opt);
+        list = r.stdout.split("\n").filter(Boolean).slice(0, 20000);
+      } catch {}
+      this.files = { list, at: Date.now(), loading: false };
+      cx.notify();
+    });
+  }
+
   // What the open menu lists (chat/ComposerCommandMenu.tsx): T3's own commands and the agent's for
   // "/", the skills for "$" (as T3: the agent's commands that are skills, and those on disk).
   menuItems(v) {
     const t = this.trig;
-    if (!t || t.kind === "path") return [];
+    if (!t) return [];
     const q = t.query.toLowerCase();
+    if (t.kind === "path") {
+      // The name first, then the path; a name that starts with what was typed before one that only has it.
+      const out = [];
+      for (const path of this.files?.list ?? []) {
+        const low = path.toLowerCase(), base = low.slice(low.lastIndexOf("/") + 1);
+        const rank = !q ? 2 : base.startsWith(q) ? 0 : base.includes(q) ? 1 : low.includes(q) ? 2 : subseq(q, low) ? 3 : 4;
+        if (rank < 4) out.push({ name: path, file: true, rank });
+      }
+      // Letters merely in order count only when little else matches.
+      const near = out.filter((x) => x.rank < 3);
+      return (near.length >= 5 ? near : out).sort((a, b) => a.rank - b.rank || a.name.length - b.name.length).slice(0, 50);
+    }
     const agent = (v.commands ?? []).map((c) => ({ name: c.name, description: c.description ?? "" }));
     const all = t.kind === "slash" ? [...LOCAL_COMMANDS.filter((c) => c.name !== "model" || v.options.some((o) => (o.category ?? o.id) === "model")), ...agent.filter((c) => !LOCAL_COMMANDS.some((l) => l.name === c.name))]
       : [...(this.skills ?? []), ...agent.filter((c) => /skill/i.test(c.name) && !(this.skills ?? []).some((s) => s.name === c.name)).map((c) => ({ ...c, skill: true }))];
@@ -245,6 +284,14 @@ export class ChatPanel {
     if (!t || !item) return;
     const before = text.slice(0, t.start);
     this.trig = null;
+    if (item.file) {
+      // chat/FileTagChip.tsx: the file becomes a chip in the text; it goes to the agent as a resource link.
+      this.input.replace_range_with_token({ start: t.start, end: text.length }, { id: item.name, text: `@${item.name}`, label: item.name.split("/").pop() });
+      this.input.replace(" ");
+      this.hasText = true;
+      this.input.focus();
+      return cx.notify();
+    }
     if (item.local) {
       this.input.set_value(before);
       this.hasText = !!before.trim();
@@ -307,9 +354,10 @@ export class ChatPanel {
       if (text != null && c.startsWith("ctx:")) this.copyMenu({ x: 600, y: 300 }, text);
       else if (text != null) this.copy(cx, `${m.id}:cp`, text);
     }
-    // For scripts: type:<text> (as if typed into the message box), take:<n> (the open menu's nth row, from 0),
+    // For scripts: type:<text> (as if typed into the message box), take:<n> (the open menu's nth row, from 0), send (the Send button),
     // menu-key:<up|down|enter|escape>.
     if (c.startsWith("type:")) { this.input.set_value(c.slice(5)); this.hasText = !!c.slice(5).trim(); this.typed(cx); }
+    if (c === "send") this.send(cx);
     if (c.startsWith("take:")) this.choose(cx, this.menuItems(this.view)[Number(c.slice(5))]);
     if (c.startsWith("menu-key:")) this.menuKey(c.slice(9), cx);
     if (c.startsWith("scroll:")) { if (c === "scroll:end") { this.follow = true; this.off = 0; } else this.wheel(Number(c.slice(7)) || 0, 1e9, cx); }
@@ -337,10 +385,20 @@ export class ChatPanel {
     if (!text || !v?.alive) return;
     // An ACP agent takes one message per turn; a terminal agent takes one mid-turn too.
     if (this.source.kind === "acp" && v.status !== "ready") return;
+    // Each file named with "@" goes along as an ACP resource link (the text keeps its "@path").
+    const seen = new Set(), blocks = [];
+    for (const s of this.source.kind === "acp" ? this.input.tokens() : []) {
+      const path = s.token.id;
+      if (seen.has(path)) continue;
+      seen.add(path);
+      const abs = path.startsWith("/") ? path : `${String(v.cwd ?? "").replace(/\/$/, "")}/${path}`;
+      blocks.push({ type: "resource_link", uri: `file://${encodeURI(abs)}`, name: path.split("/").pop() });
+    }
     this.input.set_value("");
     this.hasText = false;
+    this.trig = null;
     this.follow = true;
-    this.source.send(cx, text);
+    this.source.send(cx, text, blocks);
     cx.notify();
   }
 
@@ -367,7 +425,7 @@ export class ChatPanel {
       .when(!this.headed(), (el) => el.child(this.header(k, v)))
       .child(this.timeline(k, v))
       .when(this.picker != null, (el) => el.child(this.pickerPanel(k, v)))
-      .when(this.picker == null && !!this.trig && this.trig.kind !== "path", (el) => el.child(this.triggerPanel(k, v)))
+      .when(this.picker == null && !!this.trig, (el) => el.child(this.triggerPanel(k, v)))
       .child(this.composer(k, v));
   }
 
@@ -664,7 +722,8 @@ export class ChatPanel {
   // 8px corners: an icon, the name (12px medium), what it does (12px, muted).
   triggerPanel(k, v) {
     const t = this.trig, items = this.menuItems(v);
-    const empty = t.kind === "skill" ? "No skills found. Try / to browse provider commands." : "No matching command.";
+    const empty = t.kind === "skill" ? "No skills found. Try / to browse provider commands."
+      : t.kind === "path" ? (this.files?.list ? "No matching files or folders." : "Searching workspace files...") : "No matching command.";
     const rowH = 32, h = items.length ? Math.min(288, items.length * rowH + 8) : 44;
     return h_flex().w_full().flex_none().justify_center().px(16).pb(6)
       .child(v_flex().id("ht3-composer-menu").w_full().max_w(LANE).h(h).p(4).rounded(12).border(1).border_color(alpha(k.foreground, k.dark ? 0.1 : 0.08)).bg(k.popover).shadow_lg()
@@ -672,6 +731,13 @@ export class ChatPanel {
         .when(items.length > 0, (el) => el.child(v_flex().relative().flex_1().min_h(0)
           .child(list("ht3-composer-menu-rows", items.length, (i) => `${i}:${items[i].name}`, (i) => {
             const c = items[i], on = i === Math.min(this.hot ?? 0, items.length - 1);
+            if (c.file) {
+              const cut = c.name.lastIndexOf("/");
+              return h_flex().h(rowH).px(8).gap(8).items_center().rounded(8).bg(on ? k.accent : "#00000000")
+                .child(fileIcon(c.name.slice(cut + 1), k.dark, 16))
+                .child(div().flex_none().max_w("60%").truncate().text_size(12).font_medium().child(c.name.slice(cut + 1)))
+                .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(k.muted).child(cut > 0 ? c.name.slice(0, cut) : ""));
+            }
             return h_flex().h(rowH).px(8).gap(8).items_center().rounded(8).bg(on ? k.accent : "#00000000")
               .child(icon(c.skill ? "sparkles" : c.local ? "corner-down-left" : "terminal").size(16).flex_none().text_color(k.muted))
               .child(div().flex_none().max_w("45%").truncate().text_size(12).font_medium().child(`/${c.name}`))
@@ -778,7 +844,8 @@ export class ChatPanel {
           if (!this.trig || e.modifiers?.platform || e.modifiers?.control || e.modifiers?.alt) return;
           if (this.menuKey(e.key.toLowerCase(), cx)) cx.stop_propagation?.();
         })
-        .child(Textarea.new(this.input)))
+        .child(Textarea.new(this.input).token((tok) => h_flex().h(20).px(4).gap(4).items_center().rounded(4).border(1).border_color(alpha(k.border, 0.8))
+          .bg(alpha(k.accent, 0.6)).text_size(12).child(fileIcon(tok.token.label ?? tok.token.id, k.dark, 12)).child(tok.token.label ?? tok.token.id))))
       .child(h_flex().px(8).pb(8).gap(2).items_center()
         .child(div().flex_1())
         .children(controls)

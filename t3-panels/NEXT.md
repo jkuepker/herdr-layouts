@@ -17,6 +17,7 @@ Ranked from a survey of /opt/code/t3code/apps/web/src and apps/server/src agains
 
 - Copy and paste in chats (rows that copy, a right-click Copy menu). Not checked with real keys: Cmd+C/X/V/A/Z in the message box and Cmd+C on a selection are the text area's and TextView's own.
 - 1. `/` commands and `$` skills (`chat.js` `trigger`, `menuItems`, `triggerPanel`). Left: the menu pushes the lane up instead of floating over it; the word must be the last in the text (no caret position from the text area); arrows, Tab and Esc in the menu were only driven by command.
+- 2. `@` files: picker, chips, `resource_link` blocks. Left: folders can't be picked, only files; the chip sits where the text ended (no caret position); not tried on another machine.
 - Known, same cause as the fix in ht3-panels: the acp-chat mod's chat is a `list`, so it doesn't follow its end in a long chat either.
 
 ## Candidates

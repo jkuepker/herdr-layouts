@@ -147,7 +147,7 @@ export class ChatSession {
   handle(cmd) {
     switch (cmd.type) {
       case "prompt":
-        return this.prompt(String(cmd.text ?? ""));
+        return this.prompt(String(cmd.text ?? ""), Array.isArray(cmd.blocks) ? cmd.blocks : []);
       case "cancel":
         this.answerPermission({ outcome: "cancelled" });
         this.conn.notify("session/cancel", { sessionId: this.state.sessionId });
@@ -161,9 +161,10 @@ export class ChatSession {
     }
   }
 
-  async prompt(text) {
+  // `blocks`: ACP content blocks sent after the text (resource links for mentioned files, images).
+  async prompt(text, blocks = []) {
     const state = this.state;
-    if (!text.trim()) return;
+    if (!text.trim() && !blocks.length) return;
     if (state.status === "working") {
       addNotice(state.transcript, "Still working on the last message; send again when it's done.", "warn");
       return this.changed(false);
@@ -173,7 +174,7 @@ export class ChatSession {
     state.error = null;
     this.changed(false);
     try {
-      const r = await this.conn.request("session/prompt", { sessionId: state.sessionId, prompt: [{ type: "text", text }] });
+      const r = await this.conn.request("session/prompt", { sessionId: state.sessionId, prompt: [...(text.trim() ? [{ type: "text", text }] : []), ...blocks] });
       if (r?.stopReason && r.stopReason !== "end_turn") addNotice(state.transcript, stopNote(r.stopReason), "warn");
     } catch (e) {
       addNotice(state.transcript, e.message, "error");
