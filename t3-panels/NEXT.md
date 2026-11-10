@@ -59,6 +59,24 @@ Then: QA.md rows, light-theme shots, end state (Pi tab in 3-deborah-network, spa
 
 - Round 4, 2. Usage: a dialog with this chat's context over time, per-chat and per-agent totals. Left: a dialog, not a side-panel surface (a surface needs a new block in the layout file); samples start with this build, older chats have one point or none; Pi sends no turn tokens, so its rows say "–"; the Claude Code log sum was run on a real log by hand, but no Claude Code chat exists here to show it in the dialog; no rate-limit banner; remote chats' Claude logs aren't read.
 
+## Next set
+
+A second survey of /opt/code/t3code (apps/web/src unless marked; contracts = packages/contracts/src) for what the lists above don't have. Ranked by value against effort; the first four are built in this round.
+
+1. **Find in thread.** A find bar over a chat: type, see how many messages match, step through them. T3: `components/chat/ThreadFindBar.tsx:26`, `components/threadActionMenu.logic.ts:121` ("Find in thread"). API: yes, the chat holds its transcript; the lane can't be scrolled to a row it hasn't measured, so matches are shown by narrowing the lane to them. Value: high (long agent threads). Effort: M.
+2. **Copy a thread: as Markdown, its path, its branch.** T3: the thread menu's Copy group (`components/threadActionMenu.logic.ts:46-53`) and `lib/copyThreadReference.ts:10` (key `thread.copyReference`, contracts `keybindings.ts:43`). T3 copies a reference; a whole thread as Markdown is ours, for pasting into an issue or another agent. API: yes (`pbcopy` through `exec`, as the copy rows do). Value: medium to high. Effort: S.
+3. **Chats in the command palette.** Go to an open chat by typing its name. T3: `components/CommandPaletteThreadItems.tsx:96`. API: yes, open chats are in shared `ht3-panels.places` and `.titles`; `pane.focus` goes there. Closed chats stay under Earlier chats. Value: medium. Effort: S.
+4. **Mark unread.** A thread you have read goes back to unread so it stays in view. T3: `components/threadActionMenu.logic.ts:180`, `uiStateStore.ts:287`. API: yes, a chat's "done" is its unread mark (`report.js`); the card's menu sets it. Value: medium. Effort: S.
+5. **Pin a chat from its menu.** T3: `components/threadActionMenu.logic.ts:135` (key `thread.pin`, contracts `keybindings.ts:45`). The lists already keep pins (`ht3-agents`, shared `agents.pins`) and draw them; the chat card's own menu has no Pin row. Value: medium. Effort: S.
+6. **Diff lines as context for the agent.** Pick lines or a hunk in the Diff surface, write a comment, and it goes into the message box as a quoted block (T3 does this for pull request review comments and terminal selections: `components/pullRequest/PullRequestCodeTab.tsx`, `components/chat/TerminalContextInlineChip.tsx:16`, `composerDraftStore.ts`). API: partly; `diff.js` draws its own rows, so a click per hunk is possible, a selection of lines is not. Value: high. Effort: L.
+7. **Keys for threads.** Jump to the nth chat, next and previous chat, copy, pin, settle. T3: contracts `keybindings.ts:11-19` (`thread.jump.1`..`9`), `:41-46`. The layout has keys for tabs and spaces; the Inbox order isn't reachable by key. API: yes (`keys.json`, a command on `ht3-inbox`). Value: medium. Effort: M.
+8. **New chat on this branch, and the branch in the chat's header.** T3: `components/threadActionMenu.logic.ts:126`, `components/BranchToolbarBranchSelector.tsx:97`. Switching branches is in the Project popover already. Value: low to medium. Effort: S.
+9. **Send and start a new thread; send in the background.** T3: contracts `keybindings.ts:91-92`, `components/chat/ChatComposer.tsx:3638`. API: yes (`tab.new` with `prompt`). Value: low. Effort: M.
+10. **A terminal drawer per thread.** T3: `components/ThreadTerminalDrawer.tsx:496`, `components/chat/ChatTerminalDrawers.tsx` (key `terminal.toggle`, contracts `keybindings.ts:63`). The layout has a bottom terminal per space (`cmd-j`); one per chat means a terminal block per chat in the layout file. Value: low. Effort: L.
+11. **Regenerate title.** T3: `components/threadActionMenu.logic.ts:173`, `hooks/useThreadActionMenu.ts:250`. Needs a model call outside the chat's own session. Value: low. Effort: M.
+
+Looked for and not in T3 Code (so not ported): editing a sent message and resending it (no such code in the clone), exporting a thread to a file. Already here: the model can be switched between messages (the model control), cards can be dragged to reorder (`ht3-inbox/drag.js`), branches are switched in the Project popover.
+
 ## Candidates
 
 Each entry: what it does / T3 location / mod API support / value for multi-machine agent users / effort.
