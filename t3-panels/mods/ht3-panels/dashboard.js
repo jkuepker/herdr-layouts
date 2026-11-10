@@ -205,7 +205,8 @@ export class DashboardPanel {
     const past = Array.isArray(row?.points) ? row.points.map((p) => p[1]).filter((x) => x != null) : st.past;
     return v_flex().gap(6)
       .child(h_flex().gap(4).items_baseline()
-        .child(div().text_size(24).line_height("28px").font_semibold().text_color(this.tone(k, l) ?? k.foreground).child(text))
+        // A number is large; words (a host name, a state) are smaller and cut where the card ends.
+        .child(div().min_w(0).truncate().text_size(text.length > 10 ? 16 : 24).line_height("28px").font_semibold().text_color(this.tone(k, l) ?? k.foreground).child(text))
         .when(!!w.unit && text !== "–", (el) => el.child(div().text_size(12).text_color(k.muted).child(w.unit))))
       .when(!!sub, (el) => el.child(div().text_size(11).line_height("15px").text_color(k.muted).child(String(sub))))
       .when(!!w.spark && past.length > 1, (el) => el.child(this.spark(k, past, l)));
