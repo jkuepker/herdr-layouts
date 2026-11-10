@@ -92,6 +92,8 @@ Looked for and not in T3 Code (so not ported): editing a sent message and resend
 
 - Next set 5. Pin and Unpin in the card menu; the Agents list no longer drops a chat's pin. Left: a chat's pin is by pane, so closing the tab and reopening the chat from Earlier chats loses it; no key (`thread.pin` in T3); the right-click was driven by command.
 
+- Next set 6. Diff hunks as context: pick a hunk, comment, and it lands in the shown chat's message box as a quoted diff block. Left: whole hunks only, no single lines or a selection; the chat of the shown tab only (not the side chat, not a terminal agent); adding it turns `@` chips already in the box into plain text; the click and Esc were driven by command.
+
 ## Candidates
 
 Each entry: what it does / T3 location / mod API support / value for multi-machine agent users / effort.

@@ -7,9 +7,9 @@
 // (watchFolder) and a 15 s timer.
 
 import { div, list } from "gpui-kit";
-import { v_flex, h_flex, Scrollbar } from "gpui-base";
-import { exec, watchFolder, shared } from "herdr";
-import { tokens, alpha, icon, iconButton } from "./look.js";
+import { v_flex, h_flex, Scrollbar, InputState, Input } from "gpui-base";
+import { exec, watchFolder, shared, setShared, focused } from "herdr";
+import { tokens, alpha, icon, iconButton, button } from "./look.js";
 import { fileIcon } from "./fileicons.js";
 import { activeSpace, placeOf, showing } from "./side.js";
 import { syntax } from "./editor.js";
@@ -106,6 +106,13 @@ export class DiffPanel {
     this.watched = null;
     this.more = 0;
     this.seen = null;
+    // A hunk as context for the agent: a click on a hunk's header picks it, a comment is written under the list,
+    // and both go into the shown chat's message box as a quoted block (chat.js takes shared "ht3-panels.quote").
+    this.picked = null; // the picked hunk's row id, "h:<path>:<n>"
+    this.said = null; // what happened to the last one
+    this.note = InputState.new({ placeholder: "What should the agent do about this change?" });
+    this.note.on("change", (_e, cx) => cx.notify());
+    this.note.on("submit", (_e, cx) => this.quote(cx));
     this.follow(cx);
     cx.timer.every(15000, (cx) => this.refresh(cx));
   }
@@ -113,6 +120,40 @@ export class DiffPanel {
   // `ht3-panels.scope:branch|unstaged`: what the Diff compares, as its header's menu, for scripts and the popover.
   command(c, cx) {
     if (c === "scope:branch" || c === "scope:unstaged" || (c === "scope:turn" && this.turn)) this.setScope(cx, c.slice(6));
+    // hunk:<n> picks the nth hunk shown (from 0; hunk: lets go of it), comment:<text> sends it to the chat with that comment.
+    if (c.startsWith("hunk:")) { const ids = this.rows().filter((r) => r.kind === "hunk").map((r) => r.id); this.pickHunk(cx, c.slice(5) === "" ? null : ids[Number(c.slice(5))] ?? null); }
+    if (c.startsWith("comment:")) { this.note.set_value(c.slice(8)); this.quote(cx); }
+  }
+
+  pickHunk(cx, id) {
+    this.picked = id && id !== this.picked ? id : null;
+    this.said = null;
+    this.note.set_value("");
+    if (this.picked) this.note.focus();
+    cx.notify();
+  }
+  // The picked hunk: { path, h, from, to } (its lines in the new file, or in the old one for a removal), or null once it is gone.
+  hunkAt() {
+    const m = /^h:(.*):(\d+)$/.exec(this.picked ?? ""), f = m ? this.files?.find((x) => x.path === m[1]) : null, h = f?.hunks[Number(m?.[2])];
+    if (!h) return null;
+    const ns = h.lines.map((l) => l.n ?? null).filter((n) => n != null), os = h.lines.map((l) => l.o ?? null).filter((n) => n != null);
+    const span = ns.length ? ns : os;
+    return { path: f.path, h, from: span[0] ?? 0, to: span.at(-1) ?? 0 };
+  }
+  // Into the message box of the chat in the shown tab: the hunk as a diff block, then the comment.
+  quote(cx) {
+    const at = this.hunkAt(), tab = focused()?.tab, places = shared("ht3-panels.places") ?? {};
+    if (!at) return;
+    if (!Object.values(places).some((p) => p.tab === tab)) { this.said = "The shown tab isn't a chat: show the chat this is for, then add it."; return cx.notify(); }
+    const MAX = 80, lines = at.h.lines.slice(0, MAX).map((l) => `${l.t}${l.text}`);
+    const fence = lines.some((l) => l.includes("```")) ? "````" : "```";
+    const text = [`In \`${at.path}\` (${at.from === at.to ? `line ${at.from}` : `lines ${at.from}-${at.to}`}):`, `${fence}diff`, at.h.head.match(/^@@[^@]*@@/)?.[0] ?? "@@", ...lines,
+      ...(at.h.lines.length > MAX ? [`… ${at.h.lines.length - MAX} more lines`] : []), fence, this.note.value().trim()].filter((l) => l !== "").join("\n");
+    setShared("ht3-panels.quote", { tab, text, at: Date.now() });
+    this.picked = null;
+    this.note.set_value("");
+    this.said = `Added to the chat's message box: ${at.path}, ${at.from === at.to ? `line ${at.from}` : `lines ${at.from}-${at.to}`}.`;
+    cx.notify();
   }
   setScope(cx, scope) {
     this.pick = false;
@@ -255,6 +296,7 @@ export class DiffPanel {
     const add = files.reduce((n, f) => n + f.add, 0), del = files.reduce((n, f) => n + f.del, 0);
     const rows = files.length ? this.rows() : [];
     const allShut = files.length > 0 && files.every((f) => this.shut.has(f.path));
+    const picked = this.hunkAt();
     return root
       .child(h_flex().h(40).flex_none().px(16).gap(8).items_center().border_b(1).border_color(alpha(k.border, 0.6))
         .child(icon("file-diff").size(14).flex_none().text_color(k.muted))
@@ -289,17 +331,32 @@ export class DiffPanel {
           const r = rows[i];
           if (r.kind === "file") return this.fileHeader(k, r);
           if (r.kind === "line") return this.lineRow(k, r, colors);
-          if (r.kind === "hunk") return h_flex().h(22).w_full().px(12).gap(8).items_center().overflow_hidden().bg(alpha(k.info, k.dark ? 0.1 : 0.06)).font_family(k.mono).text_size(11).text_color(k.muted)
+          // A hunk's header: a click picks the hunk to comment on for the agent.
+          if (r.kind === "hunk") return h_flex().h(22).w_full().px(12).gap(8).items_center().overflow_hidden().bg(alpha(k.info, r.id === this.picked ? 0.28 : k.dark ? 0.1 : 0.06)).font_family(k.mono).text_size(11).text_color(r.id === this.picked ? k.foreground : k.muted)
+            .cursor_pointer().hover((s) => s.bg(alpha(k.info, 0.2)))
             .child(div().flex_none().child(r.h.head.match(/^@@[^@]*@@/)?.[0] ?? "@@"))
-            .child(div().min_w(0).truncate().child(r.h.ctx));
+            .child(div().flex_1().min_w(0).truncate().child(r.h.ctx))
+            .child(h_flex().flex_none().gap(4).items_center().child(icon("message-square").size(12).flex_none()).child(r.id === this.picked ? "Commenting" : "Comment"));
           return div().h(24).px(12).flex().items_center().text_size(11).text_color(k.muted).child(r.text);
         })
           .on_item_click((id, cx) => {
+            if (id.startsWith("h:")) return this.pickHunk(cx, id);
             if (!id.startsWith("f:")) return;
             const p = id.slice(2);
             if (this.shut.has(p)) this.shut.delete(p); else this.shut.add(p);
             cx.notify();
           }))
-        .child(Scrollbar.vertical("ht3-diff-rows").absolute().inset_0())));
+        .child(Scrollbar.vertical("ht3-diff-rows").absolute().inset_0())))
+      // The comment on the picked hunk, under the list; Enter or the button puts both into the shown chat's message box.
+      .when(!!picked, (el) => el.child(v_flex().flex_none().px(12).py(10).gap(8).border_t(1).border_color(k.border).bg(k.card)
+        .on_key_down((e, cx) => { if (e.key === "escape") this.pickHunk(cx, null); })
+        .child(h_flex().gap(6).items_center().text_size(12).text_color(k.muted)
+          .child(icon("message-square").size(14).flex_none())
+          .child(div().flex_1().min_w(0).truncate().child(`${picked.path} · ${picked.from === picked.to ? `line ${picked.from}` : `lines ${picked.from}-${picked.to}`} · ${picked.h.lines.length} line${picked.h.lines.length === 1 ? "" : "s"} of diff`)))
+        .child(h_flex().gap(8).items_center()
+          .child(div().flex_1().min_w(0).h(30).px(8).rounded(8).border(1).border_color(k.input).bg(k.background).text_size(13).child(Input.new(this.note)))
+          .child(button(k, "hunk-cancel", "Cancel", (cx) => this.pickHunk(cx, null), { variant: "outline", size: "sm" }))
+          .child(button(k, "hunk-add", "Add to chat", (cx) => this.quote(cx), { variant: "default", size: "sm" })))))
+      .when(!!this.said, (el) => el.child(div().flex_none().px(12).py(6).border_t(1).border_color(k.border).text_size(12).text_color(k.muted).child(this.said)));
   }
 }

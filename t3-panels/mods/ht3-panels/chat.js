@@ -196,6 +196,19 @@ export class ChatPanel {
           this.source.changed?.(cx, true);
         }
       }
+      // A hunk picked in the Diff surface with its comment (diff.js `quote`), for the chat of the shown tab: it goes
+      // onto the end of the message box as a quoted block, to be read, changed and sent by the person.
+      const qt = shared(`${MOD}.quote`);
+      if (qt && qt.at !== this.quoteSeen) {
+        this.quoteSeen = qt.at;
+        if (qt.tab && qt.tab === this.reporter?.tab && Date.now() - qt.at < 10000) {
+          const now = this.input.value().replace(/\s+$/, "");
+          this.input.set_value(`${now ? `${now}\n\n` : ""}${qt.text}\n`);
+          this.hasText = true;
+          this.input.focus();
+          cx.notify();
+        }
+      }
       // A name given elsewhere (the Inbox's thread menu) shows here and in the lists.
       if (this.named() !== (this.wasNamed ?? null)) { this.wasNamed = this.named(); this.report(); cx.notify(); }
       if (this.since != null || this.fitHint()) cx.notify();

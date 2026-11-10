@@ -105,6 +105,8 @@ Everything uses T3 Code's sizes (1rem = 16px): 14px text on a 23px line, 8px con
 
 - **Pin from the card menu.** A card's right-click menu in the Inbox has **Pin** (Unpin when it is pinned), for chats and terminal agents alike: it adds the card's address to the lists' one set of pins (shared `agents.pins`), so the card shows its pin in the Inbox and stands under Pinned in the Agents list. The Agents list used to drop the pin of anything that is no live terminal within a second; it now keeps the pin of a chat tab while that tab is listed (`ht3-agents/main.js` `prune`). In the open menu: `key:i`.
 
+- **A diff hunk as context for the agent.** In the Diff surface every hunk header (`@@ -1,3 +1,4 @@`) says **Comment**: a click picks the hunk (click again, Cancel or Esc lets go) and a bar under the list names it (file, lines) with a field for what the agent should do. Enter or **Add to chat** puts a quoted block on the end of the message box of the chat in the shown tab, after whatever is typed there: "In `<file>` (lines a-b):", the hunk as a fenced `diff` block (at most 80 lines), then the comment. Nothing is sent: you read it, add more hunks, and send. With no chat in the shown tab the bar says so and keeps the comment. The Diff hands it over in shared `ht3-panels.quote` (`{tab, text, at}`), which the chat takes within a second. Scripts, in the shown Diff: `hunk:<n>` (nth hunk shown, from 0; `hunk:` lets go), `comment:<text>` (`diff.js` `pickHunk`, `quote`).
+
 ## Built from
 
 - **One mod, `ht3-panels`**, with many faces picked in `main.js` by how a copy is opened (`mod.json`: `{"place": "none", "overlay": {"width": 512, "height": 660}}`):
