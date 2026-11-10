@@ -78,10 +78,11 @@ export function button(k, id, label, onClick, { variant = "outline", size = "xs"
 }
 
 // An icon-only button: 28 ("sm"), 24 ("xs") or 20 ("micro") square.
-export function iconButton(k, id, glyph, onClick, { size = "xs", tip = null, on = false, color = null } = {}) {
+export function iconButton(k, id, glyph, onClick, { size = "xs", tip = null, on = false, color = null, ring = false } = {}) {
   const box = { sm: 28, xs: 24, micro: 20 }[size];
   let el = h_flex().id(id).size(box).flex_none().items_center().justify_center()
     .rounded(size === "micro" ? 4 : 8).bg(on ? k.accent : "#00000000").text_color(color ?? (on ? k.foreground : k.muted))
+    .when(ring && on, (e) => e.border(1).border_color(k.primary))
     .child(icon(glyph).size(size === "micro" ? 12 : 14).flex_none());
   if (tip) el = el.tooltip(tip);
   return stop(el).role("button").accessibility_label(tip || id).cursor_pointer()

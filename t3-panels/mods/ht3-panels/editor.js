@@ -12,6 +12,7 @@ import { div } from "gpui-kit";
 import { v_flex, h_flex, Editor, EditorState, InputState, Input } from "gpui-base";
 import { spaces, panes, focused, exec, readTextFile, writeTextFile, watchFolder, theme, pickFolder, shared, setShared } from "herdr";
 import { tokens, alpha, icon, button, iconButton, shortPath } from "./look.js";
+import { fileIcon } from "./fileicons.js";
 
 const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", cjs: "js", toml: "yaml", jsonc: "json", svelte: "html", vue: "html", yml: "yaml", htm: "html", markdown: "md", zsh: "sh", bash: "sh" };
 const PER_FOLDER = 500, TOTAL = 5000;
@@ -41,7 +42,7 @@ function place() {
 // own t3-light (pierre-light darkened to 4.5:1 by its readableSyntaxTheme.ts), not the terminal's ANSI palette.
 const PIERRE_DARK = { keyword: "#ff678d", string: "#5ecc71", "string.escape": "#61d5c0", comment: "#737373", function: "#9d6afb", type: "#d568ea", number: "#68cdf2", constant: "#ffd452", boolean: "#68cdf2", variable: "#ffa359", operator: "#08c0ef", punctuation: "#636363" };
 const T3_LIGHT = { keyword: "#b12251", string: "#106a2b", "string.escape": "#0b685b", comment: "#5c5c5c", function: "#693acf", type: "#912ba7", number: "#0b5267", constant: "#735b02", boolean: "#0b5267", variable: "#8f4e17", operator: "#006781", punctuation: "#4b4b4b" };
-function syntax() {
+export function syntax() {
   const bg = (theme().background || "#000000").slice(1, 7), [r, g, b] = [0, 2, 4].map((i) => parseInt(bg.slice(i, i + 2), 16));
   const s = 0.299 * r + 0.587 * g + 0.114 * b > 128 ? T3_LIGHT : PIERRE_DARK;
   // gpui-component's finer captures, coloured as T3 Code colours them: Python docstrings are strings.
@@ -133,7 +134,7 @@ export class FilePanel {
     if (this.ctx?.key === key) return;
     let c = this.ctxs.get(key);
     if (!c) {
-      c = { key, root, on: p.on, space: p.space, entries: new Map(), folders: new Set(), pending: new Set(), marks: {}, tabs: [], active: -1,
+      c = { key, root, on: p.on, space: p.space, entries: new Map(), folders: new Set(), pending: new Set(), marks: {}, ignored: new Set(), tabs: [], active: -1,
         tree: true, loading: false, limited: false, error: null, watched: false, files: null, indexing: false };
       this.ctxs.set(key, c);
     }
@@ -183,6 +184,9 @@ export class FilePanel {
           marks[entry.slice(3)] = xy === "??" || xy.includes("A") ? "A" : xy.includes("U") ? "U" : xy.includes("D") ? "D" : "M";
         }
         c.marks = marks;
+        // Git-ignored files and folders (a folder is listed once, not its contents): drawn dimmed.
+        const ign = await exec("git", ["--no-optional-locks", "ls-files", "-z", "-o", "-i", "--exclude-standard", "--directory"], { cwd: c.root, on: c.on }).catch(() => null);
+        c.ignored = new Set(ign?.code === 0 ? ign.stdout.split("\0").filter(Boolean).slice(0, TOTAL).map((x) => x.replace(/\/$/, "")) : []);
         c.error = null;
         this.watch(c, cx);
       } catch (e) { c.error = String(e?.message ?? e); }
@@ -356,7 +360,7 @@ export class FilePanel {
     // A tab made before the wrap switch changed takes it on when shown.
     if (tab?.state && tab.wrap !== this.wrap) this.editorFor(tab, tab.state.value());
     return root
-      .child(this.strip(k, c))
+      .when(c.tabs.length > 0, (el) => el.child(this.strip(k, c)))
       .child(h_flex().flex_1().min_h(0).items_stretch()
         .when(!!tab, (el) => el.child(this.fileView(k, c, tab)))
         .when(!tab || c.tree, (el) => el.child(this.explorer(k, c, !tab))));
@@ -371,7 +375,7 @@ export class FilePanel {
         .role("button").accessibility_label(`${title} tab`)
         .on_click((_e, cx) => select(cx))
         .child(h_flex().relative().size(16).flex_none().items_center().justify_center()
-          .child(icon(glyph).size(12))
+          .child(glyph === "file" ? fileIcon(title, k.dark, 12) : icon(glyph).size(12))
           .when(dirty, (d) => d.child(div().absolute().right(-1).bottom(-1).size(6).rounded_full().bg(k.foreground))))
         .child(div().min_w(0).truncate().child(title));
       if (tip) el = el.tooltip(tip);
@@ -380,7 +384,7 @@ export class FilePanel {
         .hover((s) => s.bg(k.input)).on_click((_e, cx) => { cx.stop_propagation?.(); close(cx); }).child(icon("x").size(12)));
       return el;
     };
-    return h_flex().id("ht3-files-tabs").h(40).flex_none().pl(8).pr(12).gap(4).items_center().overflow_hidden()
+    return h_flex().id("ht3-files-tabs").h(32).flex_none().pl(8).pr(12).gap(4).items_center().overflow_hidden()
       .child(tabEl("tab-files", c.active < 0, "files", "Files", { select: (cx) => { c.active = -1; cx.notify(); }, tip: c.on ? `${c.on}:${c.root}` : shortPath(c.root) }))
       .children(c.tabs.map((t, i) => tabEl(`tab-${t.path}`, c.active === i, "file", t.path.split("/").pop(), {
         dirty: t.dirty, tip: t.dirty ? `${t.path} · unsaved` : t.path,
@@ -430,17 +434,25 @@ export class FilePanel {
     return out;
   }
 
+  // Ignored by Git: the path, or a folder above it, is in the ignored list.
+  isIgnored(c, path) {
+    if (!c.ignored.size) return false;
+    for (let at = path.length; at > 0; at = path.lastIndexOf("/", at - 1)) if (c.ignored.has(path.slice(0, at))) return true;
+    return false;
+  }
+
   // @pierre/trees as T3 themes it: 24px rows, 12px text, 6 round, hover 7% and selected 12% of the text color.
   fileRow(k, c, path, name, { dir = false, isOpen = false, depth = 0, selected = false, loading = false, detail = null }) {
     const mark = c.marks[path];
     const hidden = name.startsWith(".");
+    const ignored = this.isIgnored(c, path);
     return h_flex().id(`f-${path}`).h(ROW).flex_none().mx(2).pl(6 + depth * 12).pr(6).gap(4).items_center().rounded(6).cursor_pointer()
       .bg(selected ? alpha(k.foreground, 0.12) : "#00000000").hover((s) => s.bg(alpha(k.foreground, selected ? 0.12 : 0.07)))
       .role("button").accessibility_label(path)
       .on_click((_e, cx) => (dir ? this.toggle(cx, path) : this.open(cx, path)))
       .child(dir ? icon(isOpen ? "chevron-down" : "chevron-right").size(12).flex_none().text_color(k.muted) : div().w(12).flex_none())
-      .child(icon(dir ? (isOpen ? "folder-open" : "folder") : "file").size(14).flex_none().text_color(k.muted))
-      .child(div().flex_shrink(detail ? 0 : 1).min_w(0).truncate().text_color(mark === "D" ? k.destructiveText : hidden ? k.muted : k.foreground).child(name))
+      .child(dir ? icon(isOpen ? "folder-open" : "folder").size(14).flex_none().text_color(ignored ? alpha(k.muted, 0.5) : k.muted) : fileIcon(name, k.dark, 14).opacity(ignored ? 0.5 : 1))
+      .child(div().flex_shrink(detail ? 0 : 1).min_w(0).truncate().text_color(mark === "D" ? k.destructiveText : ignored ? alpha(k.muted, 0.7) : hidden ? k.muted : k.foreground).child(name))
       .when(!!detail, (el) => el.child(div().flex_1().min_w(0).truncate().text_size(11).text_color(k.muted).child(detail)))
       .when(!detail, (el) => el.child(div().flex_1()))
       .when(loading, (el) => el.child(icon("refresh-cw").size(12).flex_none().text_color(k.muted).spin(1000)))

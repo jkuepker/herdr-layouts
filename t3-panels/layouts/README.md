@@ -1,22 +1,47 @@
 # Layout fragment
 
-`ht3-panels` is a mod for a layout you already have (the Herdr T3 layout, `layouts/herdr-t3.json`), so this folder holds no layout file. Add these three things to that layout:
+`ht3-panels` is a mod for a layout you already have (the Herdr T3 layout, `layouts/herdr-t3.json`), so this folder holds no layout file. Make these changes to that layout (the file is generated from a backup by a small script in the build notes; every id below is used by the mod and must stay):
 
-1. In `tabs-row`, before `tabs-end`, the two buttons:
+1. In `tabs-row`, before `tabs-end`, the buttons (New chat, maximize the panel, bottom panel, right panel):
 
 ```json
-{ "id": "ht3-panel-buttons", "type": "block", "size": { "px": 68 }, "window_drag": true,
+{ "id": "ht3-panel-buttons", "type": "block", "size": { "px": 132 }, "window_drag": true,
   "content": { "mod": "ht3-panels", "props": { "panel": "buttons" } } }
 ```
 
-2. In `work-body`, after `main`, the right column with the file panel (hidden until toggled):
+2. In `work-body` (a row with `"padding": [0, 8]`, `"gap": 8` and `"divider": { "width": 1, "color": "border" }`), the work area's `main` block moves into a column, `ht3-center`, with the bottom panel under it, and the right side panel follows it. No `border` and no `radius` on the side panel: only the 1px divider of `work-body` separates it.
 
 ```json
-{ "id": "ht3-side", "type": "column", "size": { "px": 540 }, "min": 360, "max": 900, "hidden": true, "border": { "width": 1, "color": "border" },
-  "background": "background", "radius": 8,
+{ "id": "ht3-center", "type": "column", "gap": 8, "divider": { "width": 1, "color": "border" },
   "children": [
-    { "id": "ht3-files", "type": "block", "content": { "mod": "ht3-panels", "props": { "panel": "editor" } } } ] }
+    { "id": "main", "type": "block", "background": "border",
+      "content": { "tab": "active", "pane": { "header": { "content": { "mod": "ht3-pane" }, "reveal": "always", "height": 28, "position": "top" },
+                                              "background": "background", "gap": 1, "radius": 0, "lone": true } } },
+    { "id": "ht3-bottom", "type": "stack", "size": { "px": 240 }, "min": 120, "max": 800, "hidden": true, "active": "ht3-bottom-empty",
+      "children": [ { "id": "ht3-bottom-empty", "type": "block", "content": { "mod": "ht3-panels", "props": { "panel": "empty", "bottom": true } } } ] } ] },
+{ "id": "ht3-side", "type": "column", "size": { "px": 540 }, "min": 360, "max": 3000, "hidden": true,
+  "background": "background", "divider": { "width": 1, "color": "border" },
+  "children": [ GROUP("a"), GROUP("b") ] }
 ```
+
+where `GROUP(g)` is a column that never resizes itself, with a 40px strip and a stack of faces (group `b` has `"hidden": true`):
+
+```json
+{ "id": "ht3-<g>", "type": "column", "resizable": false,
+  "children": [
+    { "id": "ht3-<g>-strip", "type": "block", "size": { "px": 40 }, "content": { "mod": "ht3-panels", "props": { "panel": "strip", "group": "<g>" } } },
+    { "id": "ht3-<g>-body", "type": "stack", "active": "ht3-files",
+      "children": [
+        { "id": "<files>", "type": "block", "content": { "mod": "ht3-panels", "props": { "panel": "editor", "group": "<g>" } } },
+        { "id": "ht3-<g>-diff",    "type": "block", "content": { "mod": "ht3-panels", "props": { "panel": "diff",    "group": "<g>" } } },
+        { "id": "ht3-<g>-pr",      "type": "block", "content": { "mod": "ht3-panels", "props": { "panel": "pr",      "group": "<g>" } } },
+        { "id": "ht3-<g>-prs",     "type": "block", "content": { "mod": "ht3-panels", "props": { "panel": "prs",     "group": "<g>" } } },
+        { "id": "ht3-<g>-browser", "type": "block", "content": { "mod": "ht3-panels", "props": { "panel": "browser", "group": "<g>" } } },
+        { "id": "ht3-<g>-chat",    "type": "block", "content": { "mod": "ht3-panels", "props": { "panel": "side",    "group": "<g>" } } },
+        { "id": "ht3-<g>-empty",   "type": "block", "content": { "mod": "ht3-panels", "props": { "panel": "empty",   "group": "<g>" } } } ] } ] }
+```
+
+`<files>` is `ht3-files` for group `a` (with props `{"panel": "editor"}` only) and `ht3-b-files` for `b`. Terminal blocks (`ht3-term-<address>` in a group's stack, `ht3-bterm-<address>` in `ht3-bottom`) are not in the fragment: the mod writes them into the layout file when a terminal is opened and removes them when it ends.
 
 3. On the root, the themes:
 
@@ -24,4 +49,8 @@
 "theme": { "light": "t3code-light", "dark": "t3code-dark" }
 ```
 
-The column's id must stay `ht3-side`: the buttons and the `cmd-shift-e` key toggle it by that name.
+The ids `ht3-side`, `ht3-center`, `ht3-bottom`, `ht3-a`, `ht3-b` and the stacks `ht3-a-body` / `ht3-b-body` must stay: the buttons, the `cmd-shift-e` key and the mod's state code use them by name.
+
+## Panes have no frame, only a split line
+
+A pane has no `border` and no `focus` frame, and no `radius`: T3 Code's chat has none. Herdr's pane look has no divider of its own (`divider` is for `row` and `column` nodes only, and a `divider` key in `pane` is ignored), so the line between two panes is the 1px `gap` between them with the `main` block's `background` (`"border"`, the theme's border color) showing through. The pane fill (`"background"`) covers the rest of the block.

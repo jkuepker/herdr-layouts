@@ -14,5 +14,11 @@ light one adds `dim`.
 
 mods/ht3-panels/icons/ come from Lucide (https://lucide.dev, ISC), except stop.svg, drawn after T3 Code's stop glyph.
 
+mods/ht3-panels/icons/files/ and fileicons.data.js hold the file-type icons and the file-name tables of @pierre/trees
+1.0.0-beta.6 (github.com/pierrecomputer/pierre, Apache License 2.0; its license is in mods/ht3-panels/icons/files/LICENSE.pierre-trees),
+cut from its built-in "complete" sprite into one SVG each, with T3 Code's additions to it (apps/web/src/pierre-icons.ts,
+MIT: the TOML, PDF, Word, XML, Java, PHP, Lua and other glyphs, Lucide ISC and Simple Icons CC0) and its color table
+(apps/web/src/components/chat/PierreEntryIcon.tsx). The SVGs are drawn in one color each, from the table.
+
 The look follows T3 Code (github.com/pingdotgg/t3code, MIT): sizes, radii, spacing and colors are read from its
 apps/web/src; no code is copied from it.
