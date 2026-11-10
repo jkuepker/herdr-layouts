@@ -12,6 +12,15 @@ export function addUser(t, text, attachments = null) {
   push(t, attachments?.length ? { kind: "user", text, attachments } : { kind: "user", text });
 }
 
+// What was said so far, as text a new session can be told (a forked chat's first prompt): the
+// messages and replies in order, the oldest dropped first when it runs past `max` characters.
+export function handoffText(t, max = 60000) {
+  const parts = t.items.filter((m) => (m.kind === "user" || m.kind === "agent") && m.text).map((m) => `${m.kind === "user" ? "User" : "Assistant"}: ${m.text.trim()}`);
+  let text = parts.join("\n\n");
+  if (text.length > max) text = "…" + text.slice(-max);
+  return text;
+}
+
 export function addNotice(t, text, level = "info") {
   push(t, { kind: "notice", text, level });
 }

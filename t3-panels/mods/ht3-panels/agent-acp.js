@@ -4,7 +4,7 @@
 // the drawing taken out. In a space on another machine the local program is ssh, and the
 // agent runs there under that user's login shell.
 
-import { exec, hc, spawn, processWrite, processNextLine, processExited, processKill, home, readTextFile } from "herdr";
+import { exec, hc, spawn, processWrite, processNextLine, processExited, processKill, home, readTextFile, appHome, run, focused } from "herdr";
 import * as fs from "fs/promises";
 import { ChatSession } from "./session.js";
 
@@ -96,6 +96,31 @@ export function argvOf(agent, found) {
   if (Array.isArray(agent)) return agent;
   const a = AGENTS.find((x) => x.id === agent);
   return a && found[a.argv[0]] ? [found[a.argv[0]], ...a.argv.slice(1)] : null;
+}
+
+// Fork a thread (useTimelineRewind.ts forkFromRun): a new chat tab on the same agent and folder that
+// starts with this chat's messages, all of them or those up to and with item `upto`. ACP has no
+// fork, so the new chat is a new session, told what was said with its first message (session.js
+// `handoff`). Reads the chat as it was last saved (at most a second old). -> the new chat's id, or null.
+export async function forkChat(chatId, upto = null) {
+  const root = `${appHome()}/data/ht3-panels/chats`;
+  let old;
+  try { old = JSON.parse(await readTextFile(`${root}/${chatId}/state.json`)); } catch { return null; }
+  if (!Array.isArray(old?.agentArgv)) return null;
+  const items = old.transcript?.items ?? [];
+  const at = upto == null ? items.length - 1 : items.findIndex((m) => String(m.id) === String(upto));
+  if (at < 0) return null;
+  const kept = items.slice(0, at + 1).filter((m) => m.kind !== "notice").map((m) => ({ ...m, open: false, pending: false }));
+  const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  const state = { v: 1, seq: 0, status: "ready", agentArgv: old.agentArgv, agentInfo: old.agentInfo ?? null, cwd: old.cwd ?? null, machine: old.machine ?? null,
+    sessionId: null, configOptions: [], permission: null, error: null, handoff: kept.length > 0, forkedFrom: { chat: chatId, upto },
+    transcript: { items: kept, dropped: old.transcript?.dropped ?? 0, usage: null, commands: [], nextId: old.transcript?.nextId ?? kept.length + 1 } };
+  await fs.mkdir(`${root}/${id}`, { recursive: true });
+  await fs.writeFile(`${root}/${id}/state.json`, JSON.stringify(state));
+  const space = focused()?.space;
+  run("tab.new", { mod: "ht3-panels", ...(space ? { space } : {}), name: old.agentInfo?.title ?? old.agentInfo?.name ?? "Fork",
+    props: { panel: "chat", chat: id, agent: old.agentArgv, cwd: old.cwd ?? null, machine: old.machine ?? null } });
+  return id;
 }
 
 export class AcpSource {
@@ -218,6 +243,11 @@ export class AcpSource {
       cx.timer.after(SAVE_EVERY_MS, () => { this.saveSoon = false; save(); });
     }
     this.onChanged(cx, urgent);
+  }
+
+  // The chat on disk as it is now (before a fork reads it).
+  async save() {
+    if (this.session) await fs.writeFile(`${this.dir}/state.json`, this.session.snapshot(MAX_STATE_BYTES)).catch(() => {});
   }
 
   // Keeps the status as it is, so the next copy of this pane resumes the chat.

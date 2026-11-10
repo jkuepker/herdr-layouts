@@ -6,6 +6,7 @@ import { div, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { closeOverlay, exec, run, appHome, shared, setShared } from "herdr";
 import { MOD, tokens, icon, iconButton, shortPath } from "./look.js";
+import { forkChat } from "./agent-acp.js";
 import { editorOn } from "./settings.js";
 import { SURFACES, send, placeOf, activeSpace, surfaceOff, surfacesHere } from "./side.js";
 
@@ -102,11 +103,12 @@ export const openIn = (ed, folder) => (ed
   : exec("open", [folder]));
 
 // The right-click menu of a chat message (ui/menu.tsx): Copy puts `props.text` on the clipboard.
-// Enter or C copies, Esc closes; `ht3-panels.key:enter` presses for scripts.
+// Enter or C copies, F forks (with `props.fork`), Esc closes; `ht3-panels.key:<enter|f|escape>` presses for scripts.
 export class CopyMenu {
   init(p, cx) {
     this.overlay = p.overlay;
     this.text = String(p.text ?? "");
+    this.fork = p.fork ?? null; // { chat, upto }: adds "Fork from here"
     this.focus = cx.focus_handle();
     cx.timer.after(0, () => this.focus.focus());
   }
@@ -116,6 +118,8 @@ export class CopyMenu {
   }
   key(key, cx) {
     if (key === "enter" || key === "c") cx.write_to_clipboard(this.text);
+    // The menu stays until the fork is written: closing it ends what it had begun.
+    if (key === "f" && this.fork) forkChat(this.fork.chat, this.fork.upto).catch(() => null).then(() => closeOverlay(this.overlay));
     if (key === "enter" || key === "c" || key === "escape") closeOverlay(this.overlay);
   }
   render() {
@@ -125,7 +129,10 @@ export class CopyMenu {
       .on_key_down((e, cx) => this.key(e.key.toLowerCase(), cx))
       .child(h_flex().id("copy-row").h(28).px(8).gap(8).items_center().rounded(4).cursor_pointer().role("button").accessibility_label("Copy")
         .hover((s) => s.bg(k.accent)).on_click((_e, cx) => this.key("enter", cx))
-        .child(icon("copy").size(16).flex_none().text_color(k.muted)).child(div().flex_1().child("Copy")));
+        .child(icon("copy").size(16).flex_none().text_color(k.muted)).child(div().flex_1().child("Copy")))
+      .when(!!this.fork, (el) => el.child(h_flex().id("fork-row").h(28).px(8).gap(8).items_center().rounded(4).cursor_pointer().role("button").accessibility_label("Fork from here")
+        .hover((s) => s.bg(k.accent)).on_click((_e, cx) => this.key("f", cx))
+        .child(icon("git-branch").size(16).flex_none().text_color(k.muted)).child(div().flex_1().child("Fork from here"))));
   }
 }
 

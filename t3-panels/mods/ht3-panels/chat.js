@@ -11,7 +11,7 @@ import { div, list, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, TextView, Scrollbar, VirtualListScrollHandle } from "gpui-base";
 import { run, openOverlay, appHome, home, exec, layout, settings, shared, setShared } from "herdr";
 import { MOD, tokens, alpha, icon, agentMark, button, iconButton, control, badge, workLine, divider, shortPath } from "./look.js";
-import { AcpSource, detect, argvOf } from "./agent-acp.js";
+import { AcpSource, detect, argvOf, forkChat } from "./agent-acp.js";
 import { TermSource } from "./agent-term.js";
 import { Reporter } from "./report.js";
 import { fileIcon } from "./fileicons.js";
@@ -79,6 +79,7 @@ const LOCAL_COMMANDS = [
   { name: "side", description: "Ask a side question in the right panel", local: true },
   { name: "new", description: "Start a new chat", local: true },
   { name: "rename", description: "Rename this thread", local: true, args: true },
+  { name: "fork", description: "Continue this thread in a new chat", local: true },
 ];
 
 export function openLauncher() {
@@ -360,6 +361,7 @@ export class ChatPanel {
       if (item.name === "model") { const o = this.view?.options.find((x) => (x.category ?? x.id) === "model"); if (o) { this.picker = o.id; this.filter.set_value(""); if (o.choices.length > 8) this.filter.focus(); } }
       if (item.name === "side") run(`${MOD}.add:chat`);
       if (item.name === "new") openLauncher();
+      if (item.name === "fork") this.fork(cx);
     } else {
       this.input.set_value(`${before}/${item.name} `);
       this.hasText = true;
@@ -428,13 +430,15 @@ export class ChatPanel {
       const last = [...items].reverse().find((m) => m.kind === "agent");
       const m = what === "last" || what === "code" ? last : items.find((x) => String(x.id) === what);
       const text = what === "code" ? segments(m?.text).filter((x) => x.code).pop()?.text : m?.text;
-      if (text != null && c.startsWith("ctx:")) this.copyMenu({ x: 600, y: 300 }, text);
+      if (text != null && c.startsWith("ctx:")) this.copyMenu({ x: 600, y: 300 }, text, m.id);
       else if (text != null) this.copy(cx, `${m.id}:cp`, text);
     }
     // For scripts: type:<text> (as if typed into the message box), take:<n> (the open menu's nth row, from 0), send (the Send button),
     // menu-key:<up|down|enter|escape>.
     if (c.startsWith("type:")) { this.input.set_value(c.slice(5)); this.hasText = !!c.slice(5).trim(); this.typed(cx); }
     if (c === "send") this.send(cx);
+    // fork (the whole thread), fork:last (up to the last reply), fork:<item id> (up to that message).
+    if (c === "fork" || c.startsWith("fork:")) { const w = c.slice(5); this.fork(cx, !w ? null : w === "last" ? [...(this.view?.items ?? [])].reverse().find((m) => m.kind === "agent")?.id : w); }
     if (c.startsWith("rename:")) this.rename(cx, c.slice(7));
     // attach:<path> (as a dropped file), detach:<n>, paste-image (as Cmd+V with a picture on the clipboard).
     if (c.startsWith("attach:")) this.addFiles(cx, [c.slice(7)]);
@@ -672,7 +676,7 @@ export class ChatPanel {
       .children(shown.map((m, i) => {
         const el = div().id(`row-${m.id}`).w_full().child(this.row(k, m, i === 0 && n === rows.length, i === shown.length - 1));
         const text = copies(m);
-        return (text ? el.on_mouse_down("right", (e) => this.copyMenu(e.position, copies(m))) : el)
+        return (text ? el.on_mouse_down("right", (e) => this.copyMenu(e.position, copies(m), ["seg", "user", "copy", "codehead"].includes(m.kind) ? String(m.id).split(":")[0] : null)) : el)
           .when(CLICKS.includes(m.kind), (e) => e.on_click((_e, cx) => click(m, cx)));
       }));
     return v_flex().id("ht3-chat-lane").relative().flex_1().min_h(0).overflow_hidden()
@@ -722,8 +726,20 @@ export class ChatPanel {
   }
 
   // A right-click on a message: a one-row Copy menu at the pointer (menus.js CopyMenu).
-  copyMenu(at, text) {
-    openOverlay({ mod: MOD, kind: "popup", at: { x: at.x, y: at.y }, width: 160, height: 36, props: { menu: "copy", text: String(text ?? "").slice(0, 400000) } });
+  // `upto`: the message it was opened on, which the menu's "Fork from here" forks up to (an ACP chat's own tab or side chat).
+  copyMenu(at, text, upto = null) {
+    const fork = upto != null && this.source.kind === "acp" && this.chatId ? { chat: this.chatId, upto } : null;
+    if (fork) this.source.save?.();
+    openOverlay({ mod: MOD, kind: "popup", at: { x: at.x, y: at.y }, width: 180, height: fork ? 64 : 36, props: { menu: "copy", text: String(text ?? "").slice(0, 400000), fork } });
+  }
+
+  // Fork this thread into a new chat tab: all of it, or up to and with item `upto`.
+  fork(cx, upto = null) {
+    if (this.source.kind !== "acp" || !this.chatId) return;
+    cx.spawn(async () => {
+      await this.source.save?.();
+      await forkChat(this.chatId, upto).catch(() => null);
+    });
   }
 
   // One timeline row in the lane. Rows carry their own space below, as T3's do (16 after a

@@ -7,7 +7,7 @@
 // and calls feed(line) for each stdout line, and exited() when the agent ends.
 
 import { AcpConnection, PROTOCOL_VERSION } from "./acp.js";
-import { emptyTranscript, addUser, addNotice, applyUpdate, endTurn, trim } from "./transcript.js";
+import { emptyTranscript, addUser, addNotice, applyUpdate, endTurn, trim, handoffText } from "./transcript.js";
 
 export class ChatSession {
   // `old`: the chat's last state.json, to continue it.
@@ -39,6 +39,9 @@ export class ChatSession {
       this.state.seq = old.seq ?? 0;
       endTurn(this.state.transcript);
       this.resumeId = old.sessionId ?? null;
+      // A forked chat (agent-acp.js forkChat): its new session is told what was said, with the first message.
+      if (old.handoff) this.state.handoff = true;
+      if (old.forkedFrom) this.state.forkedFrom = old.forkedFrom;
     }
     const state = this.state;
     this.conn = new AcpConnection(write, {
@@ -109,7 +112,8 @@ export class ChatSession {
         const session = await this.conn.request("session/new", { cwd: state.cwd, mcpServers: [] });
         state.sessionId = session.sessionId;
         state.configOptions = configFrom(session);
-        if (state.transcript.items.length) addNotice(state.transcript, "New session: the agent doesn't remember the messages above.");
+        if (state.handoff) addNotice(state.transcript, "Forked: the agent gets the messages above with your next message.");
+        else if (state.transcript.items.length) addNotice(state.transcript, "New session: the agent doesn't remember the messages above.");
       }
       state.status = "ready";
     } catch (e) {
@@ -170,12 +174,16 @@ export class ChatSession {
       addNotice(state.transcript, "Still working on the last message; send again when it's done.", "warn");
       return this.changed(false);
     }
+    // A fork's first message carries the conversation it continues.
+    const told = state.handoff ? handoffText(state.transcript) : "";
+    state.handoff = false;
+    const sent = told ? `This conversation continues an earlier one. What was said so far:\n\n<earlier-conversation>\n${told}\n</earlier-conversation>\n\n${text}` : text;
     addUser(state.transcript, text, attachments);
     state.status = "working";
     state.error = null;
     this.changed(false);
     try {
-      const r = await this.conn.request("session/prompt", { sessionId: state.sessionId, prompt: [...(text.trim() ? [{ type: "text", text }] : []), ...blocks] });
+      const r = await this.conn.request("session/prompt", { sessionId: state.sessionId, prompt: [...(sent.trim() ? [{ type: "text", text: sent }] : []), ...blocks] });
       if (r?.stopReason && r.stopReason !== "end_turn") addNotice(state.transcript, stopNote(r.stopReason), "warn");
     } catch (e) {
       addNotice(state.transcript, e.message, "error");

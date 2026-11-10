@@ -20,6 +20,7 @@ Ranked from a survey of /opt/code/t3code/apps/web/src and apps/server/src agains
 - 2. `@` files: picker, chips, `resource_link` blocks. Left: folders can't be picked, only files; the chip sits where the text ended (no caret position); not tried on another machine.
 - 3. Attachments: drop, `+`, paste a picture; image blocks and resource links. Left: a real drop, the file dialog and Cmd+V were not done by hand (driven by `attach:` and `paste-image`); a chat on another machine gets resource links to paths of this computer for non-pictures; thumbnails are not cleaned up.
 - 4. Thread names (`/rename`, Inbox right-click menu) and Earlier chats with search, reopen and delete in the New chat dialog. Left: the right-click itself and typing in the rename field were driven by command, not by hand; search reads at most the 60 newest chats; chats on another machine reopen only if that machine is reachable.
+- 5. Fork a thread: `/fork`, "Fork from here" on a message. A replay, not a native fork: the new session is told the earlier messages as text. Left: a fork has the same name as its source until renamed; no `session/fork` for agents that have one; a terminal agent's chat can't be forked.
 - Known, same cause as the fix in ht3-panels: the acp-chat mod's chat is a `list`, so it doesn't follow its end in a long chat either.
 
 ## Candidates
