@@ -15,7 +15,8 @@
 // and syncBlocks() gives every terminal tab its block and removes the blocks no tab holds.
 
 import { MOD } from "./look.js";
-import { shared, setShared, spaces, machines, layout, run, notify, hc, appHome, readTextFile, writeTextFile, terminals, focused, panes, home } from "herdr";
+import { shared, setShared, spaces, machines, layout, run, notify, hc, exec, appHome, readTextFile, writeTextFile, terminals, focused, panes, home } from "herdr";
+import { enabledAgents, sideStartsHidden } from "./settings.js";
 
 export const SIDE = "ht3-side", CENTER = "ht3-center", BOTTOM = "ht3-bottom", BOTTOM_EMPTY = "ht3-bottom-empty";
 export const KEY = "ht3-side.state";
@@ -33,6 +34,51 @@ export const SURFACES = [
   { kind: "chat", label: "Side chat", glyph: "messages-square", key: "s" },
 ];
 export const surface = (kind) => SURFACES.find((s) => s.kind === kind);
+
+// ---- surfaces that don't apply here ----
+
+// What a folder allows, asked of the machine it is on: { git: in a repository, github: a remote on
+// GitHub, gh: the GitHub CLI is installed }. Kept a few seconds, so a menu opened again asks again.
+const FACTS_FOR_MS = 5000;
+const facts = new Map(); // "<machine>|<folder>" -> { at, value, asking }
+const factsKey = (where) => `${where?.on ?? ""}|${where?.cwd ?? ""}`;
+export const knownFacts = (where) => facts.get(factsKey(where))?.value ?? null;
+// Asks when it isn't known or is old. -> a promise when it asked (redraw after it), else null.
+export function askFacts(where) {
+  const key = factsKey(where), had = facts.get(key);
+  if (had?.asking || (had && Date.now() - had.at < FACTS_FOR_MS)) return null;
+  const entry = { at: had?.at ?? 0, value: had?.value ?? null, asking: true };
+  facts.set(key, entry);
+  const script = `git rev-parse --is-inside-work-tree 2>/dev/null | grep -q true && echo git; git remote -v 2>/dev/null | grep -qi 'github' && echo github; command -v gh >/dev/null 2>&1 && echo gh; true`;
+  return (where?.cwd ? exec("sh", ["-c", script], { cwd: where.cwd, on: where.on ?? null, timeout: 10000 }) : Promise.reject(new Error("no folder")))
+    .then((r) => r.stdout.split("\n").map((l) => l.trim()), () => null)
+    .then((said) => {
+      // A folder that can't be asked (gone, the machine away) is taken as it reads: no repository there.
+      facts.set(key, { at: Date.now(), asking: false, value: said ? { git: said.includes("git"), github: said.includes("github"), gh: said.includes("gh") } : { git: false, github: false, gh: true } });
+      if (facts.size > 50) facts.delete(facts.keys().next().value);
+    });
+}
+// Why a surface can't open where the space works now, or null. Until the folder has answered,
+// only what is always known counts.
+export function surfaceOff(s, where) {
+  if (s.off) return s.off;
+  if (s.kind === "chat") return enabledAgents().length ? null : "No agent is enabled in Settings.";
+  const f = knownFacts(where);
+  if (!f) return null;
+  if (s.kind === "diff") return f.git ? null : "This folder isn't in a git repository.";
+  if (s.kind === "pr" || s.kind === "prs") {
+    return !f.git ? "This folder isn't in a git repository." : !f.gh ? "The GitHub CLI (gh) isn't installed." : !f.github ? "This repository has no remote on GitHub." : null;
+  }
+  return null;
+}
+// For a face that lists the surfaces: the place now, and its facts asked for when they are due.
+// Call it while drawing; the copy redraws when the answer is in.
+export function surfacesHere(cx) {
+  const where = placeOf(activeSpace());
+  const asked = askFacts(where);
+  if (asked) cx.timer.after(0, (cx) => { cx.spawn(async (cx) => { await asked; cx.notify(); }); });
+  return where;
+}
 
 const clone = (v) => JSON.parse(JSON.stringify(v));
 const blank = () => ({ split: false, w: null, ha: null, a: { tabs: [{ id: "files", kind: "files" }], active: "files" }, b: { tabs: [], active: null }, bottom: null });
@@ -96,9 +142,21 @@ export const bottomShown = () => { const n = find(layout(), BOTTOM); return n ? 
 // Where the space works, for the panel's surfaces: the folder pinned in Files (shared state
 // `ht3-files.pinned`, see editor.js) if the person picked one, else the focused terminal's folder,
 // the first one in its tab, the space's own.
+// The folder of the chat the person is on, or null: a chat pane has no folder of its own to Herdr, its agent
+// works where the chat says (report.js: `cwd` and `machine` in its tab's program). With the focus on a
+// terminal, that terminal's folder counts instead.
+export function chatPlace() {
+  const f = focused(), pane = f?.pane ? panes().find((p) => p.pane === f.pane) : null;
+  if (pane && pane.mod !== MOD) return null;
+  const own = f?.tab ? shared(`${MOD}.programs`)?.[f.tab] : null;
+  return own?.cwd ? { on: own.machine ?? null, cwd: own.cwd } : null;
+}
+
 export function placeOf(space) {
   const held = (shared("ht3-files.pinned") ?? {})[space?.id ?? ""];
   if (held?.root) return { on: held.on ?? null, cwd: held.root };
+  const chat = chatPlace();
+  if (chat) return chat;
   const f = focused(), all = panes();
   const pane = f?.pane ? all.find((p) => p.pane === f.pane) : null;
   const other = all.find((p) => p.tab === f?.tab && p.cwd);
@@ -222,7 +280,7 @@ async function endTerminal(addr) {
 // The keeper's: other copies send(`add:<kind>:<group>`).
 export function openSurface(group, kind) {
   const space = activeSpace();
-  if (!space || !GROUPS.includes(group) || !surface(kind) || surface(kind).off) return Promise.resolve();
+  if (!space || !GROUPS.includes(group) || !surface(kind) || surfaceOff(surface(kind), placeOf(space))) return Promise.resolve();
   if (kind === "terminal") { const where = placeOf(space); return ask((cx) => openTerminal(cx, group, space, where)); }
   change(space.id, (st) => {
     const g = st[group];
@@ -357,6 +415,12 @@ export function reconcile() {
   if (!side) return;
   const switched = lastSpace !== space.id;
   lastSpace = space.id;
+  // Settings: a space shown for the first time starts without the panel. Its state is written so it
+  // is new only once.
+  if (switched && sideStartsHidden() && !all.spaces[space.id]) {
+    change(space.id, () => {});
+    if (!side.hidden) run("layout.hide", { id: SIDE });
+  }
 
   // Each group shows its active tab (or its empty face); the second only when split.
   for (const g of GROUPS) {
@@ -459,6 +523,9 @@ async function sweep() {
     }
     return changed;
   });
+  // A closed space's pinned folder goes with it.
+  const pins = shared("ht3-files.pinned") ?? {};
+  if (Object.keys(pins).some(gone)) setShared("ht3-files.pinned", Object.fromEntries(Object.entries(pins).filter(([sid]) => !gone(sid))));
   for (const addr of owned) if (addr.includes("/") && !known.has(addr)) remote.push(addr);
   // Ours, here, and held by no tab.
   const mine = appHome();

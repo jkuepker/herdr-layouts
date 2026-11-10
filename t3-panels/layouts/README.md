@@ -1,6 +1,6 @@
 # Layout fragment
 
-`ht3-panels` is a mod for a layout you already have (the Herdr T3 layout, `layouts/herdr-t3.json`), so this folder holds no layout file. Make these changes to that layout (the file is generated from a backup by a small script in the build notes; every id below is used by the mod and must stay):
+`ht3-panels` is a mod for a layout you already have (the Herdr T3 layout, `layouts/herdr-t3.json`), so this folder holds no layout file. Five of that layout's mods are kept beside it in `mods/` as this build changed them (`ht3-agents`, `ht3-inbox`, `ht3-tabs`, `ht3-pane`, `ht3-chrome`: they show a chat tab's agent as an agent and never close a chat, see RECIPE.md); the layout already names them (`"mod": "ht3-agents"` in `agents`, `"ht3-inbox"` in `inbox`, `"ht3-tabs"` in `tabs` and `tabs-end`, `"ht3-pane"` as `main`'s pane header, `"ht3-chrome"` in `sidebar-footer`), so copying them over the installed ones needs no change to the layout file. Make these changes to that layout (the file is generated from a backup by a small script in the build notes; every id below is used by the mod and must stay):
 
 1. In `tabs-row`, before `tabs-end`, the buttons (New chat, maximize the panel, bottom panel, right panel):
 

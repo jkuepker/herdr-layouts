@@ -8,15 +8,19 @@ import { exec, hc, spawn, processWrite, processNextLine, processExited, processK
 import * as fs from "fs/promises";
 import { ChatSession } from "./session.js";
 
-// Agents that speak ACP over stdio. `argv[0]` is looked up on PATH.
+// Agents that speak ACP over stdio. `argv[0]` is looked up on PATH. `icon`: Herdr's own for that agent
+// (~/.config/herdr-app/icons, as its program table has it), `tint` for a one-color glyph.
 export const AGENTS = [
   { id: "omp", name: "Oh My Pi", argv: ["omp", "acp"] },
-  { id: "pi", name: "Pi", argv: ["pi-acp"], hint: "npm i -g pi-acp" },
-  { id: "opencode", name: "OpenCode", argv: ["opencode", "acp"] },
-  { id: "claude", name: "Claude Code", argv: ["claude-agent-acp"], hint: "npm i -g @agentclientprotocol/claude-agent-acp" },
-  { id: "codex", name: "Codex", argv: ["codex-acp"], hint: "github.com/zed-industries/codex-acp" },
-  { id: "gemini", name: "Gemini CLI", argv: ["gemini", "--experimental-acp"] },
+  { id: "pi", name: "Pi", argv: ["pi-acp"], hint: "npm i -g pi-acp", icon: "icons/pi.svg", tint: true },
+  { id: "opencode", name: "OpenCode", argv: ["opencode", "acp"], icon: "icons/opencode.svg", tint: true },
+  { id: "claude", name: "Claude Code", argv: ["claude-agent-acp"], hint: "npm i -g @agentclientprotocol/claude-agent-acp", icon: "icons/claude.svg", tint: false },
+  { id: "codex", name: "Codex", argv: ["codex-acp"], hint: "github.com/zed-industries/codex-acp", icon: "icons/codex.svg", tint: false },
+  { id: "gemini", name: "Gemini CLI", argv: ["gemini", "--experimental-acp"], icon: "icons/gemini.svg", tint: true },
 ];
+
+// The AGENTS entry an argv starts (its program by name, wherever it is installed), or null.
+export const agentOf = (argv) => AGENTS.find((a) => a.argv[0] === String(argv?.[0] ?? "").split("/").pop()) ?? null;
 
 const SAVE_EVERY_MS = 1000;
 const MAX_STATE_BYTES = 800 * 1024; // readTextFile reads at most 1 MiB
@@ -214,12 +218,19 @@ export class AcpSource {
 
   // ---- what the chat view draws and does ----
 
+  // view().status alone, for what runs on every change.
+  word() {
+    const s = this.state;
+    if (!s) return this.startError ? "exited" : "starting";
+    return this.alive ? s.status : s.status === "stopped" ? "stopped" : "exited";
+  }
+
   view() {
     const s = this.state;
     if (!s) return { name: "Agent", status: this.startError ? "exited" : "starting", error: this.startError, items: [], dropped: 0, usage: null, options: [], permission: null, alive: false };
     return {
       name: s.agentInfo?.title ?? s.agentInfo?.name ?? s.agentArgv?.[0]?.split("/").pop() ?? "Agent",
-      status: this.alive ? s.status : s.status === "stopped" ? "stopped" : "exited",
+      status: this.word(),
       error: s.error,
       cwd: s.cwd,
       machine: s.machine,

@@ -5,8 +5,9 @@
 import { div } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { openOverlay } from "herdr";
-import { MOD, tokens, alpha, icon, iconButton } from "./look.js";
+import { MOD, tokens, alpha, icon, agentMark, iconButton } from "./look.js";
 import { spaceState, activeSpace, surface, activate, send } from "./side.js";
+import { agentOf } from "./agent-acp.js";
 
 // The `+` menu: eight 28px rows and 4px around them.
 export const ADD_MENU = { w: 216, h: 8 * 28 + 8 };
@@ -32,6 +33,9 @@ export class Strip {
   tab(k, tab, on) {
     const g = this.group, title = this.title(tab), glyph = surface(tab.kind)?.glyph ?? "file";
     const over = this.over === tab.id;
+    // A side chat that has its agent shows the agent's own icon, Herdr's for it; the × still takes its place on hover.
+    const a = tab.kind === "chat" ? agentOf(tab.chat?.agent) : null;
+    const mark = (over ? null : agentMark(a, 12, on ? k.foreground : k.muted)) ?? icon(over ? "x" : glyph).size(12);
     return h_flex().id(`tab-${g}-${tab.id}`).h(24).max_w(144).min_w(40).pl(6).pr(8).gap(2).flex_shrink(1).items_center().overflow_hidden().rounded(6).text_size(12).cursor_pointer()
       .bg(on ? k.accent : "#00000000").text_color(on ? k.foreground : k.muted)
       .hover((s) => s.bg(on ? k.accent : alpha(k.accent, 0.6)).text_color(k.foreground))
@@ -44,7 +48,7 @@ export class Strip {
         .hover((s) => s.bg(k.input))
         .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
         .on_click((_e, cx) => { cx.stop_propagation(); this.over = null; send(`close:${g}:${tab.id}`); cx.notify(); })
-        .child(icon(over ? "x" : glyph).size(12)))
+        .child(mark))
       .child(div().min_w(0).truncate().child(title));
   }
 

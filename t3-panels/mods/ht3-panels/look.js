@@ -7,12 +7,16 @@ export const kbd = (k, text) => h_flex().flex_none().h(20).min_w(20).px(4).items
 
 // chat/ComposerControl.tsx.
 
-import { div, svg } from "gpui-kit";
+import { div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { theme, settings, home } from "herdr";
 
 export const MOD = "ht3-panels";
 export const icon = (name) => svg(`mods/${MOD}/icons/${name}.svg`);
+
+// An agent's own icon (agent-acp.js AGENTS: Herdr's for it), or null when it has none: a one-color
+// glyph in `color`, else the picture.
+export const agentMark = (a, size, color) => (!a?.icon ? null : a.tint ? svg(a.icon).size(size).flex_none().text_color(color) : image(a.icon).w(size).h(size).flex_none());
 
 // T3's tokens by their own names. With the t3code themes these are T3's exact colors;
 // with any other theme they follow it.
@@ -94,10 +98,11 @@ export function iconButton(k, id, glyph, onClick, { size = "xs", tip = null, on 
 }
 
 // chat/ComposerControl.tsx, size sm: 28 high, 8 in, a 16px icon, 14px medium text at 80%.
-export function control(k, id, { glyph = null, label, suffix = null, open = false, onClick = null }) {
+export function control(k, id, { glyph = null, mark = null, label, suffix = null, open = false, onClick = null }) {
   let el = h_flex().id(id).h(28).px(8).gap(6).flex_none().items_center().rounded(8)
     .bg(open ? k.accent : "#00000000").text_size(14).font_medium().text_color(alpha(k.foreground, 0.8));
-  if (glyph) el = el.child(icon(glyph).size(16).flex_none().text_color(k.muted));
+  if (mark) el = el.child(mark);
+  else if (glyph) el = el.child(icon(glyph).size(16).flex_none().text_color(k.muted));
   el = el.child(div().max_w(224).truncate().child(label));
   if (suffix) el = el.child(div().max_w(96).truncate().font_weight(400).text_color(k.muted).child(suffix));
   if (!onClick) return el;

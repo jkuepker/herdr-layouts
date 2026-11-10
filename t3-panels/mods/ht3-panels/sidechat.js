@@ -6,17 +6,18 @@
 import { div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { exec, appHome } from "herdr";
-import { MOD, tokens, alpha, icon, button } from "./look.js";
+import { MOD, tokens, alpha, icon, agentMark, button } from "./look.js";
 import { ChatPanel } from "./chat.js";
 import { AGENTS, detect } from "./agent-acp.js";
 import { GROUPS, read, change, activeSpace, placeOf } from "./side.js";
+import { enabledAgents, agentOn, firstAgent } from "./settings.js";
 
 const newId = () => "side-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
 
 // Gives the group's side chat tab its agent: `agentId` from AGENTS, found on `found` (detect()'s paths).
 export function beginChat(group, agentId, found) {
   const a = AGENTS.find((x) => x.id === agentId);
-  if (!a || !found?.[a.argv[0]]) return false;
+  if (!a || !agentOn(a.id) || !found?.[a.argv[0]]) return false;
   const sp = activeSpace();
   const { on, cwd } = placeOf(sp);
   change(sp?.id, (st) => {
@@ -42,7 +43,7 @@ export class SideChat {
       const d = await detect(this.where.on);
       this.found = d.found;
       this.error = d.error;
-      this.choice = AGENTS.find((a) => d.found[a.argv[0]])?.id ?? null;
+      this.choice = firstAgent(d.found);
       cx.notify();
     });
   }
@@ -91,7 +92,7 @@ export class SideChat {
           const c = tab.chat;
           cx.timer.after(0, (cx) => {
             const made = new ChatPanel();
-            made.init({ panel: "chat", chat: c.id, agent: c.agent, cwd: c.cwd, machine: c.machine }, cx);
+            made.init({ panel: "chat", side: true, chat: c.id, agent: c.agent, cwd: c.cwd, machine: c.machine }, cx);
             this.panels.set(c.id, made);
             this.starting.delete(c.id);
             cx.notify();
@@ -101,11 +102,15 @@ export class SideChat {
       }
       return root.child(panel.render(cx));
     }
+    // An agent taken out in Settings while it was the choice gives way to the next.
+    if (this.found && this.choice && !agentOn(this.choice)) this.choice = firstAgent(this.found);
+    else if (this.found && !this.choice) this.choice = firstAgent(this.found);
     const row = (a) => {
       const ok = !!this.found?.[a.argv[0]], on = this.choice === a.id;
       return h_flex().id(`sc-${a.id}`).h(32).px(10).gap(10).flex_none().items_center().rounded(8).text_size(14).bg(on ? k.accent : "#00000000")
         .when(ok, (el) => el.role("button").accessibility_label(a.name).cursor_pointer().hover((s) => s.bg(on ? k.accent : alpha(k.accent, 0.6))).on_click((_e, cx) => { this.choice = a.id; cx.notify(); }))
-        .child(icon("bot").size(16).flex_none().text_color(ok ? k.muted : k.dim))
+        .child(h_flex().size(16).flex_none().items_center().justify_center().opacity(ok ? 1 : 0.5)
+          .child(agentMark(a, 16, k.foreground) ?? icon("bot").size(16).flex_none().text_color(ok ? k.muted : k.dim)))
         .child(div().flex_none().font_medium().text_color(ok ? k.foreground : k.dim).child(a.name))
         .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(k.muted).child(ok ? a.argv.join(" ") : `not installed${a.hint ? ` · ${a.hint}` : ""}`))
         .when(on, (el) => el.child(icon("check").size(14).flex_none().text_color(k.muted)));
@@ -113,10 +118,11 @@ export class SideChat {
     return root.px(16).pt(20).gap(8)
       .child(div().text_size(16).font_semibold().child("Side chat"))
       .child(div().text_size(13).text_color(k.muted).child("Ask a side question while your work goes on. Pick the agent to start here."))
-      .child(div().text_size(12).text_color(k.muted).child(this.where?.on ? `${this.where.on}:${this.where.cwd ?? "~"}` : this.where?.cwd ?? ""))
+      .child(div().text_size(12).text_color(k.muted).child(((w) => (w?.on ? `${w.on}:${w.cwd ?? "~"}` : w?.cwd ?? ""))(placeOf(activeSpace()) ?? this.where)))
       .when(!this.found, (el) => el.child(div().text_size(12).text_color(k.muted).child("Looking for installed agents…")))
       .when(!!this.error, (el) => el.child(div().text_size(12).text_color(k.destructiveText).child(this.error)))
-      .child(v_flex().gap(2).children(AGENTS.map(row)))
+      .when(!enabledAgents().length, (el) => el.child(div().text_size(12).text_color(k.muted).child("No agent is enabled in Settings.")))
+      .child(v_flex().gap(2).children(enabledAgents().map(row)))
       .child(h_flex().pt(8).child(button(k, "sc-start", "Start chat", (cx) => this.start(cx), { variant: "default", size: "default", disabled: !this.choice })));
   }
 }

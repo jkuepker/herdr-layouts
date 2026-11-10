@@ -5,7 +5,7 @@
 import { div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { tokens, alpha, icon, button, kbd } from "./look.js";
-import { SURFACES, send } from "./side.js";
+import { SURFACES, send, surfaceOff, surfacesHere } from "./side.js";
 
 export class Empty {
   init(p) {
@@ -16,8 +16,10 @@ export class Empty {
   command() {}
 
   // A terminal that doesn't start says so in a toast (side.js).
-  render(_cx) {
+  render(cx) {
     const k = tokens();
+    // What doesn't apply in the folder the space works in now is greyed, with why (side.js).
+    const where = this.bottom ? null : surfacesHere(cx);
     const root = v_flex().id(`ht3-empty-${this.bottom ? "bottom" : this.group}`).size_full().items_center().justify_center().bg(k.background).text_color(k.foreground).text_size(14);
     if (this.bottom) {
       return root.gap(12)
@@ -29,11 +31,12 @@ export class Empty {
       .child(v_flex().w_full().max_w(320).py(24).gap(2)
         .child(div().mb(12).text_center().font_medium().child("Open a surface"))
         .children(SURFACES.map((s) => {
+          const off = surfaceOff(s, where);
           const el = h_flex().id(`empty-${s.kind}`).h(32).px(10).gap(10).items_center().rounded(8).text_size(14)
             .child(icon(s.glyph).size(16).flex_none().text_color(k.muted))
-            .child(div().flex_1().min_w(0).truncate().text_color(s.off ? k.dim : k.foreground).child(s.label))
+            .child(div().flex_1().min_w(0).truncate().text_color(off ? k.dim : k.foreground).child(s.label))
             .child(kbd(k, s.key.toUpperCase()));
-          if (s.off) return el.opacity(0.5).tooltip(s.off);
+          if (off) return el.opacity(0.5).tooltip(off);
           return el.role("button").accessibility_label(s.label).cursor_pointer().hover((st) => st.bg(alpha(k.accent, 0.6)))
             .on_click(() => send(`add:${s.kind}:${this.group}`));
         })));

@@ -13,6 +13,7 @@ import { v_flex, h_flex, Editor, EditorState, InputState, Input } from "gpui-bas
 import { spaces, panes, focused, exec, readTextFile, writeTextFile, watchFolder, theme, pickFolder, shared, setShared } from "herdr";
 import { tokens, alpha, icon, button, iconButton, shortPath } from "./look.js";
 import { fileIcon } from "./fileicons.js";
+import { chatPlace } from "./side.js";
 
 const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", cjs: "js", toml: "yaml", jsonc: "json", svelte: "html", vue: "html", yml: "yaml", htm: "html", markdown: "md", zsh: "sh", bash: "sh" };
 const PER_FOLDER = 500, TOTAL = 5000;
@@ -35,6 +36,9 @@ function place() {
   const all = panes();
   const pane = f?.pane ? all.find((p) => p.pane === f.pane) : null;
   const other = all.find((p) => p.tab === f?.tab && p.cwd);
+  // On a chat tab, the folder its agent works in.
+  const chat = chatPlace();
+  if (chat) return { space: space?.id ?? null, on: chat.on, cwd: chat.cwd, fallback: null };
   return { space: space?.id ?? null, on: space?.machine ?? null, cwd: pane?.cwd || f?.cwd || null, fallback: other?.cwd || space?.folder || null };
 }
 

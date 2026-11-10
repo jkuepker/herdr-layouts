@@ -7,7 +7,8 @@
 // - props.panel "strip": a group's tab strip (strip.js);
 // - props.panel "buttons": the buttons in the layout's tab bar (below);
 // - as an overlay (`mod.open {"name": "ht3-panels"}`): the New chat dialog (launcher.js), or with
-//   props.menu "add" / "project", the side panel's popups (menus.js).
+//   props.menu "add" / "project", the side panel's popups (menus.js), or "settings", the Settings
+//   dialog (settings-ui.js).
 // The panel's state and the code that makes the layout match it are in side.js.
 
 import { View } from "gpui-kit";
@@ -25,6 +26,9 @@ import { BrowserPanel } from "./browser.js";
 import { SideChat, beginChat } from "./sidechat.js";
 import { Empty } from "./empty.js";
 import { detect } from "./agent-acp.js";
+import { announce, prune } from "./report.js";
+import { Settings, SETTINGS_SIZE } from "./settings-ui.js";
+import { loadPrefs, setPref, agentOn } from "./settings.js";
 import { SIDE, read, sideShown, bottomShown, reconcile, keep, toggleMax, toggleBottom, toggleSplit, openSurface, openBottom, closeTab, activate, activeSpace } from "./side.js";
 
 export { SIDE };
@@ -34,6 +38,11 @@ export { SIDE };
 class Buttons {
   init(_p, cx) {
     this.space = null;
+    // After the frame's other copies began: a chat that runs has said so by then (report.js).
+    cx.timer.after(0, () => announce());
+    // The settings file, now and whenever it is edited by hand (settings.js).
+    cx.spawn(() => loadPrefs());
+    cx.timer.every(2000, (cx) => { prune(); cx.spawn(() => loadPrefs()); });
     cx.spawn((cx) => keep(cx));
   }
   close() {}
@@ -44,7 +53,8 @@ class Buttons {
   // close:<group>:<tab id>, split, max, bottom, chat:<agent id>[:<group>] (starts the group's side
   // chat with that agent), menu:add[:<group>], menu:project, pin:<folder> (the folder Files, Diff
   // and the pull request surfaces look at for the shown space; pin: with none goes back to the
-  // terminal's).
+  // terminal's), settings (the Settings dialog), set:<path>=<json> (one setting, e.g.
+  // set:agents.pi.enabled=false; set:<path> alone goes back to its default).
   command(c, cx) {
     const [name, a, b] = c.split(":");  // (pin keeps its whole path)
     const fail = (e) => console.log(`ht3-panels.${c}: ${String(e?.message ?? e)}`);
@@ -52,7 +62,12 @@ class Buttons {
     else if (name === "activate") activate(a, b);
     else if (name === "close") cx.spawn(async (cx) => { try { await closeTab(a, b); } catch (e) { fail(e); } cx.notify(); });
     else if (name === "split") cx.spawn(async (cx) => { try { await toggleSplit(); } catch (e) { fail(e); } cx.notify(); });
-    else if (name === "chat") cx.spawn(async (cx) => { const d = await detect(activeSpace()?.machine ?? null); beginChat(b ?? "a", a, d.found); cx.notify(); });
+    else if (name === "chat") cx.spawn(async (cx) => { const d = await detect(activeSpace()?.machine ?? null); if (agentOn(a)) beginChat(b ?? "a", a, d.found); cx.notify(); });
+    else if (name === "settings") openSettings();
+    else if (name === "set") {
+      const rest = c.slice(4), at = rest.indexOf("=");
+      try { setPref(at < 0 ? rest : rest.slice(0, at), at < 0 ? undefined : JSON.parse(rest.slice(at + 1))); } catch (e) { fail(e); }
+    }
     else if (name === "max") toggleMax();
     else if (name === "pin") {
       const sp = activeSpace(), all = { ...(shared("ht3-files.pinned") ?? {}) }, dir = c.slice(4);
@@ -77,6 +92,10 @@ class Buttons {
   }
 }
 
+export function openSettings() {
+  openOverlay({ mod: MOD, kind: "dialog", ...SETTINGS_SIZE, props: { menu: "settings" } });
+}
+
 const FACES = {
   editor: () => new FilePanel(),
   strip: () => new Strip(),
@@ -93,7 +112,7 @@ export default class T3Panels extends View {
   init(_props, cx) {
     const p = props() ?? {};
     this.face = p.overlay
-      ? p.menu === "add" ? new AddMenu() : p.menu === "project" ? new ProjectMenu() : new Launcher()
+      ? p.menu === "add" ? new AddMenu() : p.menu === "project" ? new ProjectMenu() : p.menu === "settings" ? new Settings() : new Launcher()
       : (FACES[p.panel] ?? (() => new ChatPanel()))();
     this.face.init(p, cx);
     // Key commands from keys.json's "mod:ht3-panels" section (save), and "focus" from pane.go.
