@@ -250,6 +250,7 @@ export class AcpSource {
       items: s.transcript.items,
       dropped: s.transcript.dropped,
       usage: s.transcript.usage,
+      commands: s.transcript.commands ?? [],
       options: (s.configOptions ?? []).filter((o) => o.type === "select").map((o) => ({
         id: o.id, name: o.name, category: o.category, current: o.currentValue,
         choices: o.options.map((c) => ({ value: c.value, name: c.name, description: c.description })),

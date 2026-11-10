@@ -13,6 +13,12 @@ Ranked from a survey of /opt/code/t3code/apps/web/src and apps/server/src agains
 7. Queued messages with a follow-up mode (queue or steer): `session.js:167` refuses a send while working; queueing is small and removes a daily annoyance.
 8. Create PR and commit flows: `pr.js` is read-only; adding commit, push and `gh pr create` from the project popover closes the loop for remote work.
 
+## Done
+
+- Copy and paste in chats (rows that copy, a right-click Copy menu). Not checked with real keys: Cmd+C/X/V/A/Z in the message box and Cmd+C on a selection are the text area's and TextView's own.
+- 1. `/` commands and `$` skills (`chat.js` `trigger`, `menuItems`, `triggerPanel`). Left: the menu pushes the lane up instead of floating over it; the word must be the last in the text (no caret position from the text area); arrows, Tab and Esc in the menu were only driven by command.
+- Known, same cause as the fix in ht3-panels: the acp-chat mod's chat is a `list`, so it doesn't follow its end in a long chat either.
+
 ## Candidates
 
 Each entry: what it does / T3 location / mod API support / value for multi-machine agent users / effort.

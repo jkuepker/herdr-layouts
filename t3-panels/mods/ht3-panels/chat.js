@@ -43,6 +43,30 @@ export function segments(text) {
   return out;
 }
 
+// composer-logic.ts detectComposerTrigger: the word being typed opens a menu when it starts with
+// "/" (commands), "$" (skills) or "@" (files). The text area doesn't tell where its caret is, so
+// the word is the one the text ends in. -> { kind, query, start } or null.
+export function trigger(text) {
+  const start = Math.max(text.lastIndexOf(" "), text.lastIndexOf("\n"), text.lastIndexOf("\t")) + 1;
+  const word = text.slice(start);
+  if (word.startsWith("/")) return /^\/[\w:.-]*$/.test(word) ? { kind: "slash", query: word.slice(1), start } : null; // not a path such as /usr/bin
+  if (word.startsWith("$")) return /^\$[A-Za-z_-][\w:.-]*$|^\$$/.test(word) ? { kind: "skill", query: word.slice(1), start } : null;
+  if (word.startsWith("@")) return { kind: "path", query: word.slice(1), start };
+  return null;
+}
+
+// T3's own commands (composer-logic.ts ComposerSlashCommand) that have a place here.
+// How many rows the lane builds at first, and how many more each time you near the first of them.
+const TAIL = 60;
+// The rows a click does something to.
+const CLICKS = ["earlier", "copy", "codehead", "fold", "tool", "thought"];
+
+const LOCAL_COMMANDS = [
+  { name: "model", description: "Switch the model for this chat", local: true },
+  { name: "side", description: "Ask a side question in the right panel", local: true },
+  { name: "new", description: "Start a new chat", local: true },
+];
+
 export function openLauncher() {
   openOverlay({ mod: MOD, kind: "dialog", width: 512, height: 520 });
 }
@@ -81,7 +105,6 @@ export class ChatPanel {
     this.makeInput();
     this.filter = InputState.new({ placeholder: "Search" });
     this.filter.on("change", (_e, cx) => cx.notify());
-    this.scroll = VirtualListScrollHandle.new();
 
     const changed = (cx, urgent) => this.changed(cx, urgent);
     if (p.terminal) {
@@ -165,12 +188,75 @@ export class ChatPanel {
     this.input.set_auto_grow(2, 8);
     // A textarea's Enter inserts a newline and then submits; Shift+Enter submits with `shift`.
     this.input.on("submit", (e, cx) => {
-      if (!e?.shift) this.send(cx);
+      if (e?.shift) return;
+      // With a menu open Enter takes its marked row (the newline Enter left goes with the word).
+      const items = this.trig && this.view ? this.menuItems(this.view) : [];
+      if (items.length) { const v = this.input.value(); if (v.endsWith("\n")) { this.input.set_value(v.slice(0, -1)); this.trig = trigger(v.slice(0, -1)); } return this.choose(cx, items[Math.min(this.hot ?? 0, items.length - 1)]); }
+      this.send(cx);
     });
     this.input.on("change", (_e, cx) => {
       const has = this.input.value().trim().length > 0;
-      if (has !== this.hasText) { this.hasText = has; cx.notify(); }
+      const changed = this.typed(cx);
+      if (has !== this.hasText || changed) { this.hasText = has; cx.notify(); }
     });
+  }
+
+  // After each edit: which menu the word being typed opens, if any. -> whether it changed.
+  typed(cx) {
+    const t = trigger(this.input.value()), was = this.trig;
+    this.trig = t;
+    if (t?.kind !== was?.kind || t?.query !== was?.query) { this.hot = 0; if (t?.kind === "skill") this.findSkills(cx); return true; }
+    return false;
+  }
+
+  // The skills on disk where the chat runs: Claude Code's (~/.claude/skills and the project's
+  // .claude/skills), each a folder with a SKILL.md. Looked up once per chat, when "$" is first typed.
+  findSkills(cx) {
+    if (this.skills) return;
+    this.skills = [];
+    const v = this.view, on = v?.machine ?? undefined;
+    cx.spawn(async (cx) => {
+      const script = `for d in "$HOME/.claude/skills" ${v?.cwd ? `"${String(v.cwd).replace(/["\\$\`]/g, "")}/.claude/skills"` : ""}; do for f in "$d"/*/SKILL.md; do [ -f "$f" ] && printf '%s\\t%s\\n' "$(basename "$(dirname "$f")")" "$(sed -n 's/^description: *//p' "$f" | head -1 | cut -c1-200)"; done; done`;
+      const r = await exec("/bin/sh", ["-c", script], { on }).catch(() => null);
+      const seen = new Set();
+      this.skills = String(r?.stdout ?? "").split("\n").filter(Boolean).map((l) => { const [name, description] = l.split("\t"); return { name, description: (description ?? "").replace(/^["']|["']$/g, ""), skill: true }; })
+        .filter((x) => !seen.has(x.name) && seen.add(x.name));
+      cx.notify();
+    });
+  }
+
+  // What the open menu lists (chat/ComposerCommandMenu.tsx): T3's own commands and the agent's for
+  // "/", the skills for "$" (as T3: the agent's commands that are skills, and those on disk).
+  menuItems(v) {
+    const t = this.trig;
+    if (!t || t.kind === "path") return [];
+    const q = t.query.toLowerCase();
+    const agent = (v.commands ?? []).map((c) => ({ name: c.name, description: c.description ?? "" }));
+    const all = t.kind === "slash" ? [...LOCAL_COMMANDS.filter((c) => c.name !== "model" || v.options.some((o) => (o.category ?? o.id) === "model")), ...agent.filter((c) => !LOCAL_COMMANDS.some((l) => l.name === c.name))]
+      : [...(this.skills ?? []), ...agent.filter((c) => /skill/i.test(c.name) && !(this.skills ?? []).some((s) => s.name === c.name)).map((c) => ({ ...c, skill: true }))];
+    const rank = (c) => (c.name.toLowerCase().startsWith(q) ? 0 : c.name.toLowerCase().includes(q) ? 1 : (c.description ?? "").toLowerCase().includes(q) ? 2 : 3);
+    return all.filter((c) => !q || rank(c) < 3).sort((a, b) => rank(a) - rank(b)).slice(0, 50);
+  }
+
+  // Enter, Tab or a click on a row of the menu. T3's own commands run at once; an agent's command or a
+  // skill takes the word's place as "/name " so its arguments can follow, and Enter sends it.
+  choose(cx, item) {
+    const t = this.trig, text = this.input.value();
+    if (!t || !item) return;
+    const before = text.slice(0, t.start);
+    this.trig = null;
+    if (item.local) {
+      this.input.set_value(before);
+      this.hasText = !!before.trim();
+      if (item.name === "model") { const o = this.view?.options.find((x) => (x.category ?? x.id) === "model"); if (o) { this.picker = o.id; this.filter.set_value(""); if (o.choices.length > 8) this.filter.focus(); } }
+      if (item.name === "side") run(`${MOD}.add:chat`);
+      if (item.name === "new") openLauncher();
+    } else {
+      this.input.set_value(`${before}/${item.name} `);
+      this.hasText = true;
+      this.input.focus();
+    }
+    cx.notify();
   }
 
   // Not while drawing: a field can't be made then. From the field's size changing and the one-second timer.
@@ -221,6 +307,12 @@ export class ChatPanel {
       if (text != null && c.startsWith("ctx:")) this.copyMenu({ x: 600, y: 300 }, text);
       else if (text != null) this.copy(cx, `${m.id}:cp`, text);
     }
+    // For scripts: type:<text> (as if typed into the message box), take:<n> (the open menu's nth row, from 0),
+    // menu-key:<up|down|enter|escape>.
+    if (c.startsWith("type:")) { this.input.set_value(c.slice(5)); this.hasText = !!c.slice(5).trim(); this.typed(cx); }
+    if (c.startsWith("take:")) this.choose(cx, this.menuItems(this.view)[Number(c.slice(5))]);
+    if (c.startsWith("menu-key:")) this.menuKey(c.slice(9), cx);
+    if (c.startsWith("scroll:")) { if (c === "scroll:end") { this.follow = true; this.off = 0; } else this.wheel(Number(c.slice(7)) || 0, 1e9, cx); }
     if (c === "paste") { const text = cx.read_from_clipboard(); if (text) { this.input.replace(text); this.hasText = !!this.input.value().trim(); } }
     cx.notify();
   }
@@ -231,7 +323,6 @@ export class ChatPanel {
     this.models();
     this.clock();
     const draw = (cx) => {
-      if (this.follow) this.scroll.scroll_to_bottom();
       cx.notify();
     };
     if (urgent) return draw(cx);
@@ -250,7 +341,6 @@ export class ChatPanel {
     this.hasText = false;
     this.follow = true;
     this.source.send(cx, text);
-    this.scroll.scroll_to_bottom();
     cx.notify();
   }
 
@@ -277,6 +367,7 @@ export class ChatPanel {
       .when(!this.headed(), (el) => el.child(this.header(k, v)))
       .child(this.timeline(k, v))
       .when(this.picker != null, (el) => el.child(this.pickerPanel(k, v)))
+      .when(this.picker == null && !!this.trig && this.trig.kind !== "path", (el) => el.child(this.triggerPanel(k, v)))
       .child(this.composer(k, v));
   }
 
@@ -393,36 +484,70 @@ export class ChatPanel {
       const text = v.status === "starting" ? "Starting the agent…" : v.error ? "" : "Send a message to start the conversation.";
       return this.centered(k, text);
     }
-    return v_flex().relative().flex_1().min_h(0)
-      .on_scroll_wheel((e, cx) => {
-        if (e.delta.y > 0 && this.follow) { this.follow = false; cx.notify(); }
+    // The lane keeps to its end by itself: gpui-kit's measured `list` can't be scrolled from code
+    // (its scroll handle is a virtual list's), so a chat in one would stay at its first message. The
+    // rows are a plain column pinned to the pane's bottom edge instead, and scrolling up moves that
+    // column down by `off` pixels. Only the last `tail` rows are built; more as you near the first.
+    const zoom = Number(settings()?.zoom) || 1;
+    const n = Math.min(rows.length, this.tail ?? TAIL), shown = rows.slice(rows.length - n);
+    const off = this.follow ? 0 : (this.off ?? 0);
+    // Shorter than the pane: from the top, as T3's.
+    const short = n === rows.length && (this.laneH != null && this.viewH != null ? this.laneH <= this.viewH : rows.length <= 6);
+    const click = (m, cx) => {
+      if (m.kind === "earlier") return this.source.earlier?.(cx);
+      if (m.kind === "copy" || m.kind === "codehead") return this.copy(cx, m.id, m.text);
+      if (m.kind === "fold") { this.expanded[m.id] = !this.expanded[m.id]; return cx.notify(); }
+      if (m.kind !== "tool" && m.kind !== "thought") return;
+      this.expanded[m.id] = !this.expanded[m.id];
+      if (this.expanded[m.id]) this.source.expand(cx, m);
+      cx.notify();
+    };
+    // A right-click on a message, a thought or a tool's output: Copy, for all of it.
+    const copies = (m) => (m.kind === "seg" ? m.whole : m.kind === "tool" ? m.detail : ["user", "thought", "codehead", "copy", "notice"].includes(m.kind) ? m.text : null);
+    const lane = v_flex().absolute().left(0).right(0)
+      .on_size_change((size, cx) => {
+        const h = size.height / zoom;
+        if (Math.abs(h - (this.laneH ?? 0)) < 1) return;
+        // What arrives while you read further up must not move what you read.
+        if (!this.follow && this.laneH != null && !this.grew) this.off = Math.max(0, (this.off ?? 0) + h - this.laneH);
+        this.grew = false;
+        this.laneH = h;
+        cx.notify();
       })
-      .child(list("ht3-chat-rows", rows.length, (i) => rows[i].id, (i) => this.row(k, rows[i], i === 0, i === rows.length - 1))
-        .track_scroll(this.scroll)
-        .on_item_click((id, cx) => {
-          const m = rows.find((r) => r.id === id);
-          if (!m) return;
-          if (m.kind === "earlier") return this.source.earlier?.(cx);
-          if (m.kind === "copy" || m.kind === "codehead") return this.copy(cx, id, m.text);
-          if (m.kind === "fold") { this.expanded[id] = !this.expanded[id]; return cx.notify(); }
-          if (m.kind !== "tool" && m.kind !== "thought") return;
-          this.expanded[id] = !this.expanded[id];
-          if (this.expanded[id]) this.source.expand(cx, m);
-          cx.notify();
-        })
-        // A right-click on a message, a thought or a tool's output: Copy, for all of it.
-        .on_item_secondary_click((id, e) => {
-          const m = rows.find((r) => r.id === id);
-          const text = !m ? null : m.kind === "seg" ? m.whole : m.kind === "tool" ? m.detail : ["user", "thought", "codehead", "copy", "notice"].includes(m.kind) ? m.text : null;
-          if (text) this.copyMenu(e.position, text);
-        }))
-      .child(Scrollbar.vertical("ht3-chat-rows").absolute().inset_0())
+      .children(shown.map((m, i) => {
+        const el = div().id(`row-${m.id}`).w_full().child(this.row(k, m, i === 0 && n === rows.length, i === shown.length - 1));
+        const text = copies(m);
+        return (text ? el.on_mouse_down("right", (e) => this.copyMenu(e.position, copies(m))) : el)
+          .when(CLICKS.includes(m.kind), (e) => e.on_click((_e, cx) => click(m, cx)));
+      }));
+    return v_flex().id("ht3-chat-lane").relative().flex_1().min_h(0).overflow_hidden()
+      .on_size_change((size, cx) => {
+        const h = size.height / zoom;
+        if (Math.abs(h - (this.viewH ?? 0)) < 1) return;
+        this.viewH = h;
+        cx.notify();
+      })
+      .on_scroll_wheel((e, cx) => this.wheel(e.delta.y, rows.length, cx))
+      .child(short ? lane.top(0) : lane.bottom(-off))
       // chat/TimelineOverlays.tsx: the glass pill over the end of the lane.
       .when(!this.follow, (el) => el.child(h_flex().absolute().bottom(6).left(0).right(0).justify_center()
         .child(h_flex().id("to-end").h(24).px(8).gap(4).items_center().rounded_full().border(1).border_color(alpha(k.border, 0.6))
           .bg(k.card).shadow_sm().text_size(12).font_medium().cursor_pointer().role("button").accessibility_label("Scroll to end").hover((s) => s.border_color(k.border))
-          .on_click((_e, cx) => { this.follow = true; this.scroll.scroll_to_bottom(); cx.notify(); })
+          .on_click((_e, cx) => { this.follow = true; this.off = 0; cx.notify(); })
           .child(icon("chevron-down").size(14)).child("Scroll to end"))));
+  }
+
+  // The wheel (or `scroll:<px>`): up by `dy` pixels, down when negative; at the end it follows again.
+  wheel(dy, total, cx) {
+    const max = Math.max(0, (this.laneH ?? 0) - (this.viewH ?? 0));
+    let off = (this.follow ? 0 : this.off ?? 0) + dy;
+    // Near the first row built: build more, and the column's growth is not new output.
+    if (off > max - 400 && (this.tail ?? TAIL) < total) { this.tail = (this.tail ?? TAIL) + TAIL; this.grew = true; }
+    off = Math.max(0, Math.min(off, max));
+    if (off === (this.off ?? 0) && this.follow === (off <= 0) && !this.grew) return;
+    this.off = off;
+    this.follow = off <= 0;
+    cx.notify();
   }
 
   // Copies, and the button that did shows a check for a moment (chat/MessageCopyButton.tsx).
@@ -524,6 +649,37 @@ export class ChatPanel {
     return lane(div(), 0);
   }
 
+  // The keys of the open menu. -> whether the key was the menu's.
+  menuKey(key, cx) {
+    const items = this.trig && this.view ? this.menuItems(this.view) : [];
+    if (!this.trig) return false;
+    if (key === "escape") { this.trig = null; cx.notify(); return true; }
+    if (!items.length) return false;
+    if (key === "down" || key === "up") { this.hot = ((this.hot ?? 0) + (key === "down" ? 1 : -1) + items.length) % items.length; cx.notify(); return true; }
+    if (key === "enter" || key === "tab") { this.choose(cx, items[Math.min(this.hot ?? 0, items.length - 1)]); return true; }
+    return false;
+  }
+
+  // chat/ComposerCommandMenu.tsx: a surface over the message box, as wide as it; rows 32 high with
+  // 8px corners: an icon, the name (12px medium), what it does (12px, muted).
+  triggerPanel(k, v) {
+    const t = this.trig, items = this.menuItems(v);
+    const empty = t.kind === "skill" ? "No skills found. Try / to browse provider commands." : "No matching command.";
+    const rowH = 32, h = items.length ? Math.min(288, items.length * rowH + 8) : 44;
+    return h_flex().w_full().flex_none().justify_center().px(16).pb(6)
+      .child(v_flex().id("ht3-composer-menu").w_full().max_w(LANE).h(h).p(4).rounded(12).border(1).border_color(alpha(k.foreground, k.dark ? 0.1 : 0.08)).bg(k.popover).shadow_lg()
+        .when(!items.length, (el) => el.child(div().px(12).py(8).text_size(12).text_color(k.muted).child(empty)))
+        .when(items.length > 0, (el) => el.child(v_flex().relative().flex_1().min_h(0)
+          .child(list("ht3-composer-menu-rows", items.length, (i) => `${i}:${items[i].name}`, (i) => {
+            const c = items[i], on = i === Math.min(this.hot ?? 0, items.length - 1);
+            return h_flex().h(rowH).px(8).gap(8).items_center().rounded(8).bg(on ? k.accent : "#00000000")
+              .child(icon(c.skill ? "sparkles" : c.local ? "corner-down-left" : "terminal").size(16).flex_none().text_color(k.muted))
+              .child(div().flex_none().max_w("45%").truncate().text_size(12).font_medium().child(`/${c.name}`))
+              .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(k.muted).child(c.description ?? ""));
+          }).on_item_click((key, cx) => this.choose(cx, items[Number(String(key).split(":")[0])])))
+          .child(Scrollbar.vertical("ht3-composer-menu-rows").absolute().inset_0()))));
+  }
+
   // The choices of one composer control, as T3's menus look: 4 in, radius 8, 28px rows.
   pickerPanel(k, v) {
     const opt = v.options.find((o) => o.id === this.picker);
@@ -616,6 +772,11 @@ export class ChatPanel {
           if (Math.abs(w - (this.fieldW ?? 0)) < 1) return;
           this.fieldW = w;
           if (this.fitHint()) cx.notify();
+        })
+        // The open menu's arrows, Tab and Esc, where the text area lets them through (Enter comes as its submit).
+        .on_key_down((e, cx) => {
+          if (!this.trig || e.modifiers?.platform || e.modifiers?.control || e.modifiers?.alt) return;
+          if (this.menuKey(e.key.toLowerCase(), cx)) cx.stop_propagation?.();
         })
         .child(Textarea.new(this.input)))
       .child(h_flex().px(8).pb(8).gap(2).items_center()
