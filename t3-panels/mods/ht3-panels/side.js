@@ -32,6 +32,8 @@ export const SURFACES = [
   { kind: "prs", label: "Linked pull requests", glyph: "git-pull-request-arrow", key: "l" },
   { kind: "device", label: "Device", glyph: "smartphone", key: "m", off: "Watching an iOS Simulator needs a native view, which Herdr can't host. Use Xcode's Simulator." },
   { kind: "chat", label: "Side chat", glyph: "messages-square", key: "s" },
+  // Not in T3 Code: this layout's own surface (dashboard.js).
+  { kind: "dashboard", label: "Dashboard", glyph: "layout-dashboard", key: "g" },
 ];
 export const surface = (kind) => SURFACES.find((s) => s.kind === kind);
 

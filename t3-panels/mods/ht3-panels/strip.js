@@ -10,7 +10,7 @@ import { spaceState, activeSpace, surface, activate, send } from "./side.js";
 import { agentOf } from "./agent-acp.js";
 
 // The `+` menu: eight 28px rows and 4px around them.
-export const ADD_MENU = { w: 216, h: 8 * 28 + 8 };
+export const ADD_MENU = { w: 216, h: 9 * 28 + 8 };
 const stop = (el) => el.on_mouse_down("left", (_e, cx) => cx.stop_propagation());
 
 export class Strip {

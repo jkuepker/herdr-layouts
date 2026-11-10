@@ -34,6 +34,7 @@ where `GROUP(g)` is a column that never resizes itself, with a 40px strip and a 
       "children": [
         { "id": "<files>", "type": "block", "content": { "mod": "ht3-panels", "props": { "panel": "editor", "group": "<g>" } } },
         { "id": "ht3-<g>-diff",    "type": "block", "content": { "mod": "ht3-panels", "props": { "panel": "diff",    "group": "<g>" } } },
+        { "id": "ht3-<g>-dashboard", "type": "block", "content": { "mod": "ht3-panels", "props": { "panel": "dashboard", "group": "<g>" } } },
         { "id": "ht3-<g>-pr",      "type": "block", "content": { "mod": "ht3-panels", "props": { "panel": "pr",      "group": "<g>" } } },
         { "id": "ht3-<g>-prs",     "type": "block", "content": { "mod": "ht3-panels", "props": { "panel": "prs",     "group": "<g>" } } },
         { "id": "ht3-<g>-browser", "type": "block", "content": { "mod": "ht3-panels", "props": { "panel": "browser", "group": "<g>" } } },
@@ -70,3 +71,9 @@ Copy rows, the `/` `$` `@` menu, attachments, thread names, earlier chats, fork,
 - Keys for chats in the layout's section of `keys.json`: `ctrl-shift-]`, `ctrl-shift-[` and `ctrl-shift-1`..`9` (`ht3-tabs.chat:next`, `chat:prev`, `chat:<n>`).
 - A key in the layout's section of `keys.json`, `cmd-shift-p`: `mod.open:ht3-palette`, the command palette with the T3 actions (the mod `ht3-palette`; an overlay, so the layout file doesn't name it).
 - In a chat's git repository, when New worktree is used: a folder `<repo>/.worktrees/<branch>`, a branch, and, only if `.worktrees/` isn't ignored yet, a line in `.git/info/exclude`.
+
+## Dashboards
+
+The Dashboard surface (`+` menu, letter G) needs one block per panel group in the layout file, beside the other surfaces of `GROUP(g)` above: `ht3-a-dashboard` and `ht3-b-dashboard`, with `"props": { "panel": "dashboard", "group": "<g>" }`. Herdr reads the layout file again when it is saved, so the surface is there without a restart.
+
+The dashboards themselves are not in the layout: they are JSON files in `~/.config/herdr-app/data/ht3-dashboards/`. Copy the ones in `t3-panels/dashboards/` there (`cp t3-panels/dashboards/*.json ~/.config/herdr-app/data/ht3-dashboards/`). The format is in `RECIPE.md`, under "Dashboard".

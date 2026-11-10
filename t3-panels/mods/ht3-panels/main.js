@@ -1,7 +1,7 @@
 // T3 Code's chat and its right panel for the Herdr T3 layout. One mod, many faces, picked by
 // how a copy is opened:
 // - props.panel "chat": the chat pane, split beside a terminal (chat.js);
-// - props.panel "editor" | "diff" | "pr" | "prs" | "browser" | "side" | "empty": the surfaces of the
+// - props.panel "editor" | "diff" | "dashboard" | "pr" | "prs" | "browser" | "side" | "empty": the surfaces of the
 //   side panel, blocks in the layout's right column (editor.js, diff.js, pr.js, browser.js,
 //   sidechat.js, empty.js), each with props.group "a" or "b";
 // - props.panel "strip": a group's tab strip (strip.js);
@@ -21,6 +21,7 @@ import { Launcher } from "./launcher.js";
 import { Strip, ADD_MENU } from "./strip.js";
 import { AddMenu, ProjectMenu, CopyMenu, ThreadMenu, RevertMenu } from "./menus.js";
 import { DiffPanel } from "./diff.js";
+import { DashboardPanel } from "./dashboard.js";
 import { PrPanel } from "./pr.js";
 import { BrowserPanel } from "./browser.js";
 import { SideChat, beginChat } from "./sidechat.js";
@@ -108,6 +109,7 @@ const FACES = {
   editor: () => new FilePanel(),
   strip: () => new Strip(),
   diff: () => new DiffPanel(),
+  dashboard: () => new DashboardPanel(),
   pr: () => new PrPanel(false),
   prs: () => new PrPanel(true),
   browser: () => new BrowserPanel(),
