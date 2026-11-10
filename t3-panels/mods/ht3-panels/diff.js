@@ -15,6 +15,8 @@ import { activeSpace, placeOf, showing } from "./side.js";
 import { syntax } from "./editor.js";
 
 const MAX_FILES = 200, MAX_LINES_FILE = 1500, MAX_ROWS = 12000, MAX_UNTRACKED = 40;
+// The default branch's ref and the merge base with it, as "<ref> <sha>"; nothing when there is none.
+const BASE = 'b=$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null); for c in "$b" origin/main origin/master main master; do [ -n "$c" ] && m=$(git merge-base HEAD "$c" 2>/dev/null) && [ -n "$m" ] && echo "$c $m" && break; done; true';
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 const UNTRACKED = `git ls-files -o --exclude-standard | head -n ${MAX_UNTRACKED} | while IFS= read -r f; do [ -f "$f" ] && [ "$(wc -c < "$f")" -lt 200000 ] && git diff --no-index --no-color -U3 -- /dev/null "$f"; done; true`;
 
@@ -96,6 +98,11 @@ export class DiffPanel {
     this.error = null;
     this.loading = false;
     this.shut = new Set(); // collapsed files
+    // As T3's Diff: "branch" is its Changes (everything against the merge base with the default branch, what
+    // the Project popover counts), "unstaged" its Uncommitted (the working tree against HEAD).
+    this.scope = "branch";
+    this.base = null; // the ref Changes compares with
+    this.pick = false;
     this.watched = null;
     this.more = 0;
     this.seen = null;
@@ -103,7 +110,15 @@ export class DiffPanel {
     cx.timer.every(15000, (cx) => this.refresh(cx));
   }
   close() {}
-  command() {}
+  // `ht3-panels.scope:branch|unstaged`: what the Diff compares, as its header's menu, for scripts and the popover.
+  command(c, cx) {
+    if (c === "scope:branch" || c === "scope:unstaged") this.setScope(cx, c.slice(6));
+  }
+  setScope(cx, scope) {
+    this.pick = false;
+    if (scope !== this.scope) { this.scope = scope; this.files = null; this.refresh(cx); }
+    cx.notify();
+  }
 
   // The repository of the shown space's folder.
   follow(cx) {
@@ -145,17 +160,24 @@ export class DiffPanel {
     if (!this.root || this.loading) return;
     if (!showing(this.group, "diff")) { this.stale = true; return; }
     this.stale = false;
-    const root = this.root, on = this.on;
+    const root = this.root, on = this.on, scope = this.scope;
     this.loading = true;
     cx.spawn(async (cx) => {
       try {
         const flags = ["--no-optional-locks", "-c", "core.fsmonitor=false", "diff", "--no-color", "--no-ext-diff", "-U3", "--find-renames"];
-        let r = await exec("git", [...flags, "HEAD"], { cwd: root, on });
+        let from = "HEAD", base = null;
+        if (scope === "branch") {
+          const b = await exec("sh", ["-c", BASE], { cwd: root, on }).catch(() => null);
+          const [ref, sha] = (b?.stdout ?? "").trim().split(" ");
+          if (sha) { from = sha; base = ref; }
+        }
+        let r = await exec("git", [...flags, from], { cwd: root, on });
         if (r.code !== 0) r = await exec("git", [...flags, EMPTY_TREE], { cwd: root, on });
         if (r.code !== 0) throw new Error(r.stderr.trim().split("\n")[0] || "git diff failed");
         const extra = await exec("sh", ["-c", UNTRACKED], { cwd: root, on, timeout: 20000 }).catch(() => null);
         const files = parseDiff(r.stdout + "\n" + (extra?.stdout ?? ""));
-        if (this.root === root) {
+        if (this.root === root && this.scope === scope) {
+          this.base = base;
           this.files = files.slice(0, MAX_FILES);
           this.more = files.length - this.files.length;
           this.error = null;
@@ -228,7 +250,13 @@ export class DiffPanel {
     return root
       .child(h_flex().h(40).flex_none().px(16).gap(8).items_center().border_b(1).border_color(alpha(k.border, 0.6))
         .child(icon("file-diff").size(14).flex_none().text_color(k.muted))
-        .child(div().flex_none().font_medium().text_size(13).child("Working tree"))
+        // T3's scope menu: Changes (the branch against its base) or Uncommitted.
+        .child(h_flex().id("diff-scope").h(24).px(6).ml(-6).gap(4).flex_none().items_center().rounded(6).font_medium().text_size(13).cursor_pointer()
+          .role("button").accessibility_label(`Showing ${this.scope === "branch" ? "Changes" : "Uncommitted"}. Change what is compared`)
+          .hover((s) => s.bg(k.accent)).on_click((_e, cx) => { this.pick = !this.pick; cx.notify(); })
+          .child(this.scope === "branch" ? "Changes" : "Uncommitted")
+          .child(icon(this.pick ? "chevron-up" : "chevron-down").size(12).flex_none().text_color(k.muted)))
+        .when(this.scope === "branch" && !!this.base, (el) => el.child(div().flex_none().max_w(140).truncate().text_size(12).font_family(k.mono).text_color(k.muted).tooltip(`Compared with the merge base with ${this.base}`).child(this.base)))
         .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(k.muted)
           .child(files.length ? `${files.length} file${files.length === 1 ? "" : "s"} changed` : "No changes"))
         .when(files.length > 0, (el) => el.child(h_flex().flex_none().gap(6).mr(4).font_family(k.mono).text_size(11)
@@ -238,8 +266,15 @@ export class DiffPanel {
           cx.notify();
         }, { size: "sm", tip: allShut ? "Expand all files" : "Collapse all files" }))
         .child(iconButton(k, "diff-refresh", "refresh-cw", (cx) => this.refresh(cx), { size: "sm", tip: this.loading ? "Refreshing…" : "Refresh" })))
+      .when(this.pick, (el) => el.child(v_flex().mx(10).my(4).p(4).w(200).flex_none().rounded(8).border(1).border_color(k.border).bg(k.popover).shadow_lg()
+        .children([["branch", "Changes", "The branch against its base"], ["unstaged", "Uncommitted", "The working tree against HEAD"]].map(([id, label, about]) =>
+          h_flex().id(`diff-scope-${id}`).h(28).px(8).gap(8).flex_none().items_center().rounded(6).text_size(13).cursor_pointer()
+            .role("button").accessibility_label(`${label}: ${about}`).tooltip(about).hover((s) => s.bg(k.accent))
+            .on_click((_e, cx) => this.setScope(cx, id))
+            .child(div().flex_1().child(label))
+            .when(this.scope === id, (e) => e.child(icon("check").size(14).flex_none().text_color(k.muted)))))))
       .when(this.error, (el) => el.child(div().px(12).py(4).text_size(11).text_color(k.destructiveText).child(this.error)))
-      .when(!files.length, (el) => el.child(v_flex().flex_1().items_center().justify_center().text_color(k.muted).child("The working tree matches HEAD.")))
+      .when(!files.length, (el) => el.child(v_flex().flex_1().items_center().justify_center().text_color(k.muted).child(this.scope === "branch" ? `Nothing changed against ${this.base ?? "the base"}.` : "The working tree matches HEAD.")))
       .when(files.length > 0, (el) => el.child(v_flex().relative().flex_1().min_h(0)
         .child(list("ht3-diff-rows", rows.length, (i) => rows[i].id, (i) => {
           const r = rows[i];

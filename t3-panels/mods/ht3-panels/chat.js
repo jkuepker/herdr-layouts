@@ -9,7 +9,7 @@
 
 import { div, list } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, TextView, Scrollbar, VirtualListScrollHandle } from "gpui-base";
-import { run, openOverlay, appHome, home, exec, layout } from "herdr";
+import { run, openOverlay, appHome, home, exec, layout, settings } from "herdr";
 import { MOD, tokens, alpha, icon, agentMark, button, iconButton, control, badge, workLine, divider, shortPath } from "./look.js";
 import { AcpSource, detect, argvOf } from "./agent-acp.js";
 import { TermSource } from "./agent-term.js";
@@ -28,6 +28,8 @@ export function openLauncher() {
   openOverlay({ mod: MOD, kind: "dialog", width: 512, height: 520 });
 }
 
+// The composer's placeholder, T3's words, and the one for a lane too narrow to show them whole.
+const HINT = "Ask anything. @ files, $ skills, / commands", HINT_SHORT = "Ask anything", HINT_ROOM = 360;
 const seconds = (ms) => {
   const s = Math.max(0, Math.round(ms / 1000));
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
@@ -56,16 +58,8 @@ export class ChatPanel {
     this.reporter = this.chatId && !p.terminal && !p.side ? new Reporter(this.chatId) : null;
 
     this.turnAt = null; // when the running turn of an ACP agent began
-    this.input = TextareaState.new({ placeholder: "Ask anything. @ files, $ skills, / commands" });
-    this.input.set_auto_grow(2, 8);
-    // A textarea's Enter inserts a newline and then submits; Shift+Enter submits with `shift`.
-    this.input.on("submit", (e, cx) => {
-      if (!e?.shift) this.send(cx);
-    });
-    this.input.on("change", (_e, cx) => {
-      const has = this.input.value().trim().length > 0;
-      if (has !== this.hasText) { this.hasText = has; cx.notify(); }
-    });
+    this.hint = HINT;
+    this.makeInput();
     this.filter = InputState.new({ placeholder: "Search" });
     this.filter.on("change", (_e, cx) => cx.notify());
     this.scroll = VirtualListScrollHandle.new();
@@ -100,7 +94,7 @@ export class ChatPanel {
     }
     // The "Working for …" line counts seconds; nothing else here redraws on a timer.
     cx.timer.every(1000, (cx) => {
-      if (this.since != null) cx.notify();
+      if (this.since != null || this.fitHint()) cx.notify();
       // A finished turn nobody saw is "done" until its tab is looked at.
       if (this.reporter?.tab) this.reporter.seen();
       else this.report();
@@ -143,6 +137,30 @@ export class ChatPanel {
         this.reporter.where = { branch: branch || null, machine: s.machine ?? null };
         this.report();
       });
+  }
+
+  // The composer's field. Its placeholder can't be changed once made and never wraps, so a lane too narrow
+  // for the long one gets a field with the short one, swapped only while nothing is typed.
+  makeInput() {
+    this.input = TextareaState.new({ placeholder: this.hint });
+    this.input.set_auto_grow(2, 8);
+    // A textarea's Enter inserts a newline and then submits; Shift+Enter submits with `shift`.
+    this.input.on("submit", (e, cx) => {
+      if (!e?.shift) this.send(cx);
+    });
+    this.input.on("change", (_e, cx) => {
+      const has = this.input.value().trim().length > 0;
+      if (has !== this.hasText) { this.hasText = has; cx.notify(); }
+    });
+  }
+
+  // Not while drawing: a field can't be made then. From the field's size changing and the one-second timer.
+  fitHint() {
+    const hint = this.fieldW != null && this.fieldW < HINT_ROOM ? HINT_SHORT : HINT;
+    if (hint === this.hint || this.input.value() !== "") return false;
+    this.hint = hint;
+    this.makeInput();
+    return true;
   }
 
   // What the agent offers as models, for Settings to list: remembered when it changes.
@@ -505,7 +523,14 @@ export class ChatPanel {
     });
 
     const card = v_flex().rounded(16).border(1).border_color(line).bg(k.card).shadow_xs()
-      .child(div().px(16).pt(14).pb(8).text_size(14).line_height("23px").child(Textarea.new(this.input)))
+      .child(div().px(16).pt(14).pb(8).text_size(14).line_height("23px")
+        .on_size_change((size, cx) => {
+          const w = size.width / (Number(settings()?.zoom) || 1);
+          if (Math.abs(w - (this.fieldW ?? 0)) < 1) return;
+          this.fieldW = w;
+          if (this.fitHint()) cx.notify();
+        })
+        .child(Textarea.new(this.input)))
       .child(h_flex().px(8).pb(8).gap(2).items_center()
         .child(div().flex_1())
         .children(controls)

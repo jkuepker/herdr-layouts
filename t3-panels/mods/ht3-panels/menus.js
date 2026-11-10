@@ -235,7 +235,7 @@ export class ProjectMenu {
         trail: icon("chevron-right").size(14).flex_none().text_color(k.muted),
       })))
       .when(!!this.root && !!this.changes, (el) => el.child(row("proj-changes", "file-diff", "Changes", {
-        onClick: () => { closeOverlay(this.overlay); send("add:diff:a"); },
+        onClick: () => { closeOverlay(this.overlay); send("add:diff:a"); send("scope:branch"); },
         trail: h_flex().gap(6).flex_none().text_size(12).font_family(k.mono)
           .child(div().text_color(k.successText).child(`+${this.changes.add}`)).child(div().text_color(k.destructiveText).child(`\u2212${this.changes.del}`)),
       })))

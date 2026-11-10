@@ -91,6 +91,8 @@ export default class Inbox extends View {
         else if (command === "clear") /** @type {any} */ (this).clearSettled?.();
         else if (command.startsWith("custom-snooze:")) /** @type {any} */ (this).customSnooze?.(command.slice("custom-snooze:".length), cx);
         else if (command === "undo") this.undo(cx);
+        // `ht3-inbox.nap-menu:<address>` (a card's, `pane:<id>` for a chat): opens or closes its Snooze menu, as its clock does, for scripts.
+        else if (command.startsWith("nap-menu:")) this.napMenu = this.napMenu ? null : command.slice(9);
         // `ht3-inbox.shelf:working|snoozed|settled`: opens or folds that group, as a click on its header, for scripts.
         else if (command.startsWith("shelf:")) {
           const [field, key] = { working: ["workOpen", "working-open"], snoozed: ["napOpen", "snoozed-open"], settled: ["open", "open"] }[command.slice(6)] ?? [];
