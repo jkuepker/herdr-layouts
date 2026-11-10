@@ -89,6 +89,8 @@ Everything uses T3 Code's sizes (1rem = 16px): 14px text on a 23px line, 8px con
 
 - **Project scripts.** Named commands kept per project in shared `ht3-panels.scripts` (`{"<machine or empty>:<folder>": [{name, command}]}`; a project is the repository's main checkout, so a chat's worktree shares them, or the folder itself outside Git). The Project popover has a **Scripts** row: greyed, "none yet: add them in Settings", while the project has none; else it opens the list, and a click on one opens a new terminal tab in the side panel, in the folder you are in, with the command typed into its shell (`hc send`), so the shell stays when it ends. Settings → **Project scripts** shows the shown space's project: each script with a bin, and Name and Command fields with Add (a name used again replaces that script). Scripts: in the popover `scripts`, `script:<n>`; in Settings `ui:script:<name>=<command>`, `ui:unscript:<n>`, `ui:skip` (folds Agents and Editors away, for pictures) (`scripts.js`; `side.js` `openScript`).
 
+- **Queued messages outlive a reload.** The queue is kept per chat (shared `ht3-panels.kept[<chat id>].queue`: text, `@` file links and attachments by path). After the pane or Herdr reloads, the queued messages show again and go out in order as soon as the agent is back and ready. The turn that was running when the pane reloaded is not resumed (its agent ended with the pane).
+
 ## Built from
 
 - **One mod, `ht3-panels`**, with many faces picked in `main.js` by how a copy is opened (`mod.json`: `{"place": "none", "overlay": {"width": 512, "height": 660}}`):

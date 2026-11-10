@@ -98,7 +98,8 @@ const seconds = (ms) => {
 const took = (ms) => (ms < 10000 ? `${(Math.max(0, ms) / 1000).toFixed(1)}s` : seconds(ms));
 const isWork = (m) => m.kind === "thought" || m.kind === "tool";
 // What a chat keeps across a reload of its pane (and of the app) that isn't the agent's to remember:
-// shared("ht3-panels.kept")[chat id] = { allow: true } while "Always allow this session" is on.
+// shared("ht3-panels.kept")[chat id] = { allow: true } while "Always allow this session" is on, and
+// { queue: [{ text, blocks, files }] }, the messages waiting for the agent's turn to end.
 // Empty values aren't kept; a chat with nothing kept has no entry.
 const KEPT = `${MOD}.kept`;
 const keptOf = (id) => (id ? (shared(KEPT) ?? {})[id] ?? {} : {});
@@ -128,6 +129,9 @@ export class ChatPanel {
     this.hasText = false;
     // "Always allow this session" stays on over a reload (it is the person's word, not the agent's).
     this.autoAllow = keptOf(this.chatId).allow === true;
+    // Messages queued before a reload wait on: they go out when the agent is back and ready.
+    const waiting = keptOf(this.chatId).queue;
+    if (Array.isArray(waiting) && waiting.length) this.queue = waiting.map((q) => ({ text: String(q.text ?? ""), blocks: q.blocks ?? [], files: q.files ?? [] }));
     // A chat tab's agent has no terminal: it tells the layout's lists how it is itself (report.js).
     // A side chat is no tab, and a terminal agent's chat has its terminal to speak for it.
     this.reporter = this.chatId && !p.terminal && !p.side ? new Reporter(this.chatId) : null;
@@ -579,6 +583,7 @@ export class ChatPanel {
       this.queue ??= [];
       if (followUp() === "steer" && ["working", "blocked"].includes(v.status)) { this.queue.unshift(payload); this.source.stop(); }
       else this.queue.push(payload);
+      this.keepQueue();
       return cx.notify();
     }
     this.dispatch(cx, payload);
@@ -587,7 +592,13 @@ export class ChatPanel {
   // The next queued message goes out once the agent is ready for one.
   drain(cx) {
     if (!this.queue?.length || this.sending || this.source.kind !== "acp" || !this.source.alive || this.source.word() !== "ready") return;
-    this.dispatch(cx, this.queue.shift());
+    const next = this.queue.shift();
+    this.keepQueue();
+    this.dispatch(cx, next);
+  }
+
+  keepQueue() {
+    keep(this.chatId, { queue: (this.queue ?? []).map((q) => ({ text: q.text, blocks: q.blocks, files: q.files.map((a) => ({ name: a.name, path: a.path, image: a.image, thumb: a.thumb })) })) });
   }
 
   // A queued message's buttons: steer (it goes in now: the turn is interrupted), edit (back into the message box), drop.
@@ -597,6 +608,7 @@ export class ChatPanel {
     this.queue.splice(i, 1);
     if (what === "steer") { this.queue.unshift(q); if (this.source.word() === "ready") this.drain(cx); else this.source.stop(); }
     if (what === "edit") { this.input.set_value(q.text); this.hasText = !!q.text.trim(); this.attached = [...(this.attached ?? []), ...q.files]; this.input.focus(); }
+    this.keepQueue();
     cx.notify();
   }
 

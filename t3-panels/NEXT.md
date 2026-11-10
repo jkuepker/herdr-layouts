@@ -47,6 +47,8 @@ Then: QA.md rows, light-theme shots, end state (Pi tab in 3-deborah-network, spa
 
 - Round 4, 3. Always allow survives a reload: kept per chat in shared `ht3-panels.kept`. Left: turning it on from the Inbox card for an agent with its own allow-always answer is the agent's to remember, not ours.
 
+- Round 4, 4. Queued messages survive a reload (shared `ht3-panels.kept`). Left: an attachment whose file went away in between is sent without it; the queue still can't be reordered.
+
 ## Candidates
 
 Each entry: what it does / T3 location / mod API support / value for multi-machine agent users / effort.
