@@ -9,7 +9,7 @@
 
 import { div, list, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, TextView, Scrollbar, VirtualListScrollHandle } from "gpui-base";
-import { run, openOverlay, appHome, home, exec, layout, settings, shared, setShared } from "herdr";
+import { run, openOverlay, appHome, home, exec, layout, settings, shared, setShared, notify } from "herdr";
 import { MOD, tokens, alpha, icon, agentMark, button, iconButton, control, badge, workLine, divider, shortPath } from "./look.js";
 import { AcpSource, detect, argvOf, forkChat } from "./agent-acp.js";
 import { TermSource } from "./agent-term.js";
@@ -17,7 +17,7 @@ import { Reporter } from "./report.js";
 import { fileIcon } from "./fileicons.js";
 import { snapshot, turnStat } from "./checkpoint.js";
 import { checkpointsOn, followUp } from "./settings.js";
-import { addNotice } from "./transcript.js";
+import { addNotice, toMarkdown } from "./transcript.js";
 import { limitModels, rememberModels } from "./settings.js";
 import { agentOf } from "./agent-acp.js";
 import { repoOf } from "./launcher.js";
@@ -85,6 +85,7 @@ const LOCAL_COMMANDS = [
   { name: "fork", description: "Continue this thread in a new chat", local: true },
   { name: "stash", description: "Park this draft, or bring one back", local: true },
   { name: "find", description: "Find in this thread", local: true },
+  { name: "copy", description: "Copy this thread as Markdown", local: true },
   { name: "usage", description: "Tokens and context: this chat and every agent", local: true },
 ];
 
@@ -408,6 +409,7 @@ export class ChatPanel {
       if (item.name === "fork") this.fork(cx);
       if (item.name === "usage") run(`${MOD}.usage`);
       if (item.name === "find") return this.setFind(cx, true);
+      if (item.name === "copy") this.copyThread(cx);
       // With a draft before "/stash" it is parked; alone, the parked drafts open.
       if (item.name === "stash") { if (before.trim()) this.stash(cx); else this.picker = "__stash"; }
     } else {
@@ -516,6 +518,8 @@ export class ChatPanel {
     if (c === "stash:menu") this.picker = this.picker === "__stash" ? null : "__stash";
     if (c.startsWith("unstash:")) this.unstash(cx, Number(c.slice(8)));
     if (c.startsWith("stash:drop:")) this.dropStash(cx, Number(c.slice(11)));
+    // copy:thread is "/copy": the thread as Markdown on the clipboard.
+    if (c === "copy:thread") this.copyThread(cx);
     // find:<text> opens the find bar with that text (find alone: opens or closes it), find: closes it.
     if (c === "find") this.setFind(cx, !this.finding);
     if (c.startsWith("find:")) this.setFind(cx, !!c.slice(5), c.slice(5));
@@ -772,6 +776,16 @@ export class ChatPanel {
         .child(`${Math.round((100 * v.usage.used) / v.usage.size)}% context`)))
       .when(!!v.terminal, (el) => el.child(iconButton(k, "to-term", "square-terminal", () => run("pane.focus", { terminal: v.terminal }), { tip: `Go to its terminal (${v.terminal})` })))
       .child(iconButton(k, "new-chat", "square-pen", () => openLauncher(), { tip: "New chat" }));
+  }
+
+  // "/copy": the whole thread as Markdown on the clipboard (transcript.js `toMarkdown`), said by a toast.
+  copyThread(cx) {
+    const v = this.view;
+    if (!v?.items?.length) return;
+    const md = toMarkdown({ title: this.named() ?? v.items.find((m) => m.kind === "user")?.text, agent: v.name, cwd: v.cwd, machine: v.machine, branch: this.reporter?.where?.branch, items: v.items });
+    cx.write_to_clipboard(md);
+    notify({ title: "Thread copied as Markdown", body: `${md.split("\n").length} lines`, level: "success", timeout: 2500 });
+    cx.notify();
   }
 
   findQuery() {

@@ -58,6 +58,22 @@ export function applyUpdate(t, u) {
 
 // A finished turn closes the open plan and stops agent text from merging into
 // the next turn's reply.
+// A thread as Markdown, to paste into an issue, a note or another agent: its name, where it ran, then what was
+// said in order. Tools are one line each, plans a checklist; thoughts and notices are left out.
+export function toMarkdown({ title, agent, cwd, branch, machine, items }) {
+  const where = [agent, machine ? `${machine}:${cwd ?? "~"}` : cwd, branch ? `branch ${branch}` : null].filter(Boolean).join(" · ");
+  const out = [`# ${String(title || "Chat").split("\n")[0]}`, ...(where ? ["", `_${where}_`] : [])];
+  let last = null;
+  const head = (who) => { if (last !== who) { out.push("", `## ${who}`); last = who; } out.push(""); };
+  for (const m of items ?? []) {
+    if (m.kind === "user") { head("You"); out.push(String(m.text ?? "").trim(), ...(m.attachments ?? []).map((a) => `- attached: ${a.name}`)); }
+    else if (m.kind === "agent" && String(m.text ?? "").trim()) { head(agent || "Agent"); out.push(String(m.text).trim()); }
+    else if (m.kind === "tool") { head(agent || "Agent"); out.push(`- \`${String(m.title || "tool").replace(/`/g, "'")}\`${m.status && m.status !== "completed" ? ` (${m.status})` : ""}`); }
+    else if (m.kind === "plan") { head(agent || "Agent"); out.push(...(m.entries ?? []).map((e) => `- [${e.status === "completed" ? "x" : " "}] ${e.content}`)); }
+  }
+  return out.join("\n").replace(/\n{3,}/g, "\n\n") + "\n";
+}
+
 export function endTurn(t) {
   for (const i of t.items) i.open = false;
 }

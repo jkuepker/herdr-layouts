@@ -99,6 +99,8 @@ Everything uses T3 Code's sizes (1rem = 16px): 14px text on a 23px line, 8px con
 
 - **Find in thread.** `/find` (or `ht3-panels.find`) opens a find bar over the chat. While it has text, the lane holds only the messages that have it (yours, the agent's, thoughts, tool rows and their output, plans; case doesn't matter), with the work unfolded, and the bar says "4 of 41 messages", in red when none do. × or Esc closes it and the thread is whole again. It narrows the thread rather than jumping from match to match, because the lane can't be scrolled to a row it hasn't measured; the words themselves aren't highlighted. Scripts: `find:<text>`, `find:` (close).
 
+- **Copy a thread.** A chat card's right-click menu in the Inbox has a Copy group under Rename and Settle: **Copy as Markdown** (the whole thread: its name, agent, folder and branch, then "## You" and "## <agent>" in order, tools as one line each, plans as a checklist; thoughts and notices left out), **Copy path** and **Copy branch** (when the chat has told them). `/copy` in a chat copies the shown thread as Markdown. A toast says it is copied. Scripts: `copy:thread` in the shown chat; in the open menu `key:m`, `key:p`, `key:b` (`transcript.js` `toMarkdown`).
+
 ## Built from
 
 - **One mod, `ht3-panels`**, with many faces picked in `main.js` by how a copy is opened (`mod.json`: `{"place": "none", "overlay": {"width": 512, "height": 660}}`):

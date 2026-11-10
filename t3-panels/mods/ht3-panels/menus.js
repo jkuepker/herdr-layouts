@@ -4,7 +4,9 @@
 
 import { div, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { closeOverlay, exec, run, appHome, shared, setShared } from "herdr";
+import { closeOverlay, exec, run, appHome, shared, setShared, readTextFile, notify } from "herdr";
+import { toMarkdown } from "./transcript.js";
+import { agentName } from "./report.js";
 import { MOD, tokens, icon, iconButton, shortPath } from "./look.js";
 import { forkChat } from "./agent-acp.js";
 import { revertTo } from "./checkpoint.js";
@@ -172,6 +174,19 @@ export class ThreadMenu {
     if (this.naming) return;
     if (key === "r") { this.naming = true; this.field.focus(); cx.notify(); }
     if (key === "s") { run(`ht3-inbox.settle-card:${this.p.address}`); closeOverlay(this.overlay); }
+    // A chat's Copy group (T3's thread menu: Copy > Path, Branch; the whole thread as Markdown is ours).
+    const at = this.p.chat ? shared(`${MOD}.programs`)?.[this.p.tab] ?? {} : null;
+    if (key === "p" && at?.cwd) { cx.write_to_clipboard(at.cwd); closeOverlay(this.overlay); }
+    if (key === "b" && at?.branch) { cx.write_to_clipboard(at.branch); closeOverlay(this.overlay); }
+    if (key === "m" && this.p.chat && /^[\w-]+$/.test(this.p.chat)) cx.spawn(async (cx) => {
+      try {
+        const s = JSON.parse(await readTextFile(`${appHome()}/data/${MOD}/chats/${this.p.chat}/state.json`));
+        const md = toMarkdown({ title: this.p.title, agent: agentName(s.agentArgv, s.agentInfo?.title ?? s.agentInfo?.name), cwd: s.cwd, machine: s.machine, branch: at?.branch, items: s.transcript?.items });
+        cx.write_to_clipboard(md);
+        notify({ title: "Thread copied as Markdown", body: `${md.split("\n").length} lines`, level: "success", timeout: 2500 });
+      } catch (e) { notify({ title: "Couldn't copy the thread", body: String(e?.message ?? e), level: "error" }); }
+      closeOverlay(this.overlay);
+    });
   }
   render() {
     const k = tokens();
@@ -184,7 +199,14 @@ export class ThreadMenu {
       .when(this.naming, (el) => el.child(div().h(28).mt(14).mx(4).px(8).rounded(6).border(1).border_color(k.input).child(Input.new(this.field))))
       .when(!this.naming, (el) => el
         .child(row("thread-rename", "pen-line", "Rename thread", "r"))
-        .child(row("thread-settle", "check", this.p.settled ? "Bring back" : "Settle", "s")));
+        .child(row("thread-settle", "check", this.p.settled ? "Bring back" : "Settle", "s"))
+        .when(!!this.p.chat, (e) => {
+          const at = shared(`${MOD}.programs`)?.[this.p.tab] ?? {};
+          return e.child(div().mx(4).my(4).h(1).flex_none().bg(k.border))
+            .child(row("thread-copy-md", "copy", "Copy as Markdown", "m"))
+            .when(!!at.cwd, (x) => x.child(row("thread-copy-path", "folder", "Copy path", "p")))
+            .when(!!at.branch, (x) => x.child(row("thread-copy-branch", "git-branch", "Copy branch", "b")));
+        }));
   }
 }
 

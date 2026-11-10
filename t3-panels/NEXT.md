@@ -79,6 +79,8 @@ Looked for and not in T3 Code (so not ported): editing a sent message and resend
 
 - Next set 1. Find in thread: a find bar that narrows the lane to the matching messages. Left: no highlight of the words, no next/previous; only the messages loaded in the pane are searched (an agent's earlier, not yet shown ones aren't); no key opens it (`/find` or the command); Esc was not pressed by hand.
 
+- Next set 2. Copy a thread as Markdown, and its path and branch, from the card menu; `/copy` in the chat. Left: no file export; pictures are named, not embedded; a terminal agent's card has no Copy group; the right-click itself was driven by command.
+
 ## Candidates
 
 Each entry: what it does / T3 location / mod API support / value for multi-machine agent users / effort.
