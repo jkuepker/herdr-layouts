@@ -106,6 +106,8 @@ Looked for and not in T3 Code (so not ported): editing a sent message and resend
 
 - Round 6, 1. Send the draft as a new chat, and the same in the background. Left: the two keys were bound and Herdr reads them, but they were not pressed, and a text area may keep Enter with modifiers for itself; text only (attached files and `@` chips stay behind and are dropped from the box); the background tab flashes in front for under half a second; an ACP chat only.
 
+- Round 6, added: the chat toasts carry the agent's mark; the osascript system notification is gone. Left: with Herdr behind another app nothing shows outside Herdr's window (no system notification, dock badge or bounce: the app has system notifications inside, `gpui_macos::system_notifications`, but no command or mod call reaches them, and macOS has no notification entry for Herdr); the toast for the shown tab's chat while Herdr is behind times out like any toast, so it may be gone on coming back (the card still says Done); a custom agent with an icon of its own isn't known, it gets the check or the "!".
+
 ## Candidates
 
 Each entry: what it does / T3 location / mod API support / value for multi-machine agent users / effort.

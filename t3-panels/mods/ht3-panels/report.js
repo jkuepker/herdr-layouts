@@ -13,7 +13,7 @@
 // `keep: true` in the program tells them a chat pane is never theirs to close: Settle puts its card away and no more.
 // A chat of a terminal agent (props.terminal) reports nothing: its terminal already does.
 
-import { shared, setShared, spaces, panes, focused, window, machines, notify, playSound, exec } from "herdr";
+import { shared, setShared, spaces, panes, focused, window, machines, notify, playSound, settings } from "herdr";
 import { MOD } from "./look.js";
 import { agentOf } from "./agent-acp.js";
 import { toastsOn, soundsOn } from "./settings.js";
@@ -137,6 +137,7 @@ export class Reporter {
   // `more`: { cwd, machine, crumb }: its folder (the side panel follows it) and its header, which the pane header draws.
   update(status, argv, said, thread, more = {}) {
     const name = agentName(argv, said), a = agentOf(argv);
+    this.agent = a ?? null;
     this.program = { name, ...(a?.icon ? { icon: a.icon, tint: a.tint } : {}), ...(this.where?.branch ? { branch: this.where.branch } : {}), ...(more.machine ? { machine: more.machine } : {}),
       ...(more.cwd ? { cwd: more.cwd } : {}), ...(more.crumb ? { crumb: more.crumb } : {}) };
     if (!this.place()) return;
@@ -154,28 +155,31 @@ export class Reporter {
       : tab?.named && tab.name && tab.name.toLowerCase() !== name.toLowerCase() ? `${name} · ${tab.name}` : name;
     // Herdr toasts a terminal agent that ends or asks while it isn't looked at; a chat's agent has no terminal,
     // so the chat does: once per turn that ended unseen, once per approval. A click on the toast shows the chat.
-    // A toast is drawn in Herdr's window, so it is for a chat in a hidden tab. The shown tab's chat tells nothing
-    // inside the window (you will see the chat itself when you come back); with Herdr behind another app it posts
-    // the system's notification instead (macOS, through osascript: mods have no call for one), and nothing elsewhere.
+    // Which chats get one: see `tell`.
     const told = this.word === "done" && was !== "done" ? "done" : this.word === "blocked" && was !== "blocked" && !this.looking() ? "blocked" : null;
     if (told) this.tell(told, name, more.ask);
     this.publish();
   }
 
+  // The toast's picture: the agent's own mark, as its tab's (Pi, Claude Code, Codex, OpenCode, Gemini). The toast mod
+  // draws a picture as it is and can't tint it, so the one-colour marks have a light and a dark copy (icons/toast).
+  // An agent with no mark of its own (a typed command) gets the state's: a green check or an amber "!".
+  toastIcon(what) {
+    const a = this.agent;
+    if (a?.icon && !a.tint) return a.icon;
+    if (a?.icon && ["pi", "opencode", "gemini"].includes(a.id)) return `mods/${MOD}/icons/toast/${a.id}-${settings()?.dark !== false ? "dark" : "light"}.svg`;
+    return `mods/${MOD}/icons/toast/${what === "done" ? "done" : "blocked"}.svg`;
+  }
+
+  // A chat in a hidden tab posts Herdr's toast. The chat of the shown tab posts none while Herdr is in front (you
+  // are looking at it); with Herdr behind another app it posts the toast too, to be found on coming back. The
+  // system's own notification is not used: mods have no call for one, and posted through osascript it carried
+  // Script Editor's icon and a click on it did not open Herdr.
   tell(what, name, ask) {
     const space = spaces().find((x) => x.tabs.some((c) => c.id === this.tab));
     const title = what === "done" ? `${name} finished` : `${name} needs you`, body = [what === "blocked" && ask ? ask : this.title, space?.name].filter(Boolean).join(" · ");
-    if (focused()?.tab === this.tab) {
-      if (toastsOn() && !window().active && window().platform === "macos") {
-        const q = (t) => JSON.stringify(String(t).replace(/[\u0000-\u001f]/g, " ").slice(0, 200));
-        exec("osascript", ["-e", `display notification ${q(body)} with title ${q(title)}`], { timeout: 5000 }).catch(() => {});
-      }
-      if (soundsOn()) playSound(what);
-      return;
-    }
-    if (toastsOn()) {
-      notify({ title, body,
-        level: what === "done" ? "success" : "warning", ...(this.program?.icon ? { icon: this.program.icon } : {}), action: { name: "pane.focus", args: { pane: this.pane } } });
+    if (toastsOn() && !(focused()?.tab === this.tab && window().active)) {
+      notify({ title, body, level: what === "done" ? "success" : "warning", icon: this.toastIcon(what), action: { name: "pane.focus", args: { pane: this.pane } } });
     }
     if (soundsOn()) playSound(what);
   }
