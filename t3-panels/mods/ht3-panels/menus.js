@@ -245,6 +245,12 @@ export class ProjectMenu {
     this.github = false;
     this.error = null;
     this.busy = false;
+    // Git actions (GitActionsControl.tsx): what the working tree and the branch are up to, and the step that is open.
+    this.git = null; // { changed, ahead, behind, upstream, remote, base }
+    this.step = null; // "commit" | "pr"
+    this.note = null; // what the last action did
+    this.message = InputState.new({ placeholder: "Commit message (empty: one is made up)" });
+    this.message.on("submit", (_e, cx) => this.commit(cx));
     cx.spawn(async (cx) => {
       if (!this.on) {
         const n = await exec("scutil", ["--get", "ComputerName"]).catch(() => null);
@@ -267,6 +273,7 @@ export class ProjectMenu {
           if (d?.code === 0 && Number.isFinite(add) && Number.isFinite(del)) this.changes = { add, del };
           const r = await exec("git", ["remote", "-v"], { cwd: this.root, on: this.on }).catch(() => null);
           this.github = /github/i.test(r?.stdout ?? "");
+          await this.status();
         }
       }
       cx.notify();
@@ -274,7 +281,13 @@ export class ProjectMenu {
   }
   close() {}
   // `ht3-panels.open:<editor id>` opens the folder in that editor, as its row does, for scripts.
-  command(c) {
+  // `git:commit` (opens the message field), `git:commit:<message>` (commits with it), `git:push`, `git:pr` (shows the
+  // command Create PR would run; only its button runs it).
+  command(c, cx) {
+    if (c === "git:commit") { this.step = this.step === "commit" ? null : "commit"; this.message.focus(); return cx.notify(); }
+    if (c.startsWith("git:commit:")) { this.message.set_value(c.slice(11)); return this.commit(cx); }
+    if (c === "git:push") return this.push(cx);
+    if (c === "git:pr") { this.step = this.step === "pr" ? null : "pr"; return cx.notify(); }
     if (!c.startsWith("open:") || this.on || !this.folder) return;
     const ed = (this.editors ?? []).find((e) => e.id === c.slice(5) && editorOn(e.id));
     if (!ed) return;
@@ -290,6 +303,86 @@ export class ProjectMenu {
       try { await fn(); } catch (e) { this.error = String(e?.message ?? e); }
       this.busy = false;
       cx.notify();
+    });
+  }
+
+  // What Commit, Push and Create PR go by: `git status --porcelain=v2 --branch`, the first remote, the default branch.
+  async status() {
+    const opt = { cwd: this.root, on: this.on };
+    const r = await exec("git", ["--no-optional-locks", "status", "--porcelain=v2", "--branch"], opt).catch(() => null);
+    if (r?.code !== 0) { this.git = null; return; }
+    const lines = r.stdout.split("\n"), head = (key) => lines.find((l) => l.startsWith(`# branch.${key} `))?.slice(10 + key.length) ?? null;
+    const ab = /\+(\d+) -(\d+)/.exec(head("ab") ?? "");
+    const remotes = (await exec("git", ["remote"], opt).catch(() => null))?.stdout.split("\n").filter(Boolean) ?? [];
+    const base = (await exec("sh", ["-c", "git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||'; true"], opt).catch(() => null))?.stdout.trim() || null;
+    const files = lines.filter((l) => l && !l.startsWith("#"));
+    const upstream = head("upstream");
+    // Without an upstream every commit not on a remote yet counts as ahead.
+    let ahead = ab ? Number(ab[1]) : 0;
+    if (!upstream && remotes.length) ahead = Number((await exec("git", ["rev-list", "--count", "HEAD", "--not", "--remotes"], opt).catch(() => null))?.stdout.trim() || 0);
+    this.git = { changed: files.length, names: files.slice(0, 3).map((l) => l.split(/\s+/).pop().split("/").pop()), ahead, behind: ab ? Number(ab[2]) : 0, upstream, remote: remotes.includes("origin") ? "origin" : remotes[0] ?? null, base, detached: head("head") === "(detached)" };
+  }
+
+  // Commit: everything that changed (`git add -A`), with the message typed or one made from the file names.
+  commit(cx) {
+    const g = this.git;
+    if (!g?.changed) return;
+    const typed = this.message.value().trim();
+    const message = typed || (g.changed === 1 ? `Update ${g.names[0]}` : `Update ${g.changed} files`);
+    this.run(cx, async () => {
+      const opt = { cwd: this.root, on: this.on };
+      const a = await exec("git", ["add", "-A"], opt);
+      if (a.code !== 0) throw new Error(a.stderr.trim().split("\n").pop() || "git add failed");
+      const r = await exec("git", ["commit", "-m", message], opt);
+      if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim().split("\n").slice(-2).join(" ") || "git commit failed");
+      const sha = (await exec("git", ["rev-parse", "--short", "HEAD"], opt)).stdout.trim();
+      this.note = `Committed ${sha}: ${message}`;
+      this.step = null;
+      this.message.set_value("");
+      this.changes = null;
+      await this.status();
+    });
+  }
+
+  // The push Push runs: to the branch's upstream, or, without one, `-u <remote> <branch>`.
+  pushArgs() {
+    const g = this.git;
+    return g?.upstream ? ["push"] : ["push", "-u", g?.remote ?? "origin", this.branch];
+  }
+
+  push(cx) {
+    const g = this.git;
+    if (!g?.remote || !this.branch || g.detached || g.behind > 0 || !(g.ahead > 0 || !g.upstream)) return;
+    this.run(cx, async () => {
+      const opt = { cwd: this.root, on: this.on, timeout: 120000 };
+      const r = await exec("git", this.pushArgs(), opt);
+      if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim().split("\n").slice(-2).join(" ") || "git push failed");
+      this.note = `Pushed ${this.branch} to ${g.upstream ? g.upstream.split("/")[0] : g.remote}`;
+      await this.status();
+    });
+  }
+
+  // What Create PR runs, shown before it does: the branch is pushed first if it has no upstream, then
+  // `gh pr create --fill` makes the pull request from the branch's commits.
+  prCommand() {
+    const g = this.git, push = !g?.upstream || g.ahead > 0 ? `git ${this.pushArgs().join(" ")} && ` : "";
+    return `${push}gh pr create --fill --head ${this.branch}${g?.base ? ` --base ${g.base}` : ""}`;
+  }
+
+  createPr(cx) {
+    const g = this.git;
+    if (!g || !this.github || !this.branch || this.branch === g.base) return;
+    this.run(cx, async () => {
+      const opt = { cwd: this.root, on: this.on, timeout: 120000 };
+      if (!g.upstream || g.ahead > 0) {
+        const p = await exec("git", this.pushArgs(), opt);
+        if (p.code !== 0) throw new Error((p.stderr || p.stdout).trim().split("\n").slice(-2).join(" ") || "git push failed");
+      }
+      const r = await exec("gh", ["pr", "create", "--fill", "--head", this.branch, ...(g.base ? ["--base", g.base] : [])], opt);
+      if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim().split("\n").slice(-2).join(" ") || "gh pr create failed");
+      this.note = `Pull request created: ${r.stdout.trim().split("\n").pop()}`;
+      this.step = null;
+      await this.status();
     });
   }
 
@@ -365,6 +458,29 @@ export class ProjectMenu {
         trail: h_flex().gap(6).flex_none().text_size(12).font_family(k.mono)
           .child(div().text_color(k.successText).child(`+${this.changes.add}`)).child(div().text_color(k.destructiveText).child(`\u2212${this.changes.del}`)),
       })))
+      // GitActionsControl.tsx: Commit, Push, Create PR, each greyed while it has nothing to do.
+      .when(!!this.root && !!this.git, (el) => {
+        const g = this.git, n = (c, w) => `${c} ${w}${c === 1 ? "" : "s"}`;
+        const canPush = !!g.remote && !!this.branch && !g.detached && g.behind === 0 && (g.ahead > 0 || !g.upstream);
+        const canPr = this.github && !!this.branch && !g.detached && this.branch !== g.base && g.behind === 0;
+        const act = (id, glyph, label, can, detail, onClick, on) => {
+          const r = row(id, glyph, label, { detail, on, onClick: can && !this.busy ? onClick : null });
+          return can ? r : r.opacity(0.5);
+        };
+        return el.child(div().mx(4).my(4).h(1).flex_none().bg(k.border))
+          .child(act("git-commit", "check", "Commit", g.changed > 0, g.changed ? n(g.changed, "file") : "nothing to commit", (cx) => { this.step = this.step === "commit" ? null : "commit"; this.message.focus(); cx.notify(); }, this.step === "commit"))
+          .when(this.step === "commit" && g.changed > 0, (e) => e.child(h_flex().mx(8).my(4).gap(6).items_center()
+            .child(div().flex_1().min_w(0).h(28).px(8).rounded(6).border(1).border_color(k.input).text_size(13).child(Input.new(this.message)))
+            .child(button(k, "git-commit-go", this.busy ? "…" : "Commit", (cx) => this.commit(cx)))))
+          .child(act("git-push", "arrow-up", "Push", canPush, g.behind > 0 ? `${g.behind} behind: pull first` : !g.remote ? "no remote" : g.ahead > 0 ? `${n(g.ahead, "commit")} ahead` : !g.upstream ? "no upstream yet" : "up to date", (cx) => this.push(cx), false))
+          .child(act("git-pr", "git-pull-request-arrow", "Create PR", canPr, !this.github ? "no GitHub remote" : this.branch === g.base ? `on ${g.base}` : null, (cx) => { this.step = this.step === "pr" ? null : "pr"; cx.notify(); }, this.step === "pr"))
+          .when(this.step === "pr" && canPr, (e) => e.child(v_flex().mx(8).my(4).gap(6)
+            .child(div().p(8).rounded(6).bg(k.background).border(1).border_color(k.border).font_family(k.mono).text_size(11).line_height("16px").text_color(k.muted).child(this.prCommand()))
+            .child(h_flex().justify_end().gap(6)
+              .child(button(k, "git-pr-no", "Cancel", (cx) => { this.step = null; cx.notify(); }, { variant: "outline" }))
+              .child(button(k, "git-pr-go", this.busy ? "…" : "Create", (cx) => this.createPr(cx))))));
+      })
+      .when(!!this.note, (el) => el.child(div().px(8).py(6).text_size(12).line_height("16px").text_color(k.successText).child(this.note)))
       .when(!!this.error, (el) => el.child(div().px(8).py(6).text_size(12).line_height("16px").text_color(k.destructiveText).child(this.error)))
       .child(div().flex_1())
       .child(div().mx(4).my(4).h(1).flex_none().bg(k.border))

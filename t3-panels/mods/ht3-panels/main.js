@@ -75,7 +75,7 @@ class Buttons {
       setShared("ht3-files.pinned", all);
     }
     else if (name === "bottom") cx.spawn(async (cx) => { try { await toggleBottom(); } catch (e) { fail(e); } cx.notify(); });
-    else if (name === "menu") openOverlay({ mod: MOD, kind: "popup", at: { x: 900, y: 48 }, width: a === "project" ? 344 : ADD_MENU.w, height: a === "project" ? 460 : ADD_MENU.h, props: { menu: a, group: b ?? "a" } });
+    else if (name === "menu") openOverlay({ mod: MOD, kind: "popup", at: { x: 900, y: 48 }, width: a === "project" ? 344 : ADD_MENU.w, height: a === "project" ? 580 : ADD_MENU.h, props: { menu: a, group: b ?? "a" } });
     cx.notify();
   }
 
