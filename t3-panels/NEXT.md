@@ -83,6 +83,8 @@ Looked for and not in T3 Code (so not ported): editing a sent message and resend
 
 - Next set 3. Chats in the command palette: every open chat as "Chat: <name>", Enter goes to it. Left: closed chats are under Earlier chats… only; a chat in a space that was never shown since Herdr started isn't placed yet and isn't listed.
 
+- Next set 4. Mark unread, in the chat card's menu. Left: "stays unread while you look at it until you leave and return" was not seen working, because Herdr's window was never in front during the tests (the mark itself, on a shown and on a hidden chat, was); terminal agents' cards have no such row.
+
 ## Candidates
 
 Each entry: what it does / T3 location / mod API support / value for multi-machine agent users / effort.

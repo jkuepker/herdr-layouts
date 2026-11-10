@@ -174,6 +174,8 @@ export class ThreadMenu {
     if (this.naming) return;
     if (key === "r") { this.naming = true; this.field.focus(); cx.notify(); }
     if (key === "s") { run(`ht3-inbox.settle-card:${this.p.address}`); closeOverlay(this.overlay); }
+    // Mark unread: the chat takes the mark and says "done" again (report.js `marked`).
+    if (key === "u" && this.p.chat && this.p.tab) { setShared(`${MOD}.unread`, { ...(shared(`${MOD}.unread`) ?? {}), [this.p.tab]: Date.now() }); closeOverlay(this.overlay); }
     // A chat's Copy group (T3's thread menu: Copy > Path, Branch; the whole thread as Markdown is ours).
     const at = this.p.chat ? shared(`${MOD}.programs`)?.[this.p.tab] ?? {} : null;
     if (key === "p" && at?.cwd) { cx.write_to_clipboard(at.cwd); closeOverlay(this.overlay); }
@@ -200,6 +202,7 @@ export class ThreadMenu {
       .when(!this.naming, (el) => el
         .child(row("thread-rename", "pen-line", "Rename thread", "r"))
         .child(row("thread-settle", "check", this.p.settled ? "Bring back" : "Settle", "s"))
+        .when(!!this.p.chat, (e) => e.child(row("thread-unread", "circle-dot", "Mark unread", "u")))
         .when(!!this.p.chat, (e) => {
           const at = shared(`${MOD}.programs`)?.[this.p.tab] ?? {};
           return e.child(div().mx(4).my(4).h(1).flex_none().bg(k.border))

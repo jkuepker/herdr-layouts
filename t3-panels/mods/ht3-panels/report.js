@@ -8,6 +8,8 @@
 // - shared("ht3-panels.turns")[tab]: how many turns have ended (new work brings a settled chat back).
 // - shared("ht3-panels.asks")[tab]: { id, title, options: [{ optionId, name, kind }] } while its agent waits for an approval,
 //   and shared("ht3-panels.answers")[tab]: { ask, optionId, always } is how a list answers it (chat.js takes it);
+// - shared("ht3-panels.unread")[tab]: set by the card's menu ("Mark unread"); the chat takes it and says "done" again
+//   until the person has gone elsewhere and come back to it.
 // `keep: true` in the program tells them a chat pane is never theirs to close: Settle puts its card away and no more.
 // A chat of a terminal agent (props.terminal) reports nothing: its terminal already does.
 
@@ -17,6 +19,7 @@ import { agentOf } from "./agent-acp.js";
 import { toastsOn, soundsOn } from "./settings.js";
 
 const STATUS = `${MOD}.status`, TITLES = `${MOD}.titles`, PROGRAM = `${MOD}.program`, PLACES = `${MOD}.places`, PROGRAMS = `${MOD}.programs`, TURNS = `${MOD}.turns`;
+const UNREAD = `${MOD}.unread`;
 const PROGRAM_IS = { name: "Chat", icon: `mods/${MOD}/icons/message-square.svg`, tint: true, inbox: true, keep: true };
 // Tabs whose chat runs in this app now. Module scope is one per source version, shared by copies.
 const LIVE = new Set();
@@ -57,7 +60,7 @@ export function prune() {
   const tabs = tabsNow();
   // Nothing listed yet (the app is starting) is not everything closed.
   if (!tabs.size) return;
-  for (const key of [STATUS, TITLES, PROGRAMS, TURNS, `${MOD}.asks`, `${MOD}.answers`]) {
+  for (const key of [STATUS, TITLES, PROGRAMS, TURNS, `${MOD}.asks`, `${MOD}.answers`, UNREAD]) {
     const all = shared(key) ?? {}, kept = Object.fromEntries(Object.entries(all).filter(([tab]) => tabs.has(tab)));
     put(key, kept);
   }
@@ -142,7 +145,8 @@ export class Reporter {
     if (!busy && (was === "working" || was === "blocked")) this.turn = (this.turn ?? 0) + 1;
     this.word = busy ? status
       : was === "working" || was === "blocked" ? (this.looking() ? "idle" : "done")
-      : was === "done" && !this.looking() ? "done" : "idle";
+      : was === "done" && (this.held || !this.looking()) ? "done" : "idle";
+    if (busy) this.held = false;
     // With the tab named after something else, both: "Pi · fix login".
     const tab = spaces().flatMap((s) => s.tabs).find((c) => c.id === this.tab);
     const line = String(thread ?? "").trim().split("\n")[0];
@@ -176,8 +180,24 @@ export class Reporter {
     if (soundsOn()) playSound(what);
   }
 
+  // "Mark unread" (T3's thread menu): the card's menu leaves a mark, and the chat is unread ("done") again. Marked
+  // while it is being looked at, it stays unread until the person has looked away once and come back.
+  marked() {
+    const all = shared(UNREAD) ?? {};
+    if (!this.tab || !all[this.tab]) return;
+    const rest = { ...all };
+    delete rest[this.tab];
+    setShared(UNREAD, rest);
+    if (this.word === "working" || this.word === "blocked") return;
+    this.word = "done";
+    this.held = this.looking();
+    this.publish();
+  }
+
   // From the view's timer and its drawing: a "done" that is looked at.
   seen() {
+    this.marked();
+    if (this.held) { if (!this.looking()) this.held = false; return; }
     if (this.word !== "done" || !this.looking()) return;
     this.word = "idle";
     this.publish();

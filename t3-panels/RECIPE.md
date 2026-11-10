@@ -101,6 +101,8 @@ Everything uses T3 Code's sizes (1rem = 16px): 14px text on a 23px line, 8px con
 
 - **Copy a thread.** A chat card's right-click menu in the Inbox has a Copy group under Rename and Settle: **Copy as Markdown** (the whole thread: its name, agent, folder and branch, then "## You" and "## <agent>" in order, tools as one line each, plans as a checklist; thoughts and notices left out), **Copy path** and **Copy branch** (when the chat has told them). `/copy` in a chat copies the shown thread as Markdown. A toast says it is copied. Scripts: `copy:thread` in the shown chat; in the open menu `key:m`, `key:p`, `key:b` (`transcript.js` `toMarkdown`).
 
+- **Mark unread.** A chat card's menu has **Mark unread**: the chat is "done" again (its dot, Done on its card, the count of the hidden sidebar), as after a turn you didn't see. It becomes read when you next come to it; marked while you are looking at it, it stays unread until you have looked away and come back. A chat that is working or waiting for you isn't changed (shared `ht3-panels.unread[tab]`, taken by the chat: `report.js` `marked`). In the open menu: `key:u`.
+
 ## Built from
 
 - **One mod, `ht3-panels`**, with many faces picked in `main.js` by how a copy is opened (`mod.json`: `{"place": "none", "overlay": {"width": 512, "height": 660}}`):
