@@ -23,7 +23,7 @@ Everything uses T3 Code's sizes (1rem = 16px): 14px text on a 23px line, 8px con
 5. **Approval drawer**, tucked on top of the composer while the agent waits: "Waiting for approval" with an amber shield, the tool's title, and one 24px button per answer (the allowing ones blue).
 6. **Files panel** (540px, 360 to 900, on the right of the terminals):
    - a 40px strip of tabs 24px high and 6 round: **Files**, then one per open file with an × and a dot on its icon while it has unsaved edits; the shown one is filled;
-   - with a file open: a 28px line with the last folders and the name, "Unsaved", **Save**, word wrap and the explorer switch; the file in an editor (13px mono, line numbers, folding, syntax colors from the theme's ANSI colors); the explorer 256px wide on the right;
+   - with a file open: a 28px line with the last folders and the name, "Unsaved", **Save**, word wrap and the explorer switch; the file in an editor (13px mono, line numbers, folding, T3 Code's syntax colors: `pierre-dark` on a dark theme, T3 Code's `t3-light` on a light one); the explorer 256px wide on the right;
    - the explorer: refresh, a "Search files" field, collapse all; rows 24px high, 12px text, 6 round, 12px of indent per level, git marks as a letter (green A, amber M, red D or U). With no file open it fills the panel.
 
 ## How it behaves
@@ -77,6 +77,6 @@ Everything uses T3 Code's sizes (1rem = 16px): 14px text on a 23px line, 8px con
 - `herdr-app do mod.open --name ht3-panels` shows the dialog with the installed agents and, in a tab with Claude Code running, that terminal.
 - `herdr-app do pane.split --direction right --mod ht3-panels --props '{"panel":"chat","chat":"t1","agent":"opencode","cwd":"<folder>","prompt":"Read a file here and say what it does."}'` opens a chat whose agent answers in markdown with a read row above it; reloading the mod shows "Resumed the agent's session.".
 - `--props '{"panel":"chat","terminal":"<address of a Claude Code terminal>"}'` shows that conversation, and a message sent to the terminal appears in the chat with its reply.
-- `herdr-app do layout.toggle --id ht3-side` shows the file panel; `herdr-app do "ht3-panels.open:<path>"` opens a file with syntax colors; changing the file on disk changes the editor.
+- `herdr-app do layout.toggle --id ht3-side` shows the file panel; `herdr-app do "ht3-panels.open:<path>"` opens a file with syntax colors (an absolute path outside the shown folder moves Files to its repository); changing the file on disk changes the editor.
 - Typing in the editor shows the dot and "Unsaved"; `cmd-s` writes the file and clears them.
 - Closing a chat pane leaves no agent process it started.

@@ -37,9 +37,15 @@ function place() {
   return { space: space?.id ?? null, on: space?.machine ?? null, cwd: pane?.cwd || f?.cwd || null, fallback: other?.cwd || space?.folder || null };
 }
 
+// T3 Code's code colors: pierre-dark (@pierre/theme 2.0.0) on dark themes, and on light ones T3 Code's
+// own t3-light (pierre-light darkened to 4.5:1 by its readableSyntaxTheme.ts), not the terminal's ANSI palette.
+const PIERRE_DARK = { keyword: "#ff678d", string: "#5ecc71", "string.escape": "#61d5c0", comment: "#737373", function: "#9d6afb", type: "#d568ea", number: "#68cdf2", constant: "#ffd452", boolean: "#68cdf2", variable: "#ffa359", operator: "#08c0ef", punctuation: "#636363" };
+const T3_LIGHT = { keyword: "#b12251", string: "#106a2b", "string.escape": "#0b685b", comment: "#5c5c5c", function: "#693acf", type: "#912ba7", number: "#0b5267", constant: "#735b02", boolean: "#0b5267", variable: "#8f4e17", operator: "#006781", punctuation: "#4b4b4b" };
 function syntax() {
-  const t = theme();
-  return { keyword: t.ansi5, string: t.ansi2, "string.escape": t.ansi6, comment: t.dim, function: t.ansi4, type: t.ansi3, number: t.ansi1, constant: t.ansi6, boolean: t.ansi1, variable: t.foreground, operator: t.muted, punctuation: t.muted };
+  const bg = (theme().background || "#000000").slice(1, 7), [r, g, b] = [0, 2, 4].map((i) => parseInt(bg.slice(i, i + 2), 16));
+  const s = 0.299 * r + 0.587 * g + 0.114 * b > 128 ? T3_LIGHT : PIERRE_DARK;
+  // gpui-component's finer captures, coloured as T3 Code colours them: Python docstrings are strings.
+  return { ...s, "comment.doc": s.string, property: s.variable, "variable.special": s.constant, attribute: s.function, constructor: s.type, "string.special": s["string.escape"], "string.regex": s["string.escape"], "punctuation.bracket": s.punctuation, "punctuation.delimiter": s.punctuation, tag: s.keyword, title: s.function };
 }
 
 export class FilePanel {
@@ -58,13 +64,22 @@ export class FilePanel {
   close() {}
 
   // "save" (Cmd+S from keys.json), and "open:<path>" so a key, a script or another mod can
-  // show a file: a path in the shown folder, or an absolute one under it.
+  // show a file: a path in the shown folder, or an absolute one anywhere (outside the shown folder,
+  // Files moves to that file's repository, else its folder, as if picked with Open folder…).
   command(c, cx) {
     if (c === "save") this.save(cx, this.tab());
     else if (c.startsWith("open:") && this.ctx) {
       const path = c.slice(5), root = this.ctx.root + "/";
       if (!path.startsWith("/")) this.open(cx, path);
       else if (path.startsWith(root)) this.open(cx, path.slice(root.length));
+      else if (!this.ctx.on) cx.spawn(async (cx) => {
+        const dir = path.replace(/\/[^/]*$/, "") || "/";
+        const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd: dir }).catch(() => null);
+        const base = top?.code === 0 && top.stdout.trim() ? top.stdout.trim() : dir;
+        this.pin(cx, base);
+        this.open(cx, path.slice(base.length + 1));
+        cx.notify();
+      });
     }
     cx.notify();
   }
