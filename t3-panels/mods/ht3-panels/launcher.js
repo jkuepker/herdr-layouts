@@ -41,13 +41,15 @@ export class Launcher {
   command() {}
 
   open() {
-    const base = { direction: "right", mod: MOD, ...(this.pane ? { pane: this.pane } : {}) };
+    // A chat is a tab of its own, the whole work area, not a split beside the terminal.
+    const space = focused()?.space;
+    const base = { mod: MOD, ...(space ? { space } : {}) };
     const typed = this.custom.value().trim();
     const term = this.running.find((x) => x.id === this.choice);
     const agent = AGENTS.find((a) => a.id === this.choice);
-    if (typed) run("pane.split", { ...base, props: { panel: "chat", chat: newId(), agent: typed.split(/\s+/), cwd: this.cwd, machine: this.machine } });
-    else if (term) run("pane.split", { ...base, props: { panel: "chat", terminal: term.terminal } });
-    else if (agent && this.found?.[agent.argv[0]]) run("pane.split", { ...base, props: { panel: "chat", chat: newId(), agent: [this.found[agent.argv[0]], ...agent.argv.slice(1)], cwd: this.cwd, machine: this.machine } });
+    if (typed) run("tab.new", { ...base, name: typed.split(/\s+/)[0], props: { panel: "chat", chat: newId(), agent: typed.split(/\s+/), cwd: this.cwd, machine: this.machine } });
+    else if (term) run("tab.new", { ...base, name: term.name ?? "Chat", props: { panel: "chat", terminal: term.terminal } });
+    else if (agent && this.found?.[agent.argv[0]]) run("tab.new", { ...base, name: agent.name ?? agent.id, props: { panel: "chat", chat: newId(), agent: [this.found[agent.argv[0]], ...agent.argv.slice(1)], cwd: this.cwd, machine: this.machine } });
     else return;
     closeOverlay(this.overlay);
   }
