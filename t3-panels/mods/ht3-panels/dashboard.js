@@ -36,11 +36,16 @@ export class DashboardPanel {
   close() {}
 
   // For scripts: `dashboard:<file name without .json>` shows that one, `dashboard-refresh` reads the files again
-  // and asks every source now, `dashboard-menu` opens or closes the picker.
+  // and asks every source now, `dashboard-menu` opens or closes the picker, `dashboard-row:<widget>:<row>` clicks a table's row.
   command(c, cx) {
     if (c.startsWith("dashboard:")) this.choose(cx, c.slice(10));
     else if (c === "dashboard-refresh") this.loadFiles(cx, true);
     else if (c === "dashboard-menu") this.menu = !this.menu;
+    else if (c.startsWith("dashboard-row:") && showing(this.group, "dashboard")) {
+      // dashboard-row:<widget>:<row>, both from 0: a click on that row of that table.
+      const [wi, ri] = c.slice(14).split(":").map(Number), w = this.current()?.dash.widgets[wi], rows = w ? this.state.get(w.id)?.data : null;
+      if (w && Array.isArray(rows) && rows[ri]) this.press(w, rows[ri]);
+    }
     cx.notify();
   }
 
@@ -229,8 +234,7 @@ export class DashboardPanel {
         .children(cols.map((c, i) => cell(c, i, c.title ?? ""))))
       .children(rows.map((r, ri) => {
         let el = h_flex().id(`dash-r-${w.id}-${ri}`).min_h(26).gap(8).items_center().when(ri < rows.length - 1, (e) => e.border_b(1).border_color(alpha(k.border, 0.35)));
-        if (w.click?.run) el = el.cursor_pointer().role("button").hover((s) => s.bg(alpha(k.foreground, 0.05)))
-          .on_click(() => { const args = {}; for (const [key, spec] of Object.entries(w.click.args ?? {})) args[key] = field(r, spec); run(String(w.click.run), args); });
+        if (w.click?.run) el = el.cursor_pointer().role("button").hover((s) => s.bg(alpha(k.foreground, 0.05))).on_click(() => this.press(w, r));
         return el.children(cols.map((c, i) => {
           const v = field(r, c.value), l = c.dot ? level(v, c.thresholds, r) ?? stateLevel(v) : level(v, c.thresholds, r);
           // A dot for a 1 or a 0 (Prometheus's `up`) says the word, not the digit.
@@ -240,6 +244,14 @@ export class DashboardPanel {
             : cell(c, i, div().truncate().text_color(color).when(i === 0, (e) => e.font_medium()).child(text));
         }));
       }));
+  }
+
+  // A table row's click: the widget's command, with its args read from the row.
+  // A row without what the command needs (a project with no space) does nothing.
+  press(w, r) {
+    const args = {};
+    for (const [key, spec] of Object.entries(w.click?.args ?? {})) args[key] = field(r, spec);
+    if (w.click?.run && Object.values(args).every((v) => v != null && v !== "")) run(String(w.click.run), args);
   }
 
   // list: a line per item. text and sub (templates), state (a path: a dot coloured by it), thresholds for the state.

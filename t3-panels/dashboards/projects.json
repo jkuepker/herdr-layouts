@@ -1,0 +1,30 @@
+{
+  "title": "Projects",
+  "refresh": 120,
+  "sources": {
+    "projects": { "type": "projects", "extra": [
+      {"path": "/opt/code/herdr-layouts"},
+      {"path": "/opt/code/fleetq"},
+      {"path": "/opt/code/deepeval"},
+      {"path": "/opt/code/t3code"}
+    ] }
+  },
+  "widgets": [
+    {"type": "stat", "title": "Projects", "w": 1, "source": "projects", "filter": {"path": ".git"}, "count": true},
+    {"type": "stat", "title": "With uncommitted changes", "w": 1, "source": "projects", "filter": {"path": ".dirty"}, "count": true, "thresholds": {"warn": 1}},
+    {"type": "stat", "title": "Open pull requests", "w": 1, "source": "projects", "filter": {"path": ".pr"}, "count": true},
+    {"type": "stat", "title": "CI failing", "w": 1, "source": "projects", "filter": {"path": ".ci", "match": "^failing$"}, "count": true, "thresholds": {"warn": 1, "bad": 1}},
+    {"type": "table", "title": "Projects: the folders of your spaces, and the list in this file. A click opens the space.", "w": 4, "source": "projects", "click": {"run": "space.select", "args": {"id": ".space"}}, "columns": [
+      {"title": "Project", "value": ".name"},
+      {"title": "Machine", "value": ".on", "w": 70, "align": "left"},
+      {"title": "Branch", "value": ".branch", "w": 110, "align": "left"},
+      {"title": "Dirty", "value": ".dirty", "w": 44, "thresholds": {"warn": 1, "bad": 50}},
+      {"title": "Ahead", "value": ".ahead", "w": 46, "thresholds": {"warn": 1}},
+      {"title": "Behind", "value": ".behind", "w": 50, "thresholds": {"warn": 1, "bad": 20}},
+      {"title": "Last commit", "value": ".commit", "format": "since", "w": 78},
+      {"title": "PR", "value": ".pr", "w": 50},
+      {"title": "CI", "value": ".ci", "w": 76, "dot": true, "thresholds": {"ok": ["passing"], "warn": ["pending"]}},
+      {"title": "Note", "value": ".note", "w": 150, "align": "left"}
+    ] }
+  ]
+}

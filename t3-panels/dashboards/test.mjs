@@ -63,10 +63,16 @@ assert.equal(d.parse("hello\n"), "hello");
 assert.deepEqual(d.parse("a\n\nb\n", "lines"), ["a", "b"]);
 assert.throws(() => d.parse("x", "json"));
 
+assert.equal(d.ciOf([{ conclusion: "SUCCESS" }, { conclusion: "SKIPPED" }]), "passing");
+assert.equal(d.ciOf([{ conclusion: "SUCCESS" }, { status: "IN_PROGRESS", conclusion: "" }]), "pending");
+assert.equal(d.ciOf([{ state: "FAILURE" }, { status: "IN_PROGRESS" }]), "failing");
+assert.equal(d.ciOf([]), null);
+
 const dash = d.readDashboard('{"title":"T","widgets":[{"type":"stat","w":9},{"type":"pie","refresh":"2m"}]}', "t");
 assert.equal(dash.widgets[0].w, 4);
 assert.equal(dash.widgets[1].type, null);
 assert.equal(dash.widgets[1].refresh, 120);
+assert.deepEqual(d.readDashboard('{"sources":{"s":{"type":"static","data":1}},"widgets":[{"type":"stat","source":"s"}]}', "n").widgets[0].source, { type: "static", data: 1 });
 assert.throws(() => d.readDashboard("{", "broken"), /not valid JSON/);
 assert.throws(() => d.readDashboard("{}", "empty"), /widgets/);
 

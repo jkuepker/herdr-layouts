@@ -177,6 +177,15 @@ export function parse(text, how = "auto") {
   return num(t.trim()) ?? t.trim();
 }
 
+// A pull request's checks (gh's statusCheckRollup) as one word: "failing" | "pending" | "passing", or null with none.
+const BAD = new Set(["FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE"]);
+const WAIT = new Set(["PENDING", "IN_PROGRESS", "QUEUED", "EXPECTED", "WAITING", "REQUESTED"]);
+export function ciOf(checks) {
+  const states = (checks ?? []).map((c) => String(c.conclusion || c.state || c.status || "").toUpperCase()).filter(Boolean);
+  if (!states.length) return null;
+  return states.some((x) => BAD.has(x)) ? "failing" : states.some((x) => WAIT.has(x)) ? "pending" : "passing";
+}
+
 // A dashboard file's text -> { title, widgets, … } with what is missing filled in; throws with a reason a person can act on.
 export const TYPES = ["stat", "table", "list", "bars", "line", "status"];
 export function readDashboard(text, name) {
@@ -184,6 +193,7 @@ export function readDashboard(text, name) {
   try { d = JSON.parse(text); } catch (e) { throw new Error(`${name}: not valid JSON (${String(e?.message ?? e)})`); }
   if (!d || typeof d !== "object" || !Array.isArray(d.widgets)) throw new Error(`${name}: needs a "widgets" list`);
   return { title: String(d.title ?? name), refresh: Math.max(5, seconds(d.refresh, 30)), prometheus: d.prometheus ?? null,
-    widgets: d.widgets.map((w, i) => ({ ...w, id: `${name}:${i}`, type: TYPES.includes(w?.type) ? w.type : null, typeName: String(w?.type ?? ""),
+    // A source used by several widgets is written once, under "sources", and named: "source": "fleet".
+    widgets: d.widgets.map((w, i) => ({ ...w, source: typeof w?.source === "string" ? d.sources?.[w.source] ?? { type: `(no source named "${w.source}")` } : w?.source, id: `${name}:${i}`, type: TYPES.includes(w?.type) ? w.type : null, typeName: String(w?.type ?? ""),
       title: String(w?.title ?? ""), w: Math.max(1, Math.min(4, Math.round(Number(w?.w) || 1))), refresh: w?.refresh != null ? Math.max(5, seconds(w.refresh, 30)) : null })) };
 }

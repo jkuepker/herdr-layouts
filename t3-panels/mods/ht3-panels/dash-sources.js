@@ -2,8 +2,8 @@
 // Every source only reads: a query, a GET, a file, a command the dashboard's author wrote.
 // source: { type, … }; ctx: { prometheus: the dashboard's server, if it names one }.
 
-import { exec, readTextFile, home } from "herdr";
-import { promRows, joinBy, seconds, parse } from "./dash-data.js";
+import { exec, readTextFile, home, spaces } from "herdr";
+import { promRows, joinBy, seconds, parse, ciOf } from "./dash-data.js";
 
 const first = (text) => String(text ?? "").trim().split("\n")[0].slice(0, 200);
 const tilde = (p) => (String(p).startsWith("~/") ? home() + String(p).slice(1) : String(p));
@@ -105,7 +105,56 @@ async function fromFleetq() {
   return { ...d, hosts, services, jobs: [...jobs.values()], probe_age_s: d.last_probe ? Math.max(0, now - d.last_probe) : null };
 }
 
-const SOURCES = { static: fromStatic, prometheus: fromPrometheus, command: fromCommand, http: fromHttp, file: fromFile, fleetq: fromFleetq };
+// "projects": a row per project folder: the folder of every Herdr space (each on its own machine), then `extra`
+// ([{ name, path, on }]). Per row: name, space (its id, for a click), path, on, where, git, branch, dirty (changed
+// and untracked files), ahead and behind its upstream (null without one), commit (the last one's Unix time),
+// subject, github (a remote there), pr ("#12" for the branch's open pull request), pr_title, pr_state, ci
+// ("passing" | "failing" | "pending" | null), note (why something is missing). gh: false leaves GitHub out.
+// Reads only: git status with no optional locks, and `gh pr view` where the remote is on GitHub.
+const PROJECT = `cd "$1" 2>/dev/null || { echo "gone=1"; exit 0; }
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "git=0"; exit 0; }
+echo "git=1"
+echo "branch=$(git symbolic-ref --short -q HEAD || git rev-parse --short HEAD 2>/dev/null)"
+echo "dirty=$(git --no-optional-locks status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
+ab=$(git rev-list --left-right --count '@{u}...HEAD' 2>/dev/null) && echo "ab=$ab"
+echo "commit=$(git log -1 --format=%ct 2>/dev/null)"
+echo "subject=$(git log -1 --format=%s 2>/dev/null | cut -c1-100)"
+git remote -v 2>/dev/null | grep -qi 'github' && echo "github=1"
+command -v gh >/dev/null 2>&1 && echo "gh=1"
+true`;
+async function oneProject(p, useGh) {
+  const row = { name: p.name, space: p.space ?? null, path: p.path, on: p.on ?? null, where: p.on ? `${p.on}:${p.path}` : p.path,
+    git: false, branch: null, dirty: null, ahead: null, behind: null, commit: null, subject: null, github: false, pr: null, pr_title: null, pr_state: null, ci: null, note: null };
+  let r;
+  try { r = await exec("sh", ["-c", PROJECT, "project", p.path], { on: p.on ?? null, timeout: 15000 }); }
+  catch (e) { row.note = p.on ? `${p.on} can't be reached` : first(e?.message ?? e); return row; }
+  const said = Object.fromEntries(r.stdout.split("\n").filter((l) => l.includes("=")).map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]));
+  if (said.gone) { row.note = "The folder is gone"; return row; }
+  if (said.git !== "1") { row.note = "Not a git repository"; return row; }
+  const [behind, ahead] = String(said.ab ?? "").trim().split(/\s+/).map(Number);
+  Object.assign(row, { git: true, branch: said.branch || null, dirty: Number(said.dirty) || 0, ahead: said.ab ? ahead : null, behind: said.ab ? behind : null,
+    commit: Number(said.commit) || null, subject: said.subject || null, github: said.github === "1" });
+  if (!row.github) { row.note = "No remote on GitHub"; return row; }
+  if (!useGh) return row;
+  if (said.gh !== "1") { row.note = "The GitHub CLI (gh) isn't installed there"; return row; }
+  try {
+    const g = await exec("gh", ["pr", "view", "--json", "number,state,title,isDraft,statusCheckRollup"], { cwd: p.path, on: p.on ?? null, timeout: 20000 });
+    if (g.code === 0) {
+      const pr = JSON.parse(g.stdout);
+      if (pr.state === "OPEN") Object.assign(row, { pr: `#${pr.number}`, pr_title: pr.title ?? null, pr_state: pr.isDraft ? "draft" : "open", ci: ciOf(pr.statusCheckRollup) });
+    } else if (!/no pull requests found|no open pull requests/i.test(g.stderr)) row.note = first(g.stderr);
+  } catch (e) { row.note = `gh: ${first(e?.message ?? e)}`; }
+  return row;
+}
+async function fromProjects(s) {
+  const all = new Map();
+  const add = (p) => { const key = `${p.on ?? ""}|${p.path}`; if (p.path && !all.has(key) && all.size < 40) all.set(key, p); };
+  if (s.spaces !== false) for (const sp of spaces()) add({ name: sp.name, space: sp.id, path: String(sp.folder || "").replace(/\/+$/, ""), on: sp.machine ?? null });
+  for (const e of s.extra ?? []) if (e?.path) { const path = tilde(e.path).replace(/\/+$/, ""); add({ name: e.name ?? path.split("/").pop(), space: null, path, on: e.on ?? null }); }
+  return Promise.all([...all.values()].map((p) => oneProject(p, s.gh !== false)));
+}
+
+const SOURCES = { projects: fromProjects, static: fromStatic, prometheus: fromPrometheus, command: fromCommand, http: fromHttp, file: fromFile, fleetq: fromFleetq };
 export const SOURCE_TYPES = Object.keys(SOURCES);
 
 export async function fetchSource(source, ctx = {}) {
