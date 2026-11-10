@@ -87,6 +87,8 @@ Everything uses T3 Code's sizes (1rem = 16px): 14px text on a 23px line, 8px con
 
 - **The command palette has the T3 actions.** `cmd-shift-p` opens the layout's own palette (`ht3-palette`): a **T3** group first (New chat…, Side chat, Diff, Files, Earlier chats…, Settle this chat or agent, Project, Plan mode on or off, T3 settings), then all of Herdr's commands as in its palette. Type to filter, Enter runs, Esc closes. **Earlier chats…** (`ht3-panels.earlier`) opens the saved chats alone, search focused: a click shows an open one or opens a closed one again as a tab.
 
+- **Project scripts.** Named commands kept per project in shared `ht3-panels.scripts` (`{"<machine or empty>:<folder>": [{name, command}]}`; a project is the repository's main checkout, so a chat's worktree shares them, or the folder itself outside Git). The Project popover has a **Scripts** row: greyed, "none yet: add them in Settings", while the project has none; else it opens the list, and a click on one opens a new terminal tab in the side panel, in the folder you are in, with the command typed into its shell (`hc send`), so the shell stays when it ends. Settings → **Project scripts** shows the shown space's project: each script with a bin, and Name and Command fields with Add (a name used again replaces that script). Scripts: in the popover `scripts`, `script:<n>`; in Settings `ui:script:<name>=<command>`, `ui:unscript:<n>`, `ui:skip` (folds Agents and Editors away, for pictures) (`scripts.js`; `side.js` `openScript`).
+
 ## Built from
 
 - **One mod, `ht3-panels`**, with many faces picked in `main.js` by how a copy is opened (`mod.json`: `{"place": "none", "overlay": {"width": 512, "height": 660}}`):

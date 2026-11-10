@@ -307,6 +307,20 @@ async function openTerminal(cx, group, space, { on, cwd }) {
   await waitFor(() => find(layout(), termBlock(addr)), cx);
   reconcile();
   if (activeSpace()?.id === space.id) run("pane.focus", { terminal: addr });
+  return addr;
+}
+
+// A project script (scripts.js): a new terminal tab in the first group, in that folder, with the command
+// typed into its shell and entered. The keeper's.
+export function openScript({ command, on, cwd }) {
+  const space = activeSpace();
+  if (!space || !command) return Promise.resolve();
+  return ask(async (cx) => {
+    const addr = await openTerminal(cx, "a", space, { on: on ?? null, cwd });
+    await sleep(cx, 600);
+    const r = await hc(["send", addr, command]);
+    if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim().split("\n")[0] || "The script wasn't typed.");
+  });
 }
 
 export function ensureShown() {

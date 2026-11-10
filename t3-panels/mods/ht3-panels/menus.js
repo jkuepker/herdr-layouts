@@ -11,6 +11,7 @@ import { revertTo } from "./checkpoint.js";
 import { button } from "./look.js";
 import { editorOn } from "./settings.js";
 import { SURFACES, send, placeOf, activeSpace, surfaceOff, surfacesHere } from "./side.js";
+import { projectOf, scriptsOf, runScript } from "./scripts.js";
 
 export class AddMenu {
   init(p, cx) {
@@ -258,6 +259,8 @@ export class ProjectMenu {
         this.editors = await editors();
       } else this.editors = [];
       cx.notify();
+      this.project = await projectOf(space).catch(() => null);
+      cx.notify();
       if (this.folder) {
         const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd: this.folder, on: this.on }).catch(() => null);
         this.root = top?.code === 0 ? top.stdout.trim() : null;
@@ -282,6 +285,12 @@ export class ProjectMenu {
       }
       cx.notify();
     });
+  }
+
+  script(s) {
+    if (!s) return;
+    closeOverlay(this.overlay);
+    runScript(this.project, s);
   }
 
   // Remove worktree, after its question: `git worktree remove` without --force, so one with changes that aren't
@@ -309,6 +318,9 @@ export class ProjectMenu {
     if (c.startsWith("git:commit:")) { this.message.set_value(c.slice(11)); return this.commit(cx); }
     if (c === "git:push") return this.push(cx);
     if (c === "git:pr") { this.step = this.step === "pr" ? null : "pr"; return cx.notify(); }
+    // scripts opens the project's scripts, script:<n> runs the nth (from 0).
+    if (c === "scripts") { this.pick = this.pick === "scripts" ? null : "scripts"; return cx.notify(); }
+    if (c.startsWith("script:")) return this.script(scriptsOf(this.project?.key)[Number(c.slice(7))]);
     // wt:remove asks (the Remove worktree row), wt:yes removes it, wt:no takes the question away.
     if (c === "wt:remove") { if (this.main) this.step = this.step === "wt" ? null : "wt"; return cx.notify(); }
     if (c === "wt:no") { this.step = null; return cx.notify(); }
@@ -504,6 +516,19 @@ export class ProjectMenu {
             .child(h_flex().justify_end().gap(6)
               .child(button(k, "git-pr-no", "Cancel", (cx) => { this.step = null; cx.notify(); }, { variant: "outline" }))
               .child(button(k, "git-pr-go", this.busy ? "…" : "Create", (cx) => this.createPr(cx))))));
+      })
+      // The project's scripts (scripts.js): each runs in a new side terminal. Greyed while the project has none.
+      .when(!!this.project, (el) => {
+        const list = scriptsOf(this.project.key);
+        const head = row("proj-scripts", "square-terminal", "Scripts", { on: this.pick === "scripts", detail: list.length ? `${list.length} for ${this.project.name}` : "none yet: add them in Settings",
+          onClick: list.length ? (cx) => { this.pick = this.pick === "scripts" ? null : "scripts"; cx.notify(); } : null,
+          trail: list.length ? icon(this.pick === "scripts" ? "chevron-up" : "chevron-down").size(14).flex_none().text_color(k.muted) : null });
+        return el.child(div().mx(4).my(4).h(1).flex_none().bg(k.border)).child(list.length ? head : head.opacity(0.5))
+          .when(this.pick === "scripts" && list.length > 0, (e) => e.child(list.map((s, i) => h_flex().id(`script-${i}`).h(28).px(8).gap(8).flex_none().items_center().rounded(6).text_size(13).cursor_pointer()
+            .role("button").accessibility_label(`Run ${s.name}`).hover((st) => st.bg(k.accent)).on_click(() => this.script(s))
+            .child(icon("play").size(12).flex_none().text_color(k.muted))
+            .child(div().flex_none().max_w(120).truncate().child(s.name))
+            .child(div().flex_1().min_w(0).truncate().text_size(11).font_family(k.mono).text_color(k.muted).child(s.command))).reduce((box, r) => box.child(r), v_flex().id("ht3-list-scripts").max_h(180).overflow_y_scrollbar().pl(8))));
       })
       // A chat's worktree: removed only from here, and only after its question.
       .when(!!this.main, (el) => el

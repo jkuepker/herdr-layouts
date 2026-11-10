@@ -29,7 +29,8 @@ import { detect } from "./agent-acp.js";
 import { announce, prune } from "./report.js";
 import { Settings, SETTINGS_SIZE } from "./settings-ui.js";
 import { loadPrefs, setPref, agentOn } from "./settings.js";
-import { SIDE, read, sideShown, bottomShown, reconcile, keep, toggleMax, toggleBottom, toggleSplit, openSurface, openBottom, closeTab, activate, activeSpace } from "./side.js";
+import { SIDE, read, sideShown, bottomShown, reconcile, keep, toggleMax, toggleBottom, toggleSplit, openSurface, openBottom, closeTab, activate, activeSpace, openScript } from "./side.js";
+import { pendingScript } from "./scripts.js";
 
 export { SIDE };
 
@@ -77,6 +78,8 @@ class Buttons {
     else if (name === "bottom") cx.spawn(async (cx) => { try { await toggleBottom(); } catch (e) { fail(e); } cx.notify(); });
     // earlier: the New chat dialog as a list of the earlier chats alone, its search focused (the palette's "Earlier chats…").
     else if (name === "earlier") openOverlay({ mod: MOD, kind: "dialog", width: 512, height: 520, props: { find: true } });
+    // script: runs the project script the Project popover just picked (scripts.js), if it was picked a moment ago.
+    else if (name === "script") { const s = pendingScript(); if (s && Date.now() - s.at < 10000) cx.spawn(async (cx) => { try { await openScript(s); } catch (e) { fail(e); } cx.notify(); }); }
     else if (name === "menu") openOverlay({ mod: MOD, kind: "popup", at: { x: 900, y: 48 }, width: a === "project" ? 344 : ADD_MENU.w, height: a === "project" ? 660 : ADD_MENU.h, props: { menu: a, group: b ?? "a" } });
     cx.notify();
   }

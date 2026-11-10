@@ -12,6 +12,8 @@
 import { div, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { closeOverlay } from "herdr";
+import { activeSpace } from "./side.js";
+import { projectOf, scriptsOf, setScripts } from "./scripts.js";
 import { tokens, alpha, icon, agentMark, button, iconButton, shortPath } from "./look.js";
 import { AGENTS, detect } from "./agent-acp.js";
 import { EDITORS, editors } from "./menus.js";
@@ -29,6 +31,12 @@ export class Settings {
       this.add[a.id] = InputState.new({ placeholder: "Filter models, or add one by its id" });
       this.add[a.id].on("change", (_e, cx) => cx.notify());
     }
+    // Project scripts: the shown space's project, and the two fields a new one is typed into.
+    this.project = null;
+    this.scriptName = InputState.new({ placeholder: "Name, e.g. Dev" });
+    this.scriptCommand = InputState.new({ placeholder: "Command, e.g. npm run dev" });
+    for (const f of [this.scriptName, this.scriptCommand]) { f.on("change", (_e, cx) => cx.notify()); f.on("submit", (_e, cx) => { this.addScript(); cx.notify(); }); }
+    cx.spawn(async (cx) => { this.project = await projectOf(activeSpace()).catch(() => null); cx.notify(); });
     cx.spawn(async (cx) => {
       this.found = (await detect(null)).found;
       // Each installed editor's own icon (menus.js).
@@ -52,6 +60,11 @@ export class Settings {
     else if (what === "checkpoints") setPref("checkpoints", checkpointsOn() ? false : undefined);
     else if (what === "notifications") setPref("notifications", toastsOn() ? false : undefined);
     else if (what === "sounds") setPref("sounds", soundsOn() ? undefined : true);
+    // ui:script:<name>=<command> adds a project script (same name: replaces it), ui:unscript:<n> removes the nth.
+    else if (what === "script") { const at = rest.indexOf("="); if (at > 0) { this.scriptName.set_value(rest.slice(0, at)); this.scriptCommand.set_value(rest.slice(at + 1)); this.addScript(); } }
+    else if (what === "unscript") this.dropScript(Number(rest));
+    // ui:skip folds Agents and Editors away (and back), so a script's picture shows the sections under them.
+    else if (what === "skip") this.skip = !this.skip;
     else if (what === "close") closeOverlay(this.overlay);
     cx.notify();
   }
@@ -86,6 +99,19 @@ export class Settings {
     const only = modelsOf(id) ?? this.models(id).map((m) => m.value);
     if (!only.includes(value)) setPref(`agents.${id}.models`, [...only, value]);
     this.add[id].set_value("");
+  }
+
+  addScript() {
+    const name = this.scriptName.value().trim(), command = this.scriptCommand.value().trim();
+    if (!this.project || !name || !command) return;
+    setScripts(this.project.key, [...scriptsOf(this.project.key).filter((s) => s.name !== name), { name, command }]);
+    this.scriptName.set_value("");
+    this.scriptCommand.set_value("");
+  }
+
+  dropScript(i) {
+    if (!this.project) return;
+    setScripts(this.project.key, scriptsOf(this.project.key).filter((_s, n) => n !== i));
   }
 
   // ui/switch.tsx: 28 by 16, a 12px thumb.
@@ -172,11 +198,12 @@ export class Settings {
         .child(div().flex_1().text_size(20).font_semibold().child("Settings"))
         .child(iconButton(k, "set-close", "x", () => closeOverlay(this.overlay), { tip: "Close" })))
       .child(v_flex().id("ht3-settings-body").flex_1().min_h(0).px(12).py(16).gap(24).overflow_y_scrollbar()
+        .when(!this.skip, (top) => top
         .child(this.section(k, "Agents", "The agents New chat and Side chat offer, the one they come up with, and the models each one's chats list.",
           AGENTS.map((a) => this.agentRow(k, a))))
         .child(this.section(k, "Editors", "The editors the Project popover lists, of those installed on this computer.",
           EDITORS.map((e) => this.row(this.editorIcons?.[e.id] ? image(this.editorIcons[e.id]).w(16).h(16).flex_none() : icon("code-xml").size(16).flex_none().text_color(k.muted), e.name, `${e.app}.app, or ${e.bin} on the PATH`,
-            [this.toggle(k, `set-editor-${e.id}`, editorOn(e.id), e.name, () => setPref(`editors.${e.id}`, editorOn(e.id) ? false : undefined))]))))
+            [this.toggle(k, `set-editor-${e.id}`, editorOn(e.id), e.name, () => setPref(`editors.${e.id}`, editorOn(e.id) ? false : undefined))])))))
         .child(this.section(k, "Chats", "How a chat with an agent behaves.",
           [this.row(icon("rows-2").size(16).flex_none().text_color(k.muted), "Steer instead of queue", "A message sent while the agent works interrupts it. Off: it waits for the turn to end.",
             [this.toggle(k, "set-steer", followUp() === "steer", "Steer instead of queue", () => setPref("followUp", followUp() === "steer" ? undefined : "steer"))]),
@@ -186,6 +213,13 @@ export class Settings {
             [this.toggle(k, "set-notifications", toastsOn(), "Notify", () => setPref("notifications", toastsOn() ? false : undefined))]),
           this.row(icon("volume-2").size(16).flex_none().text_color(k.muted), "Sound", "Play Herdr's done or blocked sound then.",
             [this.toggle(k, "set-sounds", soundsOn(), "Sound", () => setPref("sounds", soundsOn() ? undefined : true))])]))
+        .when(!!this.project, (el) => el.child(this.section(k, "Project scripts", `Commands for ${this.project.name} (${shortPath(this.project.root)}${this.project.on ? ` on ${this.project.on}` : ""}), the project of the shown space. The Project popover runs them in a side terminal.`,
+          [...scriptsOf(this.project.key).map((s, i) => this.row(icon("square-terminal").size(16).flex_none().text_color(k.muted), s.name, s.command,
+            [iconButton(k, `script-drop-${i}`, "trash-2", (cx) => { this.dropScript(i); cx.notify(); }, { tip: `Remove ${s.name}` })])),
+          h_flex().min_h(52).px(12).py(8).gap(8).items_center()
+            .child(div().w(150).flex_none().h(30).px(8).rounded(8).border(1).border_color(k.input).text_size(13).child(Input.new(this.scriptName)))
+            .child(div().flex_1().min_w(0).h(30).px(8).rounded(8).border(1).border_color(k.input).text_size(13).font_family(k.mono).child(Input.new(this.scriptCommand)))
+            .child(button(k, "script-add", "Add", (cx) => { this.addScript(); cx.notify(); }, { size: "sm", disabled: !this.scriptName.value().trim() || !this.scriptCommand.value().trim() }))])))
         .child(this.section(k, "Side panel", "How the right panel comes up.",
           [this.row(icon("panel-right").size(16).flex_none().text_color(k.muted), "Start hidden in new spaces", "A space shown for the first time comes up without the side panel.",
             [this.toggle(k, "set-side", sideStartsHidden(), "Start hidden in new spaces", () => this.flipSide())])])))

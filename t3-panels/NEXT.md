@@ -36,6 +36,8 @@ Ranked from a survey of /opt/code/t3code/apps/web/src and apps/server/src agains
 
 - Command palette: `ht3-palette`, Herdr's palette plus a T3 group, on `cmd-shift-p` in this layout. Left: they are not entries of `app.palette` itself, which a mod can't extend (anything else that runs `app.palette`, like a button of another mod, still opens Herdr's); the copy won't follow changes to Herdr's palette; the key and typing were driven by command, not pressed; single earlier chats aren't palette rows, only the list is.
 
+- Project scripts: a Scripts row in the Project popover, edited in Settings, run in a side terminal. Left: no editing in place (remove and add again), no order, no icon or key per script; Settings edits the shown space's project only; not run on another machine; separate from the tab bar's Add action (`ht3-actions`), which keeps its own list for all projects; clicks and typing were driven by command.
+
 ## Candidates
 
 Each entry: what it does / T3 location / mod API support / value for multi-machine agent users / effort.
