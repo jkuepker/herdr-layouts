@@ -59,6 +59,18 @@ Then: QA.md rows, light-theme shots, end state (Pi tab in 3-deborah-network, spa
 
 - Round 4, 2. Usage: a dialog with this chat's context over time, per-chat and per-agent totals. Left: a dialog, not a side-panel surface (a surface needs a new block in the layout file); samples start with this build, older chats have one point or none; Pi sends no turn tokens, so its rows say "–"; the Claude Code log sum was run on a real log by hand, but no Claude Code chat exists here to show it in the dialog; no rate-limit banner; remote chats' Claude logs aren't read.
 
+## Round 7: the Dashboard surface (done)
+
+A side-panel surface with widgets from JSON files, and three dashboards: Fleet (fleetq), Model servers (Prometheus), Projects (git and gh). Format and sources in RECIPE.md under "Dashboard"; examples in `t3-panels/dashboards/`.
+
+Left:
+- Charts are divs: a line is a mark per time step, not a drawn curve (gpui-kit's paths are placed in window coordinates).
+- No expression language in `pick`: paths and templates only; anything more goes into the source's query or command.
+- GPU busy is what fleetq reports, which is tatooine only; the Sparks, endor and bespin show "–". No earlyoom check (the `fleet` mod has it).
+- omlx on endor: mc-exporter has the `mc_omlx_*` names but no series, so its table says so. endor is not in the Per server table (it has no `vllm:` metrics).
+- Projects asks `gh` once per GitHub repository every two minutes; no open pull request was there to see, so the PR and CI columns were only tested on made-up data (`kit.json`) and in `test.mjs`.
+- The picked dashboard is kept per panel group, not per space. No editor for the JSON in the surface (open the file in Files).
+
 ## After quota reset
 
 What to build next, ranked by value against effort. T3 paths are under /opt/code/t3code/apps/web/src unless marked (shared = packages/shared/src, contracts = packages/contracts/src). "Ours" marks a rough edge of what is already here, not a T3 feature.
