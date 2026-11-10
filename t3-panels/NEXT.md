@@ -32,6 +32,8 @@ Ranked from a survey of /opt/code/t3code/apps/web/src and apps/server/src agains
 
 - Plan mode: a Plan toggle in the message box when the agent has a plan mode, and "Implement this plan" on the newest plan card. Left: tried with the scripted agent only (no real Claude Code or Codex plan turn); driven by command; the plan card is ACP's checklist, not a plan written as text in the reply; a terminal agent's chat has no toggle.
 
+- A worktree per chat: New worktree in New chat, Remove worktree… (asks first) in the Project popover. Left: not run on another machine (the commands take `on:`, but no repository was made on one); a new branch only, an existing branch can't be checked out into a worktree; it starts from the main checkout's HEAD with no base picker; a chat left open in a removed worktree keeps a folder that is gone; the branch is never deleted; clicks and typing were driven by command.
+
 ## Candidates
 
 Each entry: what it does / T3 location / mod API support / value for multi-machine agent users / effort.

@@ -14,6 +14,25 @@ import { KINDS } from "./core/chat-reader.js";
 
 const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
+// "New worktree" (T3's worktree per thread): the repository a folder belongs to, its main checkout even when the
+// folder is itself a worktree, and the worktree made for a chat, <repo>/.worktrees/<branch> on a new branch.
+// `.worktrees/` must be ignored first: if it isn't, it goes into the repository's own info/exclude, never .gitignore.
+const REPO = 'c=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || exit 1; case "$c" in */.git) printf %s "${c%/.git}";; *) git rev-parse --show-toplevel | tr -d "\\n";; esac';
+const ADD = 'r="$1"; b="$2"; cd "$r" || exit 1; git check-ref-format --branch "$b" >/dev/null 2>&1 || { echo "Not a branch name: $b" >&2; exit 2; }\n'
+  + 'git check-ignore -q .worktrees/x || { f=$(git rev-parse --git-path info/exclude) && mkdir -p "$(dirname "$f")" && printf "\\n.worktrees/\\n" >> "$f" || exit 3; }\n'
+  + 'git worktree add "$r/.worktrees/$b" -b "$b"';
+export async function repoOf(cwd, on) {
+  if (!cwd) return null;
+  const r = await exec("sh", ["-c", REPO], { cwd, on: on ?? undefined, timeout: 10000 }).catch(() => null);
+  return r?.code === 0 && r.stdout.trim() ? r.stdout.trim() : null;
+}
+// Resolves to the new worktree's folder; rejects with git's last line.
+export async function addWorktree(repo, branch, on) {
+  const r = await exec("sh", ["-c", ADD, "sh", repo, branch], { cwd: repo, on: on ?? undefined, timeout: 60000 });
+  if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim().split("\n").pop().replace(/^fatal: /, "") || "git worktree add failed");
+  return `${repo}/.worktrees/${branch}`;
+}
+
 const ago = (ms) => { const m = Math.max(0, Math.round((Date.now() - ms) / 60000)); return m < 1 ? "just now" : m < 60 ? `${m}m ago` : m < 1440 ? `${Math.round(m / 60)}h ago` : `${Math.round(m / 1440)}d ago`; };
 
 // The chats saved under data/ht3-panels/chats (each a state.json), newest first, at most 60:
@@ -53,6 +72,12 @@ export class Launcher {
     this.choice = (this.running.find((x) => x.focused) ?? this.running[0])?.id ?? null;
     this.custom = InputState.new({ placeholder: "or a command that speaks ACP, e.g. my-agent --acp" });
     this.custom.on("change", (_e, cx) => cx.notify());
+    // New worktree: off, and offered only where the folder is in a Git repository.
+    this.repo = null;
+    this.wt = false;
+    this.busy = false;
+    this.branch = InputState.new({ placeholder: "new branch, e.g. fix-login" });
+    this.branch.on("change", (_e, cx) => cx.notify());
     // Earlier chats (T3's thread search and its archived threads): the chats saved on this computer,
     // newest first, with a field that looks through their names and what was said in them.
     this.recent = null;
@@ -67,12 +92,19 @@ export class Launcher {
       if (this.machine && !this.cwd) this.cwd = d.found.HOME ?? null;
       this.choice ??= firstAgent(d.found);
       cx.notify();
+      this.repo = await repoOf(this.cwd, this.machine);
+      cx.notify();
     });
   }
 
   close() {}
-  // For scripts: recent:<text> (types into Search chats), reopen:<n> and forget:<n> (the nth row shown, from 0; forget twice deletes).
+  // For scripts: worktree:<branch> (New worktree on, with that branch; worktree: turns it off), custom:<command> (types it into
+  // the command field), open (the Open chat button),
+  // recent:<text> (types into Search chats), reopen:<n> and forget:<n> (the nth row shown, from 0; forget twice deletes).
   command(c, cx) {
+    if (c.startsWith("worktree:")) { this.wt = !!c.slice(9) && !!this.repo; this.branch.set_value(c.slice(9)); }
+    if (c.startsWith("custom:")) this.custom.set_value(c.slice(7));
+    if (c === "open") this.open(cx);
     if (c.startsWith("recent:")) this.query.set_value(c.slice(7));
     if (c.startsWith("reopen:")) this.reopen(this.shown()[Number(c.slice(7))]);
     if (c.startsWith("forget:")) this.forget(cx, this.shown()[Number(c.slice(7))]);
@@ -115,16 +147,33 @@ export class Launcher {
     cx.notify();
   }
 
-  open() {
+  // With New worktree on, the worktree is made first and the chat starts in it; if git says no, the dialog stays and says why.
+  open(cx) {
+    const term = this.running.find((x) => x.id === this.choice && !this.custom.value().trim());
+    if (!this.wt || !this.repo || term) return this.start(this.cwd);
+    const branch = this.branch.value().trim();
+    if (!branch || this.busy) return;
+    this.busy = true;
+    this.error = null;
+    cx.notify();
+    cx.spawn(async (cx) => {
+      try { this.start(await addWorktree(this.repo, branch, this.machine)); }
+      catch (e) { this.error = `Couldn't make the worktree: ${String(e?.message ?? e)}`; }
+      this.busy = false;
+      cx.notify();
+    });
+  }
+
+  start(cwd) {
     // A chat is a tab of its own, the whole work area, not a split beside the terminal.
     const space = focused()?.space;
     const base = { mod: MOD, ...(space ? { space } : {}) };
     const typed = this.custom.value().trim();
     const term = this.running.find((x) => x.id === this.choice);
     const agent = AGENTS.find((a) => a.id === this.choice);
-    if (typed) run("tab.new", { ...base, name: typed.split(/\s+/)[0], props: { panel: "chat", chat: newId(), agent: typed.split(/\s+/), cwd: this.cwd, machine: this.machine } });
+    if (typed) run("tab.new", { ...base, name: typed.split(/\s+/)[0], props: { panel: "chat", chat: newId(), agent: typed.split(/\s+/), cwd, machine: this.machine } });
     else if (term) run("tab.new", { ...base, name: term.name ?? "Chat", props: { panel: "chat", terminal: term.terminal } });
-    else if (agent && agentOn(agent.id) && this.found?.[agent.argv[0]]) run("tab.new", { ...base, name: agent.name ?? agent.id, props: { panel: "chat", chat: newId(), agent: [this.found[agent.argv[0]], ...agent.argv.slice(1)], cwd: this.cwd, machine: this.machine } });
+    else if (agent && agentOn(agent.id) && this.found?.[agent.argv[0]]) run("tab.new", { ...base, name: agent.name ?? agent.id, props: { panel: "chat", chat: newId(), agent: [this.found[agent.argv[0]], ...agent.argv.slice(1)], cwd, machine: this.machine } });
     else return;
     closeOverlay(this.overlay);
   }
@@ -166,9 +215,20 @@ export class Launcher {
           .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(k.muted).child(where || "No folder"))
           .when(!remote, (el) => el.child(button(k, "pick-folder", "Change…", (cx) => cx.spawn(async (cx) => {
             const dir = await pickFolder({ prompt: "Folder for the agent" });
-            if (dir) this.cwd = dir;
+            if (dir) { this.cwd = dir; this.repo = await repoOf(dir, null); if (!this.repo) this.wt = false; }
             cx.notify();
           })))))
+        // New worktree: the chat gets a folder and a branch of its own, <repo>/.worktrees/<branch>.
+        .when(!!this.repo, (el) => el.child(h_flex().px(10).pb(6).gap(8).h(34).items_center()
+          .child(h_flex().id("wt-toggle").gap(8).flex_none().items_center().cursor_pointer().role("check_box").accessibility_label("New worktree")
+            .on_click((_e, cx) => { this.wt = !this.wt; if (this.wt) this.branch.focus(); cx.notify(); })
+            .child(h_flex().size(16).flex_none().items_center().justify_center().rounded(4).border(1).border_color(this.wt ? k.primary : k.input).bg(this.wt ? k.primary : "#00000000")
+              .text_color(k.primaryText).when(this.wt, (e) => e.child(icon("check").size(12))))
+            .child(div().text_size(13).text_color(this.wt ? k.foreground : k.muted).child("New worktree")))
+          .when(this.wt, (e) => e.child(div().flex_1().min_w(0).h(28).px(8).rounded(6).border(1).border_color(k.input).text_size(13).child(Input.new(this.branch))))
+          .when(!this.wt, (e) => e.child(div().flex_1().min_w(0).truncate().text_size(12).text_color(k.dim).child("the chat gets a branch and a folder of its own: .worktrees/<branch>")))))
+        .when(this.wt && !!this.branch.value().trim(), (el) => el.child(div().px(10).pb(6).text_size(12).text_color(k.muted).truncate()
+          .child(`git worktree add .worktrees/${this.branch.value().trim()} -b ${this.branch.value().trim()}   in ${shortPath(this.repo)}`)))
         .when(!this.found, (el) => el.child(div().px(10).py(6).text_size(12).text_color(k.muted).child("Looking for installed agents…")))
         .when(!!this.error, (el) => el.child(div().px(10).py(6).text_size(12).text_color(k.destructiveText).child(this.error)))
         .when(!!this.found && !enabledAgents().length, (el) => el.child(div().px(10).py(6).text_size(12).text_color(k.muted).child("No agent is enabled in Settings.")))
@@ -195,6 +255,6 @@ export class Launcher {
         }))
       .child(h_flex().px(24).py(16).gap(8).flex_none().justify_end().border_t(1).border_color(k.border)
         .child(button(k, "cancel", "Cancel", () => closeOverlay(this.overlay), { variant: "outline", size: "default" }))
-        .child(button(k, "open", "Open chat", () => this.open(), { variant: "default", size: "default", disabled: !ready })));
+        .child(button(k, "open", this.busy ? "Making the worktree…" : "Open chat", (cx) => this.open(cx), { variant: "default", size: "default", disabled: !ready || this.busy || (this.wt && !this.branch.value().trim()) })));
   }
 }

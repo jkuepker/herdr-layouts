@@ -274,9 +274,30 @@ export class ProjectMenu {
           const r = await exec("git", ["remote", "-v"], { cwd: this.root, on: this.on }).catch(() => null);
           this.github = /github/i.test(r?.stdout ?? "");
           await this.status();
+          // A worktree made for a chat (<repo>/.worktrees/<branch>): its main checkout, for Remove worktree.
+          const m = await exec("sh", ["-c", 'g=$(git rev-parse --path-format=absolute --git-dir) && c=$(git rev-parse --path-format=absolute --git-common-dir) && [ "$g" != "$c" ] && printf %s "${c%/.git}"'], { cwd: this.root, on: this.on }).catch(() => null);
+          const main = m?.code === 0 ? m.stdout.trim() : "";
+          this.main = main && this.root.startsWith(`${main}/.worktrees/`) ? main : null;
         }
       }
       cx.notify();
+    });
+  }
+
+  // Remove worktree, after its question: `git worktree remove` without --force, so one with changes that aren't
+  // committed stays and git's reason shows. The branch is kept.
+  removeWorktree(cx) {
+    if (!this.main || !this.root) return;
+    this.run(cx, async () => {
+      const gone = this.root;
+      const r = await exec("git", ["worktree", "remove", gone], { cwd: this.main, on: this.on, timeout: 60000 });
+      if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim().split("\n").pop().replace(/^fatal: /, "") || "git worktree remove failed");
+      this.note = `Removed the worktree ${shortPath(gone)}. Its branch${this.branch ? ` ${this.branch}` : ""} is kept.`;
+      this.step = null;
+      this.root = null;
+      this.main = null;
+      this.git = null;
+      this.changes = null;
     });
   }
   close() {}
@@ -288,6 +309,10 @@ export class ProjectMenu {
     if (c.startsWith("git:commit:")) { this.message.set_value(c.slice(11)); return this.commit(cx); }
     if (c === "git:push") return this.push(cx);
     if (c === "git:pr") { this.step = this.step === "pr" ? null : "pr"; return cx.notify(); }
+    // wt:remove asks (the Remove worktree row), wt:yes removes it, wt:no takes the question away.
+    if (c === "wt:remove") { if (this.main) this.step = this.step === "wt" ? null : "wt"; return cx.notify(); }
+    if (c === "wt:no") { this.step = null; return cx.notify(); }
+    if (c === "wt:yes") return this.step === "wt" ? this.removeWorktree(cx) : null;
     if (!c.startsWith("open:") || this.on || !this.folder) return;
     const ed = (this.editors ?? []).find((e) => e.id === c.slice(5) && editorOn(e.id));
     if (!ed) return;
@@ -480,6 +505,14 @@ export class ProjectMenu {
               .child(button(k, "git-pr-no", "Cancel", (cx) => { this.step = null; cx.notify(); }, { variant: "outline" }))
               .child(button(k, "git-pr-go", this.busy ? "…" : "Create", (cx) => this.createPr(cx))))));
       })
+      // A chat's worktree: removed only from here, and only after its question.
+      .when(!!this.main, (el) => el
+        .child(row("wt-remove", "trash-2", "Remove worktree…", { detail: shortPath(this.root), on: this.step === "wt", onClick: this.busy ? null : (cx) => { this.step = this.step === "wt" ? null : "wt"; cx.notify(); } }))
+        .when(this.step === "wt", (e) => e.child(v_flex().mx(8).my(4).gap(6)
+          .child(div().text_size(12).line_height("16px").text_color(k.muted).child(`Remove the folder ${shortPath(this.root)}? Its branch${this.branch ? ` ${this.branch}` : ""} is kept; a chat working there loses its folder. Changes that aren't committed stop it.`))
+          .child(h_flex().justify_end().gap(6)
+            .child(button(k, "wt-no", "Cancel", (cx) => { this.step = null; cx.notify(); }, { variant: "outline" }))
+            .child(button(k, "wt-yes", this.busy ? "…" : "Remove", (cx) => this.removeWorktree(cx), { variant: "destructive" }))))))
       .when(!!this.note, (el) => el.child(div().px(8).py(6).text_size(12).line_height("16px").text_color(k.successText).child(this.note)))
       .when(!!this.error, (el) => el.child(div().px(8).py(6).text_size(12).line_height("16px").text_color(k.destructiveText).child(this.error)))
       .child(div().flex_1())
