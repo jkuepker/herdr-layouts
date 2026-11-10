@@ -9,7 +9,7 @@
 // space on another machine opens its files read-only.
 
 import { div } from "gpui-kit";
-import { v_flex, h_flex, Editor, EditorState, InputState, Input } from "gpui-base";
+import { v_flex, h_flex, Editor, EditorState, InputState, Input, TextareaState, Textarea } from "gpui-base";
 import { spaces, panes, focused, exec, readTextFile, writeTextFile, watchFolder, theme, pickFolder, shared, setShared } from "herdr";
 import { tokens, alpha, icon, button, iconButton, shortPath } from "./look.js";
 import { fileIcon } from "./fileicons.js";
@@ -20,6 +20,7 @@ const PER_FOLDER = 500, TOTAL = 5000;
 const MAX_EDIT = 1000000; // readTextFile reads at most 1 MiB
 const MAX_TABS = 12, MAX_INDEX = 20000, MAX_MATCHES = 200;
 const ROW = 24; // @pierre/trees, compact density
+const PAGE = 1500; // lines drawn at once in the Lines view
 const LIST = 'n=0; for p in "$1"/* "$1"/.[!.]* "$1"/..?*; do [ -e "$p" ] || [ -L "$p" ] || continue; name=${p##*/}; [ "$name" = .git ] && continue; if [ -d "$p" ]; then kind=d; else kind=f; fi; printf "%s\\0%s\\0" "$kind" "$name"; n=$((n+1)); [ "$n" -gt 500 ] && break; done; test -d "$1"';
 
 async function directory(path, on) {
@@ -62,6 +63,9 @@ export class FilePanel {
     this.wrap = false;
     this.search = InputState.new({ placeholder: "Search files" });
     this.search.on("change", (_e, cx) => { this.index(cx); cx.notify(); });
+    // The Lines view's box under a picked line: text to insert after it, or a note for the agent (linesView).
+    this.lineBox = TextareaState.new({ placeholder: "Text to insert after this line, or a note for the agent" });
+    this.lineBox.set_auto_grow(1, 8);
     this.follow(cx);
     cx.timer.every(10000, (cx) => this.refresh(cx));
   }
@@ -71,8 +75,19 @@ export class FilePanel {
   // "save" (Cmd+S from keys.json), and "open:<path>" so a key, a script or another mod can
   // show a file: a path in the shown folder, or an absolute one anywhere (outside the shown folder,
   // Files moves to that file's repository, else its folder, as if picked with Open folder…).
+  // For the Lines view (linesView): "lines" shows or hides it, "line:<n>" or "line:<a>-<b>" picks lines ("line:" lets go),
+  // "line-text:<text>" fills the box (\n is a line break), "line-insert" and "line-chat" are its two buttons.
   command(c, cx) {
-    if (c === "save") this.save(cx, this.tab());
+    const t = this.tab();
+    if (c === "save") this.save(cx, t);
+    else if (c === "lines") { if (t?.state) { t.lines = !t.lines; this.pickLine(cx, t, null); } }
+    else if (c.startsWith("line:")) {
+      const m = /^(\d+)(?:-(\d+))?$/.exec(c.slice(5));
+      if (t?.state) { t.lines = true; this.pickLine(cx, t, m ? Number(m[1]) : null, m?.[2] ? Number(m[2]) : null); }
+    }
+    else if (c.startsWith("line-text:")) this.lineBox.set_value(c.slice(10).replace(/\\n/g, "\n"));
+    else if (c === "line-insert") this.insertLines(cx, t);
+    else if (c === "line-chat") this.quoteLines(cx, t);
     else if (c.startsWith("open:") && this.ctx) {
       const path = c.slice(5), root = this.ctx.root + "/";
       if (!path.startsWith("/")) this.open(cx, path);
@@ -345,6 +360,116 @@ export class FilePanel {
     });
   }
 
+  // ---- the Lines view: a + beside each line number, to insert lines after it or hand it to the chat ----
+  // The editor is Herdr's own element: a mod can't draw in its gutter, and can't ask where it is scrolled or which
+  // line the pointer is on. So the + lives in a second view of the same file, its lines drawn here as rows.
+
+  // The file's lines as the editor holds them now (unsaved edits too); a last line break is not a line.
+  linesOf(tab) {
+    const v = tab.state.value();
+    if (tab.lineCache?.v !== v) {
+      const lines = v.split("\n");
+      if (lines.length > 1 && lines.at(-1) === "") lines.pop();
+      tab.lineCache = { v, lines };
+    }
+    return tab.lineCache.lines;
+  }
+
+  // The + of line `from`: opens the box under it. The same + again closes it; with Shift held (`extend`) the picked
+  // lines grow to reach it. `to` picks a range at once (the command). null lets go.
+  pickLine(cx, tab, from, to = null, extend = false) {
+    const n = this.linesOf(tab).length, was = tab.pick;
+    tab.said = null;
+    if (from == null || from < 1 || from > n) tab.pick = null;
+    else if (extend && was) tab.pick = { from: Math.min(was.from, from), to: Math.max(was.to, from) };
+    else if (was && to == null && was.from === from && was.to === from) tab.pick = null;
+    else tab.pick = { from, to: Math.min(n, Math.max(from, to ?? from)) };
+    if (tab.pick) { tab.page = Math.floor((tab.pick.to - 1) / PAGE); this.lineBox.focus(); }
+    else this.lineBox.set_value("");
+    cx.notify();
+  }
+
+  // "Insert line(s)": the box's text goes in after the last picked line, and the file is saved as Save saves it
+  // (a file changed on disk meanwhile shows the conflict banner instead). An empty box inserts one empty line.
+  insertLines(cx, tab) {
+    const p = tab?.pick;
+    if (!p || !tab.state || tab.readonly) return;
+    const add = this.lineBox.value().replace(/\n$/, "").split("\n"), lines = tab.state.value().split("\n");
+    lines.splice(p.to, 0, ...add);
+    tab.state.set_value(lines.join("\n"));
+    tab.dirty = true;
+    tab.pick = null;
+    this.lineBox.set_value("");
+    tab.said = `Inserted ${add.length} line${add.length === 1 ? "" : "s"} after line ${p.to}.`;
+    this.save(cx, tab);
+    cx.notify();
+  }
+
+  // "Add to chat": the picked lines as a quoted block, then the box's text, onto the end of the message box of the
+  // chat in the shown tab (chat.js takes shared "ht3-panels.quote", as it does a Diff hunk).
+  quoteLines(cx, tab) {
+    const p = tab?.pick;
+    if (!p || !tab.state) return;
+    const at = focused()?.tab, places = shared("ht3-panels.places") ?? {};
+    if (!Object.values(places).some((x) => x.tab === at)) { tab.said = "The shown tab isn't a chat: show the chat this is for, then add it."; return cx.notify(); }
+    const MAX = 80, all = this.linesOf(tab).slice(p.from - 1, p.to), shown = all.slice(0, MAX);
+    const fence = shown.some((l) => l.includes("```")) ? "````" : "```";
+    const ext = tab.path.includes(".") ? tab.path.split(".").pop().toLowerCase() : "";
+    const where = p.from === p.to ? `line ${p.from}` : `lines ${p.from}-${p.to}`, note = this.lineBox.value().trim();
+    const text = [`In \`${tab.path}\` (${where}):`, `${fence}${ext}`, ...shown, ...(all.length > MAX ? [`… ${all.length - MAX} more lines`] : []), fence, ...(note ? [note] : [])].join("\n");
+    setShared("ht3-panels.quote", { tab: at, text, at: Date.now() });
+    tab.pick = null;
+    this.lineBox.set_value("");
+    tab.said = `Added to the chat's message box: ${tab.path}, ${where}.`;
+    cx.notify();
+  }
+
+  linesView(k, c, tab) {
+    const all = this.linesOf(tab), n = all.length, pages = Math.max(1, Math.ceil(n / PAGE));
+    const page = Math.min(tab.page ?? 0, pages - 1), start = page * PAGE, end = Math.min(n, start + PAGE);
+    const p = tab.pick, blue = k.info;
+    const turn = (id, label, to) => h_flex().id(id).h(24).mx(12).my(2).px(8).flex_none().items_center().rounded(6).text_size(12).text_color(k.muted).cursor_pointer()
+      .role("button").accessibility_label(label).hover((s) => s.bg(k.accent).text_color(k.foreground)).on_click((_e, cx) => { tab.page = to; cx.notify(); }).child(label);
+    const rows = [];
+    if (page > 0) rows.push(turn("ln-prev", `Show lines ${start - PAGE + 1} to ${start}`, page - 1));
+    for (let i = start; i < end; i++) {
+      const no = i + 1, on = !!p && no >= p.from && no <= p.to;
+      let text = div().flex_1().min_w(0).pr(12).child((all[i] || " ").replace(/\t/g, "    "));
+      if (!this.wrap) text = text.whitespace_nowrap().overflow_hidden();
+      rows.push(h_flex().id(`ln-${no}`).w_full().flex_none().items_start().font_family(k.mono).bg(on ? alpha(blue, k.dark ? 0.16 : 0.1) : "#00000000")
+        .hover((s) => s.bg(on ? alpha(blue, k.dark ? 0.16 : 0.1) : alpha(k.foreground, 0.05)))
+        // GitHub's blue square +: faint on every line, filled under the pointer and on the picked lines.
+        .child(h_flex().id(`ln-add-${no}`).size(16).mt(2).ml(6).flex_none().items_center().justify_center().rounded(4).cursor_pointer()
+          .role("button").accessibility_label(`Line ${no}: insert after it, or add it to the chat`)
+          .bg(on ? blue : "#00000000").text_color(on ? "#ffffff" : alpha(k.muted, 0.45))
+          .hover((s) => s.bg(blue).text_color("#ffffff"))
+          .on_click((e, cx) => this.pickLine(cx, tab, no, null, !!e?.modifiers?.shift))
+          .child(icon("plus").size(12)))
+        .child(div().w(44).flex_none().pr(12).text_right().text_color(on ? k.foreground : alpha(k.muted, 0.8)).child(String(no)))
+        .child(text));
+      if (p && no === p.to) rows.push(this.lineBoxView(k, tab, p, blue));
+    }
+    if (page < pages - 1) rows.push(turn("ln-next", `Show lines ${end + 1} to ${Math.min(n, end + PAGE)}`, page + 1));
+    return v_flex().flex_1().min_h(0)
+      .child(v_flex().id("ht3-file-lines").flex_1().min_h(0).overflow_y_scrollbar().py(4).text_size(13).line_height("20px").children(rows))
+      .when(!!tab.said, (el) => el.child(div().flex_none().px(12).py(6).border_t(1).border_color(k.border).text_size(12).text_color(k.muted).child(tab.said)));
+  }
+
+  // The box under the picked line. Esc closes it.
+  lineBoxView(k, tab, p, blue) {
+    const where = p.from === p.to ? `line ${p.from}` : `lines ${p.from}-${p.to}`;
+    return v_flex().id("ln-box").flex_none().my(4).ml(66).mr(12).p(8).gap(8).rounded(8).border(1).border_color(alpha(blue, 0.6)).bg(k.card)
+      .on_key_down((e, cx) => { if (e.key === "escape") this.pickLine(cx, tab, null); })
+      .child(h_flex().gap(6).items_center().text_size(12).line_height("16px").text_color(k.muted)
+        .child(div().flex_1().min_w(0).truncate().child(`${tab.path.split("/").pop()} · ${where}`))
+        .child(div().flex_none().text_size(11).child("Shift-click another + for a range")))
+      .child(div().min_h(30).px(8).py(4).rounded(8).border(1).border_color(k.input).bg(k.background).text_size(13).line_height("20px").child(Textarea.new(this.lineBox)))
+      .child(h_flex().gap(8).items_center().justify_end()
+        .child(button(k, "ln-cancel", "Cancel", (cx) => this.pickLine(cx, tab, null), { variant: "outline", size: "sm" }))
+        .child(button(k, "ln-chat", "Add to chat", (cx) => this.quoteLines(cx, tab), { variant: tab.readonly ? "default" : "outline", size: "sm", glyph: "message-square", tip: "Put these lines and this note into the shown chat's message box" }))
+        .when(!tab.readonly, (el) => el.child(button(k, "ln-insert", p.from === p.to ? "Insert after this line" : `Insert after line ${p.to}`, (cx) => this.insertLines(cx, tab), { variant: "default", size: "sm", glyph: "plus", tip: "Write this text into the file after the line, and save" }))));
+  }
+
   setWrap(cx) {
     this.wrap = !this.wrap;
     const tab = this.tab();
@@ -410,6 +535,7 @@ export class FilePanel {
       .when(tab.dirty, (el) => el.child(div().flex_none().text_size(11).text_color(k.muted).child("Unsaved")))
       .when(!tab.readonly && !!tab.state, (el) => el.child(button(k, "file-save", tab.saving ? "Saving…" : "Save", (cx) => this.save(cx, tab),
         { variant: tab.dirty ? "default" : "outline", disabled: !tab.dirty || tab.saving, glyph: "save", tip: "Save file (Cmd+S)" })))
+      .when(!!tab.state, (el) => el.child(iconButton(k, "file-lines", "list-plus", (cx) => { tab.lines = !tab.lines; this.pickLine(cx, tab, null); }, { on: !!tab.lines, tip: tab.lines ? "Back to the editor" : "Lines: a + beside each line, to insert after it or add it to the chat" })))
       .child(iconButton(k, "file-wrap", "text-wrap", (cx) => this.setWrap(cx), { on: this.wrap, tip: this.wrap ? "Disable word wrap" : "Enable word wrap" }))
       .child(iconButton(k, "file-tree", "panel-right", (cx) => { c.tree = !c.tree; cx.notify(); }, { on: c.tree, tip: c.tree ? "Hide file explorer" : "Show file explorer" }));
     return v_flex().flex_1().min_w(0).min_h(0)
@@ -423,7 +549,7 @@ export class FilePanel {
         button(k, "file-keep", "Keep editing", (cx) => { tab.closing = false; cx.notify(); }),
         button(k, "file-discard", "Close without saving", (cx) => { this.drop(c, c.tabs.indexOf(tab)); cx.notify(); }, { variant: "destructive" }),
         button(k, "file-saveclose", "Save and close", (cx) => this.save(cx, tab), { variant: "default" })])))
-      .child(tab.state ? Editor.new(tab.state).flex_1().min_h(0)
+      .child(tab.state && tab.lines ? this.linesView(k, c, tab) : tab.state ? Editor.new(tab.state).flex_1().min_h(0)
         : v_flex().flex_1().items_center().justify_center().px(16).text_size(12).text_color(tab.error ? k.destructiveText : k.muted).child(tab.error ?? "Loading…"));
   }
 

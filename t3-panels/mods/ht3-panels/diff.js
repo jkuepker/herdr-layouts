@@ -108,7 +108,8 @@ export class DiffPanel {
     this.seen = null;
     // A hunk as context for the agent: a click on a hunk's header picks it, a comment is written under the list,
     // and both go into the shown chat's message box as a quoted block (chat.js takes shared "ht3-panels.quote").
-    this.picked = null; // the picked hunk's row id, "h:<path>:<n>"
+    this.picked = null; // the picked hunk's row id, "h:<path>:<n>", or a picked line's, "l:<path>:<hunk>:<line>"
+    this.pickedTo = null; // with a picked line: the last line of the range, when it is more than one
     this.said = null; // what happened to the last one
     this.note = InputState.new({ placeholder: "What should the agent do about this change?" });
     this.note.on("change", (_e, cx) => cx.notify());
@@ -121,36 +122,65 @@ export class DiffPanel {
   command(c, cx) {
     if (c === "scope:branch" || c === "scope:unstaged" || (c === "scope:turn" && this.turn)) this.setScope(cx, c.slice(6));
     // hunk:<n> picks the nth hunk shown (from 0; hunk: lets go of it), comment:<text> sends it to the chat with that comment.
+    // diffline:<n> picks the nth diff line shown (from 0), as a click on it; a second one in the same hunk makes a range.
+    if (c.startsWith("diffline:")) { const ids = this.rows().filter((r) => r.kind === "line").map((r) => r.id); this.pickLine(cx, ids[Number(c.slice(9))] ?? null); }
     if (c.startsWith("hunk:")) { const ids = this.rows().filter((r) => r.kind === "hunk").map((r) => r.id); this.pickHunk(cx, c.slice(5) === "" ? null : ids[Number(c.slice(5))] ?? null); }
     if (c.startsWith("comment:")) { this.note.set_value(c.slice(8)); this.quote(cx); }
   }
 
   pickHunk(cx, id) {
     this.picked = id && id !== this.picked ? id : null;
+    this.pickedTo = null;
     this.said = null;
     this.note.set_value("");
     if (this.picked) this.note.focus();
     cx.notify();
   }
-  // The picked hunk: { path, h, from, to } (its lines in the new file, or in the old one for a removal), or null once it is gone.
+  // A diff line's + (a click anywhere on the line): picks that line to comment on. A second line of the same hunk
+  // makes it a range from the first to that one; the picked line again lets go.
+  pickLine(cx, id) {
+    const m = /^l:(.*):(\d+):(\d+)$/.exec(id ?? ""), was = /^l:(.*):(\d+):(\d+)$/.exec(this.picked ?? "");
+    if (!m) return;
+    if (was && this.pickedTo == null && was[1] === m[1] && was[2] === m[2] && was[3] !== m[3]) {
+      const a = Math.min(Number(was[3]), Number(m[3])), b = Math.max(Number(was[3]), Number(m[3]));
+      this.picked = `l:${m[1]}:${m[2]}:${a}`;
+      this.pickedTo = b;
+      this.said = null;
+      this.note.focus();
+      return cx.notify();
+    }
+    const same = this.picked === id && this.pickedTo == null;
+    this.pickHunk(cx, same ? null : id);
+  }
+  // Whether a line row is among the picked lines.
+  isPicked(id) {
+    const m = /^l:(.*):(\d+):(\d+)$/.exec(id), was = /^l:(.*):(\d+):(\d+)$/.exec(this.picked ?? "");
+    return !!m && !!was && m[1] === was[1] && m[2] === was[2] && Number(m[3]) >= Number(was[3]) && Number(m[3]) <= (this.pickedTo ?? Number(was[3]));
+  }
+  // What is picked: { path, h, lines, from, to } (a whole hunk, or some of its lines; from and to are lines in the
+  // new file, or in the old one for a removal), or null once it is gone.
   hunkAt() {
-    const m = /^h:(.*):(\d+)$/.exec(this.picked ?? ""), f = m ? this.files?.find((x) => x.path === m[1]) : null, h = f?.hunks[Number(m?.[2])];
+    const m = /^h:(.*):(\d+)$/.exec(this.picked ?? ""), ml = m ? null : /^l:(.*):(\d+):(\d+)$/.exec(this.picked ?? ""), at = m ?? ml;
+    const f = at ? this.files?.find((x) => x.path === at[1]) : null, h = f?.hunks[Number(at?.[2])];
     if (!h) return null;
-    const ns = h.lines.map((l) => l.n ?? null).filter((n) => n != null), os = h.lines.map((l) => l.o ?? null).filter((n) => n != null);
+    const lines = ml ? h.lines.slice(Number(ml[3]), (this.pickedTo ?? Number(ml[3])) + 1) : h.lines;
+    if (!lines.length) return null;
+    const ns = lines.map((l) => l.n ?? null).filter((n) => n != null), os = lines.map((l) => l.o ?? null).filter((n) => n != null);
     const span = ns.length ? ns : os;
-    return { path: f.path, h, from: span[0] ?? 0, to: span.at(-1) ?? 0 };
+    return { path: f.path, h, lines, from: span[0] ?? 0, to: span.at(-1) ?? 0 };
   }
   // Into the message box of the chat in the shown tab: the hunk as a diff block, then the comment.
   quote(cx) {
     const at = this.hunkAt(), tab = focused()?.tab, places = shared("ht3-panels.places") ?? {};
     if (!at) return;
     if (!Object.values(places).some((p) => p.tab === tab)) { this.said = "The shown tab isn't a chat: show the chat this is for, then add it."; return cx.notify(); }
-    const MAX = 80, lines = at.h.lines.slice(0, MAX).map((l) => `${l.t}${l.text}`);
+    const MAX = 80, lines = at.lines.slice(0, MAX).map((l) => `${l.t}${l.text}`);
     const fence = lines.some((l) => l.includes("```")) ? "````" : "```";
     const text = [`In \`${at.path}\` (${at.from === at.to ? `line ${at.from}` : `lines ${at.from}-${at.to}`}):`, `${fence}diff`, at.h.head.match(/^@@[^@]*@@/)?.[0] ?? "@@", ...lines,
-      ...(at.h.lines.length > MAX ? [`… ${at.h.lines.length - MAX} more lines`] : []), fence, this.note.value().trim()].filter((l) => l !== "").join("\n");
+      ...(at.lines.length > MAX ? [`… ${at.lines.length - MAX} more lines`] : []), fence, this.note.value().trim()].filter((l) => l !== "").join("\n");
     setShared("ht3-panels.quote", { tab, text, at: Date.now() });
     this.picked = null;
+    this.pickedTo = null;
     this.note.set_value("");
     this.said = `Added to the chat's message box: ${at.path}, ${at.from === at.to ? `line ${at.from}` : `lines ${at.from}-${at.to}`}.`;
     cx.notify();
@@ -269,8 +299,13 @@ export class DiffPanel {
     const tint = add ? alpha(k.success, k.dark ? 0.14 : 0.12) : del ? alpha(k.destructive, k.dark ? 0.14 : 0.1) : "#00000000";
     const gutter = add ? alpha(k.success, k.dark ? 0.22 : 0.2) : del ? alpha(k.destructive, k.dark ? 0.22 : 0.18) : "#00000000";
     const num = (v) => div().w(40).flex_none().h_full().pr(6).text_right().text_size(11).text_color(alpha(k.muted, 0.8)).child(v == null ? "" : String(v));
-    return h_flex().h(20).w_full().items_center().overflow_hidden().bg(tint).font_family(k.mono).text_size(12)
-      .child(h_flex().flex_none().h_full().bg(gutter).child(num(l.o)).child(num(l.n)))
+    // The + of the line (GitHub's blue square): faint, filled under the pointer and on a picked line. The click is the row's.
+    const on = this.isPicked(r.id), blue = k.info;
+    return h_flex().h(20).w_full().items_center().overflow_hidden().bg(on ? alpha(blue, k.dark ? 0.3 : 0.18) : tint).font_family(k.mono).text_size(12).cursor_pointer()
+      .child(h_flex().flex_none().h_full().bg(gutter)
+        .child(h_flex().size(16).ml(2).flex_none().items_center().justify_center().rounded(4).bg(on ? blue : "#00000000").text_color(on ? "#ffffff" : alpha(k.muted, 0.45))
+          .hover((s) => s.bg(blue).text_color("#ffffff")).child(icon("plus").size(12)))
+        .child(num(l.o)).child(num(l.n)))
       .child(div().w(16).flex_none().text_center().text_color(add ? k.successText : del ? k.destructiveText : k.dim).child(l.t === " " ? "" : l.t))
       .child(h_flex().flex_1().min_w(0).overflow_hidden().whitespace_nowrap()
         .children(highlight(l.text, r.ext, colors).map((t) => div().flex_none().text_color(t.c ?? k.foreground).child(t.s))));
@@ -341,6 +376,7 @@ export class DiffPanel {
         })
           .on_item_click((id, cx) => {
             if (id.startsWith("h:")) return this.pickHunk(cx, id);
+            if (id.startsWith("l:")) return this.pickLine(cx, id);
             if (!id.startsWith("f:")) return;
             const p = id.slice(2);
             if (this.shut.has(p)) this.shut.delete(p); else this.shut.add(p);
@@ -352,7 +388,7 @@ export class DiffPanel {
         .on_key_down((e, cx) => { if (e.key === "escape") this.pickHunk(cx, null); })
         .child(h_flex().gap(6).items_center().text_size(12).text_color(k.muted)
           .child(icon("message-square").size(14).flex_none())
-          .child(div().flex_1().min_w(0).truncate().child(`${picked.path} · ${picked.from === picked.to ? `line ${picked.from}` : `lines ${picked.from}-${picked.to}`} · ${picked.h.lines.length} line${picked.h.lines.length === 1 ? "" : "s"} of diff`)))
+          .child(div().flex_1().min_w(0).truncate().child(`${picked.path} · ${picked.from === picked.to ? `line ${picked.from}` : `lines ${picked.from}-${picked.to}`} · ${picked.lines.length} line${picked.lines.length === 1 ? "" : "s"} of diff`)))
         .child(h_flex().gap(8).items_center()
           .child(div().flex_1().min_w(0).h(30).px(8).rounded(8).border(1).border_color(k.input).bg(k.background).text_size(13).child(Input.new(this.note)))
           .child(button(k, "hunk-cancel", "Cancel", (cx) => this.pickHunk(cx, null), { variant: "outline", size: "sm" }))
