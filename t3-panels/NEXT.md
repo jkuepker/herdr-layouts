@@ -77,6 +77,8 @@ A second survey of /opt/code/t3code (apps/web/src unless marked; contracts = pac
 
 Looked for and not in T3 Code (so not ported): editing a sent message and resending it (no such code in the clone), exporting a thread to a file. Already here: the model can be switched between messages (the model control), cards can be dragged to reorder (`ht3-inbox/drag.js`), branches are switched in the Project popover.
 
+- Next set 1. Find in thread: a find bar that narrows the lane to the matching messages. Left: no highlight of the words, no next/previous; only the messages loaded in the pane are searched (an agent's earlier, not yet shown ones aren't); no key opens it (`/find` or the command); Esc was not pressed by hand.
+
 ## Candidates
 
 Each entry: what it does / T3 location / mod API support / value for multi-machine agent users / effort.

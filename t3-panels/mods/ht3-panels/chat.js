@@ -84,6 +84,7 @@ const LOCAL_COMMANDS = [
   { name: "rename", description: "Rename this thread", local: true, args: true },
   { name: "fork", description: "Continue this thread in a new chat", local: true },
   { name: "stash", description: "Park this draft, or bring one back", local: true },
+  { name: "find", description: "Find in this thread", local: true },
   { name: "usage", description: "Tokens and context: this chat and every agent", local: true },
 ];
 
@@ -147,6 +148,10 @@ export class ChatPanel {
     this.turnAt = null; // when the running turn of an ACP agent began
     this.hint = HINT;
     this.makeInput();
+    // Find in thread (T3's ThreadFindBar): while its bar is open and has text, the lane holds the matching messages only.
+    this.finding = false;
+    this.findField = InputState.new({ placeholder: "Find in thread" });
+    this.findField.on("change", (_e, cx) => { this.follow = true; cx.notify(); });
     this.filter = InputState.new({ placeholder: "Search" });
     this.filter.on("change", (_e, cx) => cx.notify());
 
@@ -402,6 +407,7 @@ export class ChatPanel {
       if (item.name === "new") openLauncher();
       if (item.name === "fork") this.fork(cx);
       if (item.name === "usage") run(`${MOD}.usage`);
+      if (item.name === "find") return this.setFind(cx, true);
       // With a draft before "/stash" it is parked; alone, the parked drafts open.
       if (item.name === "stash") { if (before.trim()) this.stash(cx); else this.picker = "__stash"; }
     } else {
@@ -510,6 +516,9 @@ export class ChatPanel {
     if (c === "stash:menu") this.picker = this.picker === "__stash" ? null : "__stash";
     if (c.startsWith("unstash:")) this.unstash(cx, Number(c.slice(8)));
     if (c.startsWith("stash:drop:")) this.dropStash(cx, Number(c.slice(11)));
+    // find:<text> opens the find bar with that text (find alone: opens or closes it), find: closes it.
+    if (c === "find") this.setFind(cx, !this.finding);
+    if (c.startsWith("find:")) this.setFind(cx, !!c.slice(5), c.slice(5));
     // plan: the composer's Plan toggle; implement: the last plan card's "Implement this plan".
     if (c === "plan") this.togglePlan(cx);
     if (c === "implement") this.implementPlan(cx);
@@ -700,10 +709,13 @@ export class ChatPanel {
     if (this.source.kind === "acp") v.options = limitModels(agentOf(this.source.state?.agentArgv)?.id, v.options);
     if (v.status === "working") this.since ??= this.turnAt ?? Date.now();
     else this.since = null;
+    // The lane first: it counts what the find bar says.
+    const lane = this.timeline(k, v);
     return root
       // In a tab of the Herdr T3 layout the pane's header draws it (report.js `crumb`): one header, as T3's.
       .when(!this.headed(), (el) => el.child(this.header(k, v)))
-      .child(this.timeline(k, v))
+      .when(this.finding, (el) => el.child(this.findBar(k)))
+      .child(lane)
       .when(this.picker != null, (el) => el.child(this.pickerPanel(k, v)))
       // The "/", "$", "@" menu floats over the end of the lane (it is drawn after it), its foot on the message box's top.
       .child(div().relative().w_full().flex_none()
@@ -762,6 +774,28 @@ export class ChatPanel {
       .child(iconButton(k, "new-chat", "square-pen", () => openLauncher(), { tip: "New chat" }));
   }
 
+  findQuery() {
+    return this.finding ? this.findField.value().trim().toLowerCase() : "";
+  }
+  // Opens the find bar (with `text` in it), or closes it; the lane is whole again when it closes.
+  setFind(cx, on, text = null) {
+    this.finding = on;
+    if (text != null) this.findField.set_value(text);
+    if (on) this.findField.focus(); else { this.findField.set_value(""); this.input.focus(); }
+    this.follow = true;
+    cx.notify();
+  }
+  findBar(k) {
+    const f = this.found, q = this.findQuery();
+    return h_flex().w_full().flex_none().justify_center().px(16).pt(8)
+      .child(h_flex().w_full().max_w(LANE).h(36).pl(10).pr(4).gap(8).items_center().rounded(10).border(1).border_color(k.input).bg(k.card).text_size(14)
+        .on_key_down((e, cx) => { if (e.key === "escape") { this.setFind(cx, false); cx.stop_propagation?.(); } })
+        .child(icon("search").size(14).flex_none().text_color(k.muted))
+        .child(div().flex_1().min_w(0).child(Input.new(this.findField)))
+        .child(div().flex_none().text_size(12).text_color(q && f && !f.n ? k.destructiveText : k.muted).child(!q ? "type to narrow the thread" : f ? `${f.n} of ${f.of} message${f.of === 1 ? "" : "s"}` : ""))
+        .child(iconButton(k, "find-close", "x", (cx) => this.setFind(cx, false), { tip: "Close (Esc)" })));
+  }
+
   rows(v) {
     const rows = [];
     if (v.earlier) rows.push({ id: "__earlier", kind: "earlier" });
@@ -769,9 +803,14 @@ export class ChatPanel {
     // T3's turns: your message, then "Working for 3s" over the work while it runs; once done, the work
     // folds under "Worked for 1.6s" and the answer stays. What an agent says before any message (a
     // startup banner: its version, skills, extensions) folds the same way.
-    const items = v.items, busy = v.status === "working" || v.status === "blocked";
+    const sought = this.findQuery();
+    const wordsOf = (m) => [m.text, m.title, m.detail, ...(m.entries ?? []).map((e) => e.content)].filter(Boolean).join("\n").toLowerCase();
+    const items = sought ? v.items.filter((m) => wordsOf(m).includes(sought)) : v.items, busy = !sought && (v.status === "working" || v.status === "blocked");
+    this.found = sought ? { n: items.length, of: v.items.length } : null;
     const fold = (id, label, inside, rest) => {
       // With nothing under it, it is only the turn's time: no chevron, and nothing to open.
+      // While finding, the matching work shows without its fold: there is nothing to open.
+      if (sought) { for (const m of inside) rows.push(m); for (const m of rest) rows.push(m); return; }
       rows.push({ id, kind: "fold", label, open: inside.length > 0 && !!this.expanded[id], bare: !inside.length });
       if (inside.length && this.expanded[id]) for (const m of inside) rows.push(m);
       for (const m of rest) rows.push(m);
@@ -836,7 +875,7 @@ export class ChatPanel {
   timeline(k, v) {
     const rows = this.rows(v);
     if (!rows.length) {
-      const text = v.status === "starting" ? "Starting the agent…" : v.error ? "" : "Send a message to start the conversation.";
+      const text = this.findQuery() ? "No message in this thread has that." : v.status === "starting" ? "Starting the agent…" : v.error ? "" : "Send a message to start the conversation.";
       return this.centered(k, text);
     }
     // The lane keeps to its end by itself: gpui-kit's measured `list` can't be scrolled from code
