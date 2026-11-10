@@ -28,6 +28,7 @@ import { Empty } from "./empty.js";
 import { detect } from "./agent-acp.js";
 import { announce, prune } from "./report.js";
 import { Settings, SETTINGS_SIZE } from "./settings-ui.js";
+import { Usage, USAGE_SIZE } from "./usage.js";
 import { loadPrefs, setPref, agentOn } from "./settings.js";
 import { SIDE, read, sideShown, bottomShown, reconcile, keep, toggleMax, toggleBottom, toggleSplit, openSurface, openBottom, closeTab, activate, activeSpace, openScript } from "./side.js";
 import { pendingScript } from "./scripts.js";
@@ -76,6 +77,8 @@ class Buttons {
       setShared("ht3-files.pinned", all);
     }
     else if (name === "bottom") cx.spawn(async (cx) => { try { await toggleBottom(); } catch (e) { fail(e); } cx.notify(); });
+    // usage: the Usage dialog (usage.js).
+    else if (name === "usage") openOverlay({ mod: MOD, kind: "dialog", ...USAGE_SIZE, props: { menu: "usage" } });
     // earlier: the New chat dialog as a list of the earlier chats alone, its search focused (the palette's "Earlier chats…").
     else if (name === "earlier") openOverlay({ mod: MOD, kind: "dialog", width: 512, height: 520, props: { find: true } });
     // script: runs the project script the Project popover just picked (scripts.js), if it was picked a moment ago.
@@ -117,7 +120,7 @@ export default class T3Panels extends View {
   init(_props, cx) {
     const p = props() ?? {};
     this.face = p.overlay
-      ? p.menu === "add" ? new AddMenu() : p.menu === "project" ? new ProjectMenu() : p.menu === "settings" ? new Settings() : p.menu === "copy" ? new CopyMenu() : p.menu === "thread" ? new ThreadMenu() : p.menu === "revert" ? new RevertMenu() : new Launcher()
+      ? p.menu === "add" ? new AddMenu() : p.menu === "project" ? new ProjectMenu() : p.menu === "settings" ? new Settings() : p.menu === "usage" ? new Usage() : p.menu === "copy" ? new CopyMenu() : p.menu === "thread" ? new ThreadMenu() : p.menu === "revert" ? new RevertMenu() : new Launcher()
       : (FACES[p.panel] ?? (() => new ChatPanel()))();
     this.face.init(p, cx);
     // Key commands from keys.json's "mod:ht3-panels" section (save), and "focus" from pane.go.

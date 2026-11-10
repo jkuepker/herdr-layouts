@@ -57,6 +57,8 @@ Then: QA.md rows, light-theme shots, end state (Pi tab in 3-deborah-network, spa
 
 - Round 4, 1. Prompt stash: park and recall drafts per project (the stash button in the message box, `/stash`). Left: text only, attached files and `@` chips are not parked; no search; driven by command.
 
+- Round 4, 2. Usage: a dialog with this chat's context over time, per-chat and per-agent totals. Left: a dialog, not a side-panel surface (a surface needs a new block in the layout file); samples start with this build, older chats have one point or none; Pi sends no turn tokens, so its rows say "–"; the Claude Code log sum was run on a real log by hand, but no Claude Code chat exists here to show it in the dialog; no rate-limit banner; remote chats' Claude logs aren't read.
+
 ## Candidates
 
 Each entry: what it does / T3 location / mod API support / value for multi-machine agent users / effort.

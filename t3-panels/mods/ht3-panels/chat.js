@@ -84,6 +84,7 @@ const LOCAL_COMMANDS = [
   { name: "rename", description: "Rename this thread", local: true, args: true },
   { name: "fork", description: "Continue this thread in a new chat", local: true },
   { name: "stash", description: "Park this draft, or bring one back", local: true },
+  { name: "usage", description: "Tokens and context: this chat and every agent", local: true },
 ];
 
 export function openLauncher() {
@@ -400,6 +401,7 @@ export class ChatPanel {
       if (item.name === "side") run(`${MOD}.add:chat`);
       if (item.name === "new") openLauncher();
       if (item.name === "fork") this.fork(cx);
+      if (item.name === "usage") run(`${MOD}.usage`);
       // With a draft before "/stash" it is parked; alone, the parked drafts open.
       if (item.name === "stash") { if (before.trim()) this.stash(cx); else this.picker = "__stash"; }
     } else {

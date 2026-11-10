@@ -185,6 +185,13 @@ export class ChatSession {
     try {
       const r = await this.conn.request("session/prompt", { sessionId: state.sessionId, prompt: [...(sent.trim() ? [{ type: "text", text: sent }] : []), ...blocks] });
       if (r?.stopReason && r.stopReason !== "end_turn") addNotice(state.transcript, stopNote(r.stopReason), "warn");
+      // The turn's tokens, when the agent sends them with its answer: added up per chat for the Usage dialog.
+      const u = r?.usage;
+      if (u && typeof u === "object") {
+        const n = (...keys) => keys.map((key) => Number(u[key])).find((v) => Number.isFinite(v)) ?? 0, t = (state.transcript.tokens ??= { input: 0, output: 0, total: 0, turns: 0 });
+        const input = n("inputTokens", "input_tokens"), output = n("outputTokens", "output_tokens");
+        t.input += input; t.output += output; t.total += n("totalTokens", "total_tokens") || input + output; t.turns += 1;
+      }
     } catch (e) {
       addNotice(state.transcript, e.message, "error");
     }

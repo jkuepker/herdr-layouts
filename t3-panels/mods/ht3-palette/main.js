@@ -33,6 +33,7 @@ const NAMED = [
   ["ht3-tabs.settle", {}, "T3", "Settle this chat or agent", "archive done inbox put away"],
   ["ht3-panels.menu:project", {}, "T3", "Project: branch, commit, scripts", "git push pull request editor worktree"],
   ["ht3-panels.plan", {}, "T3", "Plan mode on or off", "chat agent plan toggle"],
+  ["ht3-panels.usage", {}, "T3", "Usage: tokens and context", "stats cost context window agents"],
   ["ht3-panels.settings", {}, "T3", "T3 settings: agents, models, chats", "preferences notifications sound editors"],
   ["tab.new", {}, "Tab", "New tab", "tab agent new task"],
   ["mod.open", { name: "picker" }, "Tab", "Go to space or tab…", "switch jump find"],

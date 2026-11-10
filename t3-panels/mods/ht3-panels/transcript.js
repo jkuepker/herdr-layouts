@@ -45,7 +45,10 @@ export function applyUpdate(t, u) {
       return;
     }
     case "usage_update":
-      t.usage = { used: u.used, size: u.size };
+      // The context now (and the cost, when the agent sends one), and a sample of it for the Usage dialog: each change, the last 240.
+      t.usage = { used: u.used, size: u.size, ...(u.cost && typeof u.cost === "object" ? { cost: { amount: u.cost.amount, currency: u.cost.currency } } : {}) };
+      t.usageLog ??= [];
+      if (t.usageLog.at(-1)?.used !== u.used || t.usageLog.at(-1)?.size !== u.size) { t.usageLog.push({ at: Date.now(), used: u.used, size: u.size }); if (t.usageLog.length > 240) t.usageLog.splice(0, t.usageLog.length - 240); }
       return;
     case "available_commands_update":
       t.commands = (u.availableCommands ?? []).map((c) => ({ name: c.name, description: c.description }));
