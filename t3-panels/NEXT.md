@@ -96,6 +96,8 @@ Looked for and not in T3 Code (so not ported): editing a sent message and resend
 
 - Next set 7. Keys for chats: `ctrl-shift-]` / `[` and `ctrl-shift-1`..`9` walk the shown list's cards. Left: the keys were not pressed (the commands were run, and Herdr's palette shows the bindings as read); with the sidebar hidden the order is the last one drawn; a number past the last card does nothing; no keys for pin or copy.
 
+- Next set 8. The branch in the chat header; New chat on this branch from the card menu, `/new` and the palette. Left: it starts in the same folder, it does not check a branch out or make a worktree (New chat's New worktree does that); the header's branch is what the chat last saw, up to its next look; the model and mode of the source chat aren't carried over; a terminal agent's card has no such row.
+
 ## Candidates
 
 Each entry: what it does / T3 location / mod API support / value for multi-machine agent users / effort.

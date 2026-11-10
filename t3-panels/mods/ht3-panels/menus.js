@@ -4,7 +4,8 @@
 
 import { div, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { closeOverlay, exec, run, appHome, shared, setShared, readTextFile, notify } from "herdr";
+import { closeOverlay, exec, run, appHome, shared, setShared, readTextFile, notify, spaces } from "herdr";
+import { chatLike } from "./agent-acp.js";
 import { toMarkdown } from "./transcript.js";
 import { agentName } from "./report.js";
 import { MOD, tokens, icon, iconButton, shortPath } from "./look.js";
@@ -174,6 +175,14 @@ export class ThreadMenu {
     if (this.naming) return;
     if (key === "r") { this.naming = true; this.field.focus(); cx.notify(); }
     if (key === "s") { run(`ht3-inbox.settle-card:${this.p.address}`); closeOverlay(this.overlay); }
+    // New chat on this branch: the same agent, in this chat's folder, as a tab beside it.
+    if (key === "n" && this.p.chat && /^[\w-]+$/.test(this.p.chat)) cx.spawn(async () => {
+      try {
+        const s = JSON.parse(await readTextFile(`${appHome()}/data/${MOD}/chats/${this.p.chat}/state.json`));
+        chatLike(s, spaces().find((x) => x.tabs.some((c) => c.id === this.p.tab))?.id);
+      } catch (e) { notify({ title: "Couldn't start the chat", body: String(e?.message ?? e), level: "error" }); }
+      closeOverlay(this.overlay);
+    });
     // Pin (T3's thread menu): the lists keep one set of pins by address (shared "agents.pins"); a pinned card
     // stands in the Inbox's Pinned section and on top of the Agents list.
     if (key === "i" && this.p.address) {
@@ -210,7 +219,8 @@ export class ThreadMenu {
         .child(row("thread-rename", "pen-line", "Rename thread", "r"))
         .child(row("thread-settle", "check", this.p.settled ? "Bring back" : "Settle", "s"))
         .when(!!this.p.address, (e) => e.child(row("thread-pin", (shared("agents.pins") ?? []).includes(this.p.address) ? "pin-off" : "pin", (shared("agents.pins") ?? []).includes(this.p.address) ? "Unpin" : "Pin", "i")))
-        .when(!!this.p.chat, (e) => e.child(row("thread-unread", "circle-dot", "Mark unread", "u")))
+        .when(!!this.p.chat, (e) => e.child(row("thread-unread", "circle-dot", "Mark unread", "u"))
+          .child(row("thread-new", "git-branch", (shared(`${MOD}.programs`)?.[this.p.tab] ?? {}).branch ? "New chat on this branch" : "New chat in this folder", "n")))
         .when(!!this.p.chat, (e) => {
           const at = shared(`${MOD}.programs`)?.[this.p.tab] ?? {};
           return e.child(div().mx(4).my(4).h(1).flex_none().bg(k.border))

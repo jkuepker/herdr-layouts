@@ -102,6 +102,16 @@ export function argvOf(agent, found) {
 // starts with this chat's messages, all of them or those up to and with item `upto`. ACP has no
 // fork, so the new chat is a new session, told what was said with its first message (session.js
 // `handoff`). Reads the chat as it was last saved (at most a second old). -> the new chat's id, or null.
+// "New chat on this branch" (T3's thread menu): a fresh chat with the same agent in the same folder, which is that
+// branch's checkout (a worktree chat's own folder), as a tab of `space` (default: the shown one). `from`: a chat's state.
+export function chatLike(from, space = focused()?.space) {
+  if (!Array.isArray(from?.agentArgv) || !from.agentArgv.length) return false;
+  const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  run("tab.new", { mod: "ht3-panels", ...(space ? { space } : {}), name: from.agentInfo?.title ?? from.agentInfo?.name ?? agentOf(from.agentArgv)?.name ?? "Chat",
+    props: { panel: "chat", chat: id, agent: from.agentArgv, cwd: from.cwd ?? null, machine: from.machine ?? null } });
+  return true;
+}
+
 export async function forkChat(chatId, upto = null) {
   const root = `${appHome()}/data/ht3-panels/chats`;
   let old;

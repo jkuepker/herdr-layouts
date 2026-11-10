@@ -19,7 +19,7 @@ import { snapshot, turnStat } from "./checkpoint.js";
 import { checkpointsOn, followUp } from "./settings.js";
 import { addNotice, toMarkdown } from "./transcript.js";
 import { limitModels, rememberModels } from "./settings.js";
-import { agentOf } from "./agent-acp.js";
+import { agentOf, chatLike } from "./agent-acp.js";
 import { repoOf } from "./launcher.js";
 
 const LANE = 736; // --chat-content-max-width: 46rem
@@ -86,6 +86,7 @@ const LOCAL_COMMANDS = [
   { name: "stash", description: "Park this draft, or bring one back", local: true },
   { name: "find", description: "Find in this thread", local: true },
   { name: "copy", description: "Copy this thread as Markdown", local: true },
+  { name: "new", description: "New chat on this branch: same agent, same folder", local: true },
   { name: "usage", description: "Tokens and context: this chat and every agent", local: true },
 ];
 
@@ -423,6 +424,7 @@ export class ChatPanel {
       if (item.name === "usage") run(`${MOD}.usage`);
       if (item.name === "find") return this.setFind(cx, true);
       if (item.name === "copy") this.copyThread(cx);
+      if (item.name === "new" && this.source.kind === "acp") chatLike(this.source.state);
       // With a draft before "/stash" it is parked; alone, the parked drafts open.
       if (item.name === "stash") { if (before.trim()) this.stash(cx); else this.picker = "__stash"; }
     } else {
@@ -531,6 +533,8 @@ export class ChatPanel {
     if (c === "stash:menu") this.picker = this.picker === "__stash" ? null : "__stash";
     if (c.startsWith("unstash:")) this.unstash(cx, Number(c.slice(8)));
     if (c.startsWith("stash:drop:")) this.dropStash(cx, Number(c.slice(11)));
+    // new:here is "/new": a new chat with this one's agent in this one's folder (its branch).
+    if (c === "new:here" && this.source.kind === "acp") chatLike(this.source.state);
     // copy:thread is "/copy": the thread as Markdown on the clipboard.
     if (c === "copy:thread") this.copyThread(cx);
     // find:<text> opens the find bar with that text (find alone: opens or closes it), find: closes it.
@@ -772,17 +776,19 @@ export class ChatPanel {
     // Working says so in the timeline ("Working for 3s"), as T3's header says nothing of it.
     const word = { starting: "Starting", blocked: "Waiting for you", exited: "Stopped", stopped: "Stopped" }[state] ?? null;
     const tone = { blocked: "warning", exited: "error", stopped: "error", working: "info" }[state] ?? null;
-    return { badge: folder ? initials(folder) : null, folder, where, title, word, tone, usage: v.usage?.size > 0 ? Math.round((100 * v.usage.used) / v.usage.size) : null };
+    return { badge: folder ? initials(folder) : null, folder, where, title, word, tone, branch: this.reporter?.where?.branch ?? this.branchHere ?? null, usage: v.usage?.size > 0 ? Math.round((100 * v.usage.used) / v.usage.size) : null };
   }
 
   header(k, v) {
-    const { folder, where, title, word, tone } = this.crumb(v);
+    const { folder, where, title, word, tone, branch } = this.crumb(v);
     return h_flex().h(40).flex_none().px(16).gap(8).items_center().text_size(14).font_medium()
       .when(!!folder, (el) => el
         .child(h_flex().h(16).min_w(16).px(2).flex_none().items_center().justify_center().rounded(4).bg(alpha(k.info, 0.16)).text_size(9).font_bold().text_color(k.info).child(initials(folder)))
         .child(div().max_w(160).truncate().text_color(k.muted).tooltip(where).child(folder))
         .child(div().text_color(alpha(k.muted, 0.6)).child("/")))
       .child(div().min_w(0).truncate().tooltip(v.name).child(title))
+      .when(!!branch, (el) => el.child(h_flex().flex_none().max_w(180).gap(4).items_center().text_size(12).font_weight(400).text_color(k.muted).tooltip(`On branch ${branch}`)
+        .child(icon("git-branch").size(12).flex_none()).child(div().min_w(0).truncate().font_family(k.mono).child(branch))))
       .when(!!word, (el) => el.child(badge(k, word, tone)))
       .child(div().flex_1())
       .when(v.usage?.size > 0, (el) => el.child(div().text_size(12).font_weight(400).text_color(k.muted)

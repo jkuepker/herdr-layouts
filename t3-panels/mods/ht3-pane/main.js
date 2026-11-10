@@ -243,6 +243,9 @@ export default class Pane extends View {
         .child(div().max_w(160).flex_none().truncate().text_color(t.muted).child(c.folder))
         .child(div().flex_none().text_color(t.dim).child("/")))
       .child(div().min_w(0).truncate().text_color(t.foreground).child(c.title))
+      // The branch the chat works on (T3's branch in the thread header).
+      .when(Boolean(c.branch), (el) => el.child(h_flex().flex_none().max_w(180).gap(4).items_center().text_size(12).font_normal().text_color(t.muted)
+        .child(svg("mods/ht3-pane/icons/git-branch.svg").size(12).flex_none().text_color(t.muted)).child(div().min_w(0).truncate().child(c.branch))))
       .when(Boolean(c.word), (el) => el.child(h_flex().h(18).px(4).flex_none().items_center().rounded(4).text_size(12).bg(tone + "29").text_color(tone).child(c.word)))
       .child(div().relative().flex_1().min_w(0).h_full().flex().items_center().justify_end()
         .when(c.usage != null, (el) => el.child(div().flex_none().pr(8).text_size(12).font_normal().text_color(t.muted).child(`${c.usage}% context`)))

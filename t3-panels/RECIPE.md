@@ -109,6 +109,8 @@ Everything uses T3 Code's sizes (1rem = 16px): 14px text on a 23px line, 8px con
 
 - **Keys for chats.** `ctrl-shift-]` and `ctrl-shift-[` go to the next and previous card of the sidebar's list, round and round; `ctrl-shift-1` to `9` go to its nth card. The order is the one drawn: with the Inbox shown, its cards top to bottom (Pinned first; chats and terminal agents alike), with Spaces/Agents shown, the Agents list's. They cross spaces. The tab bar mod runs them (`ht3-tabs.chat:next|prev|<n>`, `ht3-tabs/main.js` `walk`) from what the shown list says it draws (shared `ht3-inbox.rows` / `ht3-agents.rows`), because only the shown list runs. T3's own keys for this (`cmd-1`..`9`, `cmd-shift-[` `]`) are the tabs' here, so these are on ctrl-shift, which neither the layout's section nor `global` nor `terminal` used. The palette has Next chat and Previous chat with their keys.
 
+- **The branch in the chat's header, and New chat on this branch.** A chat's header shows its branch after the title (the chat gives it in its `crumb`, the pane header `ht3-pane` draws it; the chat's own header, used outside this layout, does too). A chat card's menu has **New chat on this branch** ("New chat in this folder" outside Git): a fresh chat with the same agent in the same folder, which is that branch's checkout, as a tab in the card's space. `/new` in a chat and the palette's "New chat on this branch" do the same for the shown chat. Scripts: `new:here` in the shown chat, `key:n` in the open menu (`agent-acp.js` `chatLike`).
+
 ## Built from
 
 - **One mod, `ht3-panels`**, with many faces picked in `main.js` by how a copy is opened (`mod.json`: `{"place": "none", "overlay": {"width": 512, "height": 660}}`):
