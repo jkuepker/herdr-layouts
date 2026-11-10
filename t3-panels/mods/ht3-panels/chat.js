@@ -7,7 +7,7 @@
 // - agent-term.js: an agent already running in a Herdr terminal (props.terminal);
 // - agent-acp.js: an agent this pane starts over ACP (props.agent, cwd, machine, prompt).
 
-import { div, list } from "gpui-kit";
+import { div, list, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, TextView, Scrollbar, VirtualListScrollHandle } from "gpui-base";
 import { run, openOverlay, appHome, home, exec, layout, settings } from "herdr";
 import { MOD, tokens, alpha, icon, agentMark, button, iconButton, control, badge, workLine, divider, shortPath } from "./look.js";
@@ -55,6 +55,11 @@ export function trigger(text) {
   if (word.startsWith("@")) return { kind: "path", query: word.slice(1), start };
   return null;
 }
+
+// chat/ComposerAttachmentStrip.tsx: what counts as a picture, and how big one may be sent as it is.
+const IMAGE_TYPES = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp" };
+const IMAGE_MAX = 1500000, ATTACH_MAX = 8;
+const shq = (x) => `'${String(x).replace(/'/g, `'\\''`)}'`;
 
 // Whether the letters of `q` come in `s` in that order.
 function subseq(q, s) {
@@ -202,6 +207,7 @@ export class ChatPanel {
       if (items.length) { const v = this.input.value(); if (v.endsWith("\n")) { this.input.set_value(v.slice(0, -1)); this.trig = trigger(v.slice(0, -1)); } return this.choose(cx, items[Math.min(this.hot ?? 0, items.length - 1)]); }
       this.send(cx);
     });
+    this.input.on("paste_other", (_e, cx) => this.pasteImage(cx));
     this.input.on("change", (_e, cx) => {
       const has = this.input.value().trim().length > 0;
       const changed = this.typed(cx);
@@ -231,6 +237,59 @@ export class ChatPanel {
         .filter((x) => !seen.has(x.name) && seen.add(x.name));
       cx.notify();
     });
+  }
+
+  // Files dropped on the chat, picked with the paperclip or pasted (a picture on the clipboard).
+  addFiles(cx, paths) {
+    this.attached ??= [];
+    for (const path of paths ?? []) {
+      if (this.attached.length >= ATTACH_MAX || this.attached.some((a) => a.path === path)) continue;
+      const name = String(path).split("/").pop(), ext = name.includes(".") ? name.split(".").pop().toLowerCase() : "";
+      const a = { path, name, image: ext in IMAGE_TYPES, type: IMAGE_TYPES[ext] ?? null, thumb: null };
+      this.attached.push(a);
+      // image() shows files under Herdr's own folder only: a small copy there is the thumbnail.
+      if (a.image && this.chatId) cx.spawn(async (cx) => {
+        const rel = `data/${MOD}/chats/${this.chatId}/attachments`, file = `thumb-${Date.now()}-${Math.random().toString(36).slice(2, 7)}.png`;
+        const r = await exec("/bin/sh", ["-c", `mkdir -p ${shq(`${appHome()}/${rel}`)} && sips -Z 256 -s format png ${shq(path)} --out ${shq(`${appHome()}/${rel}/${file}`)} >/dev/null 2>&1`]).catch(() => null);
+        if (r?.code === 0) { a.thumb = `${rel}/${file}`; cx.notify(); }
+      });
+    }
+    cx.notify();
+  }
+
+  // The paperclip: the system's file dialog (Herdr's own picks folders only).
+  pickFiles(cx) {
+    cx.spawn(async (cx) => {
+      const r = await exec("osascript", ["-e", 'set out to ""', "-e", "repeat with f in (choose file with prompt \"Attach files\" with multiple selections allowed)", "-e", "set out to out & POSIX path of f & linefeed", "-e", "end repeat", "-e", "return out"]).catch(() => null);
+      if (r?.code === 0) this.addFiles(cx, r.stdout.split("\n").map((x) => x.trim()).filter(Boolean));
+    });
+  }
+
+  // Cmd+V with a picture on the clipboard (the text area says "paste_other"): saved as a PNG in the chat's folder, then attached.
+  pasteImage(cx) {
+    if (!this.chatId) return;
+    cx.spawn(async (cx) => {
+      const dir = `${appHome()}/data/${MOD}/chats/${this.chatId}/attachments`, file = `${dir}/pasted-${Date.now()}.png`;
+      const r = await exec("/bin/sh", ["-c", `mkdir -p ${shq(dir)} && osascript -e 'set d to the clipboard as «class PNGf»' -e 'set fh to open for access POSIX file ${JSON.stringify(file)} with write permission' -e 'write d to fh' -e 'close access fh'`]).catch(() => null);
+      if (r?.code === 0) this.addFiles(cx, [file]);
+    });
+  }
+
+  // What goes to the agent for the attached files: a picture as an ACP image block when the agent
+  // takes them (shrunk first when large), anything else as a resource link to the file.
+  async attachmentBlocks(v) {
+    const blocks = [];
+    for (const a of this.sending ?? []) {
+      if (a.image && v.images) {
+        const dir = `${appHome()}/data/${MOD}/chats/${this.chatId}/attachments`, small = `${dir}/sent-${Date.now()}.jpg`;
+        const script = `if [ "$(stat -f%z ${shq(a.path)})" -gt ${IMAGE_MAX} ]; then mkdir -p ${shq(dir)} && sips -Z 1568 -s format jpeg ${shq(a.path)} --out ${shq(small)} >/dev/null 2>&1 && printf 'image/jpeg\\n' && base64 -i ${shq(small)}; else printf '%s\\n' ${shq(a.type)} && base64 -i ${shq(a.path)}; fi`;
+        const r = await exec("/bin/sh", ["-c", script]).catch(() => null);
+        const at = r?.code === 0 ? r.stdout.indexOf("\n") : -1;
+        if (at > 0) { blocks.push({ type: "image", mimeType: r.stdout.slice(0, at), data: r.stdout.slice(at + 1).replace(/\s+/g, "") }); continue; }
+      }
+      blocks.push({ type: "resource_link", uri: `file://${encodeURI(a.path)}`, name: a.name, ...(a.type ? { mimeType: a.type } : {}) });
+    }
+    return blocks;
   }
 
   // The files "@" can name: the folder's tracked and untracked files (not the ignored), where the
@@ -358,6 +417,10 @@ export class ChatPanel {
     // menu-key:<up|down|enter|escape>.
     if (c.startsWith("type:")) { this.input.set_value(c.slice(5)); this.hasText = !!c.slice(5).trim(); this.typed(cx); }
     if (c === "send") this.send(cx);
+    // attach:<path> (as a dropped file), detach:<n>, paste-image (as Cmd+V with a picture on the clipboard).
+    if (c.startsWith("attach:")) this.addFiles(cx, [c.slice(7)]);
+    if (c.startsWith("detach:")) this.attached?.splice(Number(c.slice(7)), 1);
+    if (c === "paste-image") this.pasteImage(cx);
     if (c.startsWith("take:")) this.choose(cx, this.menuItems(this.view)[Number(c.slice(5))]);
     if (c.startsWith("menu-key:")) this.menuKey(c.slice(9), cx);
     if (c.startsWith("scroll:")) { if (c === "scroll:end") { this.follow = true; this.off = 0; } else this.wheel(Number(c.slice(7)) || 0, 1e9, cx); }
@@ -381,8 +444,8 @@ export class ChatPanel {
 
   send(cx) {
     const v = this.view;
-    const text = this.input.value().trim();
-    if (!text || !v?.alive) return;
+    const text = this.input.value().trim(), files = this.source.kind === "acp" ? this.attached ?? [] : [];
+    if ((!text && !files.length) || !v?.alive || this.sending) return;
     // An ACP agent takes one message per turn; a terminal agent takes one mid-turn too.
     if (this.source.kind === "acp" && v.status !== "ready") return;
     // Each file named with "@" goes along as an ACP resource link (the text keeps its "@path").
@@ -398,6 +461,18 @@ export class ChatPanel {
     this.hasText = false;
     this.trig = null;
     this.follow = true;
+    if (files.length) {
+      // Reading the pictures takes a moment: the files leave the box now and the message follows.
+      this.sending = files;
+      this.attached = [];
+      cx.spawn(async (cx) => {
+        const more = await this.attachmentBlocks(v).catch(() => []);
+        this.sending = null;
+        this.source.send(cx, text, [...blocks, ...more], files.map((a) => ({ name: a.name, path: a.path, image: a.image, thumb: a.thumb })));
+        cx.notify();
+      });
+      return cx.notify();
+    }
     this.source.send(cx, text, blocks);
     cx.notify();
   }
@@ -637,10 +712,17 @@ export class ChatPanel {
     const chevron = (open) => h_flex().size(16).flex_none().items_center().justify_center().text_color(alpha(k.muted, 0.7))
       .child(icon(open ? "chevron-down" : "chevron-right").size(12));
     switch (m.kind) {
-      case "user":
-        return lane(h_flex().w_full().justify_end()
-          .child(div().max_w("80%").min_w(0).p(12).rounded(16).bg(k.message).text_size(14).line_height("23px")
-            .when(m.pending, (el) => el.opacity(0.6)).child(m.text)), m.pending ? 16 : 2);
+      case "user": {
+        // chat/MessagesTimeline.tsx: what was attached sits over the bubble, at its right edge.
+        const att = m.attachments ?? [];
+        return lane(v_flex().w_full().items_end().gap(6)
+          .when(att.length > 0, (el) => el.child(h_flex().max_w("80%").gap(6).flex_wrap().justify_end().children(att.map((a) => (a.image
+            ? (a.thumb ? h_flex().size(96).flex_none().rounded(12).overflow_hidden().items_center().justify_center().border(1).border_color(alpha(k.border, 0.8)).child(image(a.thumb).w(96)) : h_flex().h(28).px(8).gap(6).flex_none().items_center().rounded(8).border(1).border_color(alpha(k.border, 0.8)).text_size(12).child(a.name))
+            : h_flex().h(28).px(8).gap(6).flex_none().max_w(220).items_center().rounded(8).border(1).border_color(alpha(k.border, 0.8)).text_size(12)
+              .child(fileIcon(a.name, k.dark, 14)).child(div().min_w(0).truncate().child(a.name)))))))
+          .when(!!m.text, (el) => el.child(div().max_w("80%").min_w(0).p(12).rounded(16).bg(k.message).text_size(14).line_height("23px")
+            .when(m.pending, (e) => e.opacity(0.6)).child(m.text))), m.pending ? 16 : 2);
+      }
       case "seg":
         // A stretch of a reply: text you can select, or one code block (under its header row).
         return lane(div().px(4).py(m.code ? 0 : 2).text_size(14).line_height("23px")
@@ -800,7 +882,7 @@ export class ChatPanel {
 
     const working = v.status === "working";
     const stop = working && (!this.hasText || this.source.kind === "acp");
-    const can = v.alive && this.hasText && (this.source.kind === "term" || v.status === "ready");
+    const can = v.alive && (this.hasText || (this.source.kind === "acp" && this.attached?.length > 0)) && !this.sending && (this.source.kind === "term" || v.status === "ready");
     const action = stop
       ? h_flex().id("stop").size(32).flex_none().items_center().justify_center().rounded_full().bg(alpha(k.destructive, 0.9)).text_color("#ffffff")
         .shadow_xs().cursor_pointer().tooltip("Interrupt").role("button").accessibility_label("Stop generation").hover((s) => s.bg(k.destructive))
@@ -831,7 +913,23 @@ export class ChatPanel {
       });
     });
 
+    // chat/ComposerAttachmentStrip.tsx: pictures as 56px thumbnails, other files as chips, each with its ×.
+    const files = this.source.kind === "acp" ? this.attached ?? [] : [];
+    const strip = h_flex().px(12).pt(12).gap(8).flex_wrap().children(files.map((a, i) => {
+      const x = h_flex().id(`att-x-${i}`).absolute().top(-6).right(-6).size(16).items_center().justify_center().rounded_full().border(1).border_color(k.border).bg(k.popover)
+        .text_color(k.muted).cursor_pointer().role("button").accessibility_label(`Remove ${a.name}`).hover((s) => s.text_color(k.foreground))
+        .on_click((_e, cx) => { this.attached.splice(i, 1); cx.notify(); }).child(icon("x").size(10));
+      return a.image
+        ? div().relative().size(56).flex_none().rounded(8).border(1).border_color(alpha(k.border, 0.8)).when(!!a.thumb, (el) => el.child(h_flex().size(54).rounded(7).overflow_hidden().items_center().justify_center().child(image(a.thumb).w(54)))).child(x)
+        : h_flex().relative().h(28).pl(8).pr(10).gap(6).flex_none().max_w(220).items_center().rounded(8).border(1).border_color(alpha(k.border, 0.8)).bg(alpha(k.accent, 0.5)).text_size(12)
+          .child(fileIcon(a.name, k.dark, 14)).child(div().min_w(0).truncate().child(a.name)).child(x);
+    }));
+    const clip = this.source.kind === "acp"
+      ? iconButton(k, "attach", "plus", (cx) => this.pickFiles(cx), { size: "sm", tip: "Attach files (or drop them here, or paste a picture)" }) : null;
     const card = v_flex().rounded(16).border(1).border_color(line).bg(k.card).shadow_xs()
+      .on_drop((e, cx) => { if (this.source.kind === "acp") this.addFiles(cx, e.paths); })
+      .when(files.length > 0, (el) => el.child(strip))
+      .when(!!this.sending, (el) => el.child(div().px(16).pt(10).text_size(12).text_color(k.muted).child(`Sending ${this.sending.length} file${this.sending.length === 1 ? "" : "s"}…`)))
       .child(div().px(16).pt(14).pb(8).text_size(14).line_height("23px")
         .on_size_change((size, cx) => {
           const w = size.width / (Number(settings()?.zoom) || 1);
@@ -847,6 +945,7 @@ export class ChatPanel {
         .child(Textarea.new(this.input).token((tok) => h_flex().h(20).px(4).gap(4).items_center().rounded(4).border(1).border_color(alpha(k.border, 0.8))
           .bg(alpha(k.accent, 0.6)).text_size(12).child(fileIcon(tok.token.label ?? tok.token.id, k.dark, 12)).child(tok.token.label ?? tok.token.id))))
       .child(h_flex().px(8).pb(8).gap(2).items_center()
+        .when(!!clip, (el) => el.child(clip))
         .child(div().flex_1())
         .children(controls)
         .child(div().w(6).flex_none())

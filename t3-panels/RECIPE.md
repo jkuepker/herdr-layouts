@@ -63,6 +63,8 @@ Everything uses T3 Code's sizes (1rem = 16px): 14px text on a 23px line, 8px con
 
 - **`@` files** (chat/ComposerCommandMenu.tsx, FileTagChip.tsx): a word that starts with `@` lists the folder's files where the chat runs (`git ls-files -co --exclude-standard`, or `find` without git; listed again after 30 seconds): the file's icon, its name, its folder; names that start with what you typed first. Taking one puts a chip in the text (the text area's inline token; its text is `@path`), and on send each chip also goes to the agent as an ACP `resource_link` block (`file://` and the whole path); `session.js` `prompt(text, blocks)` takes those blocks, in both mods. A terminal agent's chat gets the `@path` text only.
 
+- **Attachments** (chat/ComposerAttachmentStrip.tsx): drop files on the message box, press its `+` (the system's file dialog, through `osascript`; this computer only), or paste a picture (the text area's `paste_other`; the clipboard's picture is saved as a PNG in the chat's `attachments` folder). They sit in a strip over the text: pictures as 56px thumbnails (a 256px copy under Herdr's folder, since `image()` shows nothing outside it), other files as chips, each with an ×; at most 8. On send a picture goes as an ACP `image` block when the agent says it takes them (`promptCapabilities.image`; one over 1.5 MB is shrunk to 1568px JPEG first), everything else as a `resource_link`; the message shows what was attached over its bubble. Files alone can be sent. For scripts: `ht3-panels.attach:<path>`, `detach:<n>`, `paste-image`.
+
 ## Built from
 
 - **One mod, `ht3-panels`**, with many faces picked in `main.js` by how a copy is opened (`mod.json`: `{"place": "none", "overlay": {"width": 512, "height": 520}}`):

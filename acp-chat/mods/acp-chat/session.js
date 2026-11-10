@@ -104,6 +104,7 @@ export class ChatSession {
         clientInfo: { name: "herdr-acp-chat", version: "0.1.0" },
       });
       state.agentInfo = init?.agentInfo ?? null;
+      state.promptCapabilities = init?.agentCapabilities?.promptCapabilities ?? {};
       if (!(this.resumeId && init?.agentCapabilities?.loadSession && (await this.resume(this.resumeId)))) {
         const session = await this.conn.request("session/new", { cwd: state.cwd, mcpServers: [] });
         state.sessionId = session.sessionId;
@@ -147,7 +148,7 @@ export class ChatSession {
   handle(cmd) {
     switch (cmd.type) {
       case "prompt":
-        return this.prompt(String(cmd.text ?? ""), Array.isArray(cmd.blocks) ? cmd.blocks : []);
+        return this.prompt(String(cmd.text ?? ""), Array.isArray(cmd.blocks) ? cmd.blocks : [], cmd.attachments ?? null);
       case "cancel":
         this.answerPermission({ outcome: "cancelled" });
         this.conn.notify("session/cancel", { sessionId: this.state.sessionId });
@@ -162,14 +163,14 @@ export class ChatSession {
   }
 
   // `blocks`: ACP content blocks sent after the text (resource links for mentioned files, images).
-  async prompt(text, blocks = []) {
+  async prompt(text, blocks = [], attachments = null) {
     const state = this.state;
     if (!text.trim() && !blocks.length) return;
     if (state.status === "working") {
       addNotice(state.transcript, "Still working on the last message; send again when it's done.", "warn");
       return this.changed(false);
     }
-    addUser(state.transcript, text);
+    addUser(state.transcript, text, attachments);
     state.status = "working";
     state.error = null;
     this.changed(false);

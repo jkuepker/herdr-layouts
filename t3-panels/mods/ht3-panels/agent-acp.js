@@ -251,6 +251,7 @@ export class AcpSource {
       dropped: s.transcript.dropped,
       usage: s.transcript.usage,
       commands: s.transcript.commands ?? [],
+      images: s.promptCapabilities?.image === true,
       options: (s.configOptions ?? []).filter((o) => o.type === "select").map((o) => ({
         id: o.id, name: o.name, category: o.category, current: o.currentValue,
         choices: o.options.map((c) => ({ value: c.value, name: c.name, description: c.description })),
@@ -260,7 +261,7 @@ export class AcpSource {
     };
   }
 
-  send(_cx, text, blocks = []) { this.session?.handle({ type: "prompt", text, blocks }); }
+  send(_cx, text, blocks = [], attachments = null) { this.session?.handle({ type: "prompt", text, blocks, attachments }); }
   stop() { this.session?.handle({ type: "cancel" }); }
   answer(_cx, optionId) { this.session?.handle({ type: "permission", optionId }); }
   setOption(id, value) { this.session?.handle({ type: "config", configId: id, value }); }

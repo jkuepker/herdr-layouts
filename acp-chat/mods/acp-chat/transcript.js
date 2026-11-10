@@ -7,8 +7,9 @@ export function emptyTranscript() {
   return { items: [], dropped: 0, usage: null, commands: [], nextId: 1 };
 }
 
-export function addUser(t, text) {
-  push(t, { kind: "user", text });
+// `attachments`: what was sent along, for the message to show: [{ name, path, image }].
+export function addUser(t, text, attachments = null) {
+  push(t, attachments?.length ? { kind: "user", text, attachments } : { kind: "user", text });
 }
 
 export function addNotice(t, text, level = "info") {
