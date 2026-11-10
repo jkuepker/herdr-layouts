@@ -13,6 +13,9 @@ import { navigation } from "./navigation.js";
 import { newTab } from "./project.js";
 
 const inboxShown = () => sidebarParts(layout()).stack?.active === "inbox";
+// The cards of the shown list in its order, and the one being looked at: each list says what it draws
+// (shared "ht3-inbox.rows" / "ht3-agents.rows": { order: [address], view }). A chat tab's address is pane:<id>.
+const cardRows = () => shared(inboxShown() ? "ht3-inbox.rows" : "ht3-agents.rows") ?? { order: [], view: null };
 
 // What the hidden sidebar's toggle counts, as the selected sidebar shows it. In the Inbox an agent settled there isn't news
 // while it stays settled, and a snoozed one, until it wakes, isn't news either, working or done; while it or what's under it
@@ -85,6 +88,9 @@ export default class Tabs extends View {
         // Here because the tab bar always shows; the brand bar goes with the sidebar.
         if (command === "sidebar") run("layout.select", { stack: "sidebar-lists", child: inboxShown() ? "lists" : "inbox" });
         else if (command === "settle") await this.settle(cx);
+        // `ht3-tabs.chat:next|prev|<n>`: to the next or previous card of the sidebar's list, or its nth (from 1); T3's
+        // thread.next, thread.previous and thread.jump.N. Here and not in the lists, as only the shown list runs.
+        else if (command.startsWith("chat:")) this.walk(command.slice(5));
         else if (command.startsWith("unpin:")) this.unpin(command.slice("unpin:".length), cx);
         else if (command === "undo") await this.undo();
         else await this.navigation.handle(command, cx);
@@ -97,6 +103,19 @@ export default class Tabs extends View {
     if (r.code === 0) return true;
     if (!quiet) notify({ title: "Couldn't update the agent", body: r.stderr.trim(), level: "error" });
     return false;
+  }
+
+  // next and prev go round; from a place that is no card, next is the first card and prev the last.
+  walk(to) {
+    const { order, view } = cardRows(), n = order.length;
+    if (!n) return;
+    // The Agents list names no card for a chat tab that is looked at: the focused pane says it then.
+    const f = focused(), here = [view, f?.pane ? `pane:${f.pane}` : null, f?.terminal].find((x) => x && order.includes(x));
+    const at = order.indexOf(here);
+    const address = order[to === "next" ? (at + 1) % n : to === "prev" ? (at < 0 ? n - 1 : (at - 1 + n) % n) : Number(to) - 1];
+    if (!address) return;
+    if (address.startsWith("pane:")) run("pane.focus", { pane: address.slice(5) });
+    else run("agent.focus", { terminal: address });
   }
 
   async settle(cx) {

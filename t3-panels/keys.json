@@ -3,7 +3,18 @@
     "cmd-shift-o": "mod.open:ht3-panels",
     "cmd-shift-e": "layout.toggle:ht3-side",
     "cmd-j": "ht3-panels.bottom",
-    "cmd-shift-p": "mod.open:ht3-palette"
+    "cmd-shift-p": "mod.open:ht3-palette",
+    "ctrl-shift-]": "ht3-tabs.chat:next",
+    "ctrl-shift-[": "ht3-tabs.chat:prev",
+    "ctrl-shift-1": "ht3-tabs.chat:1",
+    "ctrl-shift-2": "ht3-tabs.chat:2",
+    "ctrl-shift-3": "ht3-tabs.chat:3",
+    "ctrl-shift-4": "ht3-tabs.chat:4",
+    "ctrl-shift-5": "ht3-tabs.chat:5",
+    "ctrl-shift-6": "ht3-tabs.chat:6",
+    "ctrl-shift-7": "ht3-tabs.chat:7",
+    "ctrl-shift-8": "ht3-tabs.chat:8",
+    "ctrl-shift-9": "ht3-tabs.chat:9"
   },
   "mod:ht3-panels": {
     "cmd-s": "ht3-panels.save"

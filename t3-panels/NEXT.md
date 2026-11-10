@@ -94,6 +94,8 @@ Looked for and not in T3 Code (so not ported): editing a sent message and resend
 
 - Next set 6. Diff hunks as context: pick a hunk, comment, and it lands in the shown chat's message box as a quoted diff block. Left: whole hunks only, no single lines or a selection; the chat of the shown tab only (not the side chat, not a terminal agent); adding it turns `@` chips already in the box into plain text; the click and Esc were driven by command.
 
+- Next set 7. Keys for chats: `ctrl-shift-]` / `[` and `ctrl-shift-1`..`9` walk the shown list's cards. Left: the keys were not pressed (the commands were run, and Herdr's palette shows the bindings as read); with the sidebar hidden the order is the last one drawn; a number past the last card does nothing; no keys for pin or copy.
+
 ## Candidates
 
 Each entry: what it does / T3 location / mod API support / value for multi-machine agent users / effort.
