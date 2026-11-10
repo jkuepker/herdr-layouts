@@ -8,7 +8,7 @@
 
 import { div, list } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar } from "gpui-base";
-import { exec, watchFolder } from "herdr";
+import { exec, watchFolder, shared } from "herdr";
 import { tokens, alpha, icon, iconButton } from "./look.js";
 import { fileIcon } from "./fileicons.js";
 import { activeSpace, placeOf, showing } from "./side.js";
@@ -112,7 +112,7 @@ export class DiffPanel {
   close() {}
   // `ht3-panels.scope:branch|unstaged`: what the Diff compares, as its header's menu, for scripts and the popover.
   command(c, cx) {
-    if (c === "scope:branch" || c === "scope:unstaged") this.setScope(cx, c.slice(6));
+    if (c === "scope:branch" || c === "scope:unstaged" || (c === "scope:turn" && this.turn)) this.setScope(cx, c.slice(6));
   }
   setScope(cx, scope) {
     this.pick = false;
@@ -157,10 +157,11 @@ export class DiffPanel {
 
   // Runs git only while the tab shows; back in view, at once.
   refresh(cx) {
-    if (!this.root || this.loading) return;
+    if (this.loading || !(this.root || (this.scope === "turn" && this.turn))) return;
     if (!showing(this.group, "diff")) { this.stale = true; return; }
     this.stale = false;
-    const root = this.root, on = this.on, scope = this.scope;
+    const scope = this.scope, turn = scope === "turn" ? this.turn : null;
+    const root = turn ? turn.root : this.root, on = turn ? turn.on ?? undefined : this.on;
     this.loading = true;
     cx.spawn(async (cx) => {
       try {
@@ -171,18 +172,18 @@ export class DiffPanel {
           const [ref, sha] = (b?.stdout ?? "").trim().split(" ");
           if (sha) { from = sha; base = ref; }
         }
-        let r = await exec("git", [...flags, from], { cwd: root, on });
-        if (r.code !== 0) r = await exec("git", [...flags, EMPTY_TREE], { cwd: root, on });
+        let r = await exec("git", turn ? [...flags, turn.from, turn.to] : [...flags, from], { cwd: root, on });
+        if (r.code !== 0 && !turn) r = await exec("git", [...flags, EMPTY_TREE], { cwd: root, on });
         if (r.code !== 0) throw new Error(r.stderr.trim().split("\n")[0] || "git diff failed");
-        const extra = await exec("sh", ["-c", UNTRACKED], { cwd: root, on, timeout: 20000 }).catch(() => null);
+        const extra = turn ? null : await exec("sh", ["-c", UNTRACKED], { cwd: root, on, timeout: 20000 }).catch(() => null);
         const files = parseDiff(r.stdout + "\n" + (extra?.stdout ?? ""));
-        if (this.root === root && this.scope === scope) {
+        if ((turn ? this.turn === turn : this.root === root) && this.scope === scope) {
           this.base = base;
           this.files = files.slice(0, MAX_FILES);
           this.more = files.length - this.files.length;
           this.error = null;
         }
-      } catch (e) { if (this.root === root) this.error = String(e?.message ?? e); }
+      } catch (e) { if (turn || this.root === root) { this.error = String(e?.message ?? e); if (turn) this.files = []; } }
       finally { this.loading = false; cx.notify(); }
     });
   }
@@ -236,6 +237,9 @@ export class DiffPanel {
 
   render(cx) {
     this.follow(cx);
+    // A chat's "View diff" on a turn (chat.js turnDiff): that turn's two snapshots, as a third scope.
+    const turn = shared("ht3-panels.turn");
+    if (turn && turn.at !== this.turn?.at) { this.turn = turn; this.scope = "turn"; this.files = null; this.stale = true; }
     if (this.stale) this.refresh(cx);
     const k = tokens(), colors = syntax();
     const root = v_flex().id("ht3-diff").size_full().min_h(0).bg(k.background).text_color(k.foreground).text_size(12);
@@ -252,10 +256,11 @@ export class DiffPanel {
         .child(icon("file-diff").size(14).flex_none().text_color(k.muted))
         // T3's scope menu: Changes (the branch against its base) or Uncommitted.
         .child(h_flex().id("diff-scope").h(24).px(6).ml(-6).gap(4).flex_none().items_center().rounded(6).font_medium().text_size(13).cursor_pointer()
-          .role("button").accessibility_label(`Showing ${this.scope === "branch" ? "Changes" : "Uncommitted"}. Change what is compared`)
+          .role("button").accessibility_label(`Showing ${this.scope === "branch" ? "Changes" : this.scope === "turn" ? "This turn" : "Uncommitted"}. Change what is compared`)
           .hover((s) => s.bg(k.accent)).on_click((_e, cx) => { this.pick = !this.pick; cx.notify(); })
-          .child(this.scope === "branch" ? "Changes" : "Uncommitted")
+          .child(this.scope === "branch" ? "Changes" : this.scope === "turn" ? "This turn" : "Uncommitted")
           .child(icon(this.pick ? "chevron-up" : "chevron-down").size(12).flex_none().text_color(k.muted)))
+        .when(this.scope === "turn" && !!this.turn?.label, (el) => el.child(div().flex_none().max_w(160).truncate().text_size(12).text_color(k.muted).tooltip("What the agent changed while it answered this message").child(`“${this.turn.label}”`)))
         .when(this.scope === "branch" && !!this.base, (el) => el.child(div().flex_none().max_w(140).truncate().text_size(12).font_family(k.mono).text_color(k.muted).tooltip(`Compared with the merge base with ${this.base}`).child(this.base)))
         .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(k.muted)
           .child(files.length ? `${files.length} file${files.length === 1 ? "" : "s"} changed` : "No changes"))
@@ -267,14 +272,14 @@ export class DiffPanel {
         }, { size: "sm", tip: allShut ? "Expand all files" : "Collapse all files" }))
         .child(iconButton(k, "diff-refresh", "refresh-cw", (cx) => this.refresh(cx), { size: "sm", tip: this.loading ? "Refreshing…" : "Refresh" })))
       .when(this.pick, (el) => el.child(v_flex().mx(10).my(4).p(4).w(200).flex_none().rounded(8).border(1).border_color(k.border).bg(k.popover).shadow_lg()
-        .children([["branch", "Changes", "The branch against its base"], ["unstaged", "Uncommitted", "The working tree against HEAD"]].map(([id, label, about]) =>
+        .children([["branch", "Changes", "The branch against its base"], ["unstaged", "Uncommitted", "The working tree against HEAD"], ...(this.turn ? [["turn", "This turn", "What the agent changed in one turn of a chat"]] : [])].map(([id, label, about]) =>
           h_flex().id(`diff-scope-${id}`).h(28).px(8).gap(8).flex_none().items_center().rounded(6).text_size(13).cursor_pointer()
             .role("button").accessibility_label(`${label}: ${about}`).tooltip(about).hover((s) => s.bg(k.accent))
             .on_click((_e, cx) => this.setScope(cx, id))
             .child(div().flex_1().child(label))
             .when(this.scope === id, (e) => e.child(icon("check").size(14).flex_none().text_color(k.muted)))))))
       .when(this.error, (el) => el.child(div().px(12).py(4).text_size(11).text_color(k.destructiveText).child(this.error)))
-      .when(!files.length, (el) => el.child(v_flex().flex_1().items_center().justify_center().text_color(k.muted).child(this.scope === "branch" ? `Nothing changed against ${this.base ?? "the base"}.` : "The working tree matches HEAD.")))
+      .when(!files.length, (el) => el.child(v_flex().flex_1().items_center().justify_center().text_color(k.muted).child(this.scope === "branch" ? `Nothing changed against ${this.base ?? "the base"}.` : this.scope === "turn" ? "That turn changed no files." : "The working tree matches HEAD.")))
       .when(files.length > 0, (el) => el.child(v_flex().relative().flex_1().min_h(0)
         .child(list("ht3-diff-rows", rows.length, (i) => rows[i].id, (i) => {
           const r = rows[i];

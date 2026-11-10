@@ -7,6 +7,8 @@ import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { closeOverlay, exec, run, appHome, shared, setShared } from "herdr";
 import { MOD, tokens, icon, iconButton, shortPath } from "./look.js";
 import { forkChat } from "./agent-acp.js";
+import { revertTo } from "./checkpoint.js";
+import { button } from "./look.js";
 import { editorOn } from "./settings.js";
 import { SURFACES, send, placeOf, activeSpace, surfaceOff, surfacesHere } from "./side.js";
 
@@ -182,6 +184,46 @@ export class ThreadMenu {
       .when(!this.naming, (el) => el
         .child(row("thread-rename", "pen-line", "Rename thread", "r"))
         .child(row("thread-settle", "check", this.p.settled ? "Bring back" : "Settle", "s")));
+  }
+}
+
+// The question before a revert (chat/ChatOverlayHosts.tsx): props { chat, sha, cwd, on, label }.
+// Enter or the button reverts, Esc or Cancel closes; `ht3-panels.key:<enter|escape>` for scripts. The
+// outcome goes to shared("ht3-panels.reverted") for the chat to say.
+export class RevertMenu {
+  init(p, cx) {
+    this.overlay = p.overlay;
+    this.p = p;
+    this.busy = false;
+    this.focus = cx.focus_handle();
+    cx.timer.after(0, () => this.focus.focus());
+  }
+  close() {}
+  command(c, cx) {
+    if (c.startsWith("key:")) this.key(c.slice(4), cx);
+  }
+  key(key, cx) {
+    if (this.busy) return;
+    if (key === "escape") return closeOverlay(this.overlay);
+    if (key !== "enter") return;
+    this.busy = true;
+    cx.notify();
+    const p = this.p;
+    // The dialog stays until git is done: closing it would end the revert half way.
+    revertTo({ cwd: p.cwd, on: p.on ?? undefined }, p.chat ?? "chat", p.sha)
+      .then((r) => setShared(`${MOD}.reverted`, { chat: p.chat, at: Date.now(), label: p.label, ...r }))
+      .finally(() => closeOverlay(this.overlay));
+  }
+  render() {
+    const k = tokens();
+    return v_flex().id("ht3-revert").size_full().p(14).gap(8).bg(k.popover).text_color(k.foreground).text_size(13)
+      .track_focus(this.focus)
+      .on_key_down((e, cx) => this.key(e.key.toLowerCase(), cx))
+      .child(div().font_medium().text_size(14).child("Revert the files?"))
+      .child(div().flex_1().text_color(k.muted).line_height("18px").child(`Every file goes back to how it was before "${this.p.label}". What is there now is kept as a checkpoint. The agent's memory is not rewound.`))
+      .child(h_flex().gap(8).justify_end()
+        .child(button(k, "revert-no", "Cancel", (cx) => this.key("escape", cx), { variant: "outline" }))
+        .child(button(k, "revert-yes", this.busy ? "Reverting…" : "Revert", (cx) => this.key("enter", cx), { variant: "destructive" })));
   }
 }
 

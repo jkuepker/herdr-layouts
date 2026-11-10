@@ -39,6 +39,8 @@ export function modelsOf(id) {
 }
 export const editorOn = (id) => plain(prefs().editors)[id] !== false;
 export const sideStartsHidden = () => prefs().sidePanelHiddenInNewSpaces === true;
+// "checkpoints": false turns the per-turn snapshots (checkpoint.js) off.
+export const checkpointsOn = () => prefs().checkpoints !== false;
 
 // A chat's options with its model choices cut to the agent's list; the model in use always stays.
 export function limitModels(id, options) {

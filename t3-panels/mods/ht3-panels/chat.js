@@ -15,6 +15,8 @@ import { AcpSource, detect, argvOf, forkChat } from "./agent-acp.js";
 import { TermSource } from "./agent-term.js";
 import { Reporter } from "./report.js";
 import { fileIcon } from "./fileicons.js";
+import { snapshot, turnStat } from "./checkpoint.js";
+import { checkpointsOn } from "./settings.js";
 import { addNotice } from "./transcript.js";
 import { limitModels, rememberModels } from "./settings.js";
 import { agentOf } from "./agent-acp.js";
@@ -151,6 +153,16 @@ export class ChatPanel {
     }
     // The "Working for …" line counts seconds; nothing else here redraws on a timer.
     cx.timer.every(1000, (cx) => {
+      // A revert done from its dialog: say so in the chat.
+      const rv = shared(`${MOD}.reverted`);
+      if (rv && rv.chat === this.chatId && rv.at !== this.revertSeen) {
+        const first = this.revertSeen === undefined && Date.now() - rv.at > 5000;
+        this.revertSeen = rv.at;
+        if (!first && this.source.kind === "acp" && this.source.state) {
+          addNotice(this.source.state.transcript, rv.ok ? `Files are back as they were before "${rv.label}". What was there is kept as checkpoint ${String(rv.undo ?? "").slice(0, 8)}. The agent still remembers what it did.` : `Couldn't revert: ${rv.error}`, rv.ok ? "info" : "error");
+          this.source.changed?.(cx, true);
+        }
+      }
       // A name given elsewhere (the Inbox's thread menu) shows here and in the lists.
       if (this.named() !== (this.wasNamed ?? null)) { this.wasNamed = this.named(); this.report(); cx.notify(); }
       if (this.since != null || this.fitHint()) cx.notify();
@@ -437,6 +449,12 @@ export class ChatPanel {
     // menu-key:<up|down|enter|escape>.
     if (c.startsWith("type:")) { this.input.set_value(c.slice(5)); this.hasText = !!c.slice(5).trim(); this.typed(cx); }
     if (c === "send") this.send(cx);
+    // turn-diff:<last|item id> and revert:<last|item id>: "View diff" and "Revert" of a turn that changed files.
+    if (c.startsWith("turn-diff:") || c.startsWith("revert:")) {
+      const w = c.slice(c.indexOf(":") + 1);
+      const m = [...(this.view?.items ?? [])].reverse().find((x) => x.kind === "user" && x.cp?.after && x.cp.files > 0 && (w === "last" || String(x.id) === w));
+      if (m && c.startsWith("turn")) this.turnDiff(m); else if (m) this.askRevert({ x: 700, y: 400 }, m);
+    }
     // fork (the whole thread), fork:last (up to the last reply), fork:<item id> (up to that message).
     if (c === "fork" || c.startsWith("fork:")) { const w = c.slice(5); this.fork(cx, !w ? null : w === "last" ? [...(this.view?.items ?? [])].reverse().find((m) => m.kind === "agent")?.id : w); }
     if (c.startsWith("rename:")) this.rename(cx, c.slice(7));
@@ -456,6 +474,7 @@ export class ChatPanel {
     this.report();
     this.models();
     this.clock();
+    this.turnEnded(cx);
     const draw = (cx) => {
       cx.notify();
     };
@@ -487,20 +506,55 @@ export class ChatPanel {
     this.hasText = false;
     this.trig = null;
     this.follow = true;
-    if (files.length) {
-      // Reading the pictures takes a moment: the files leave the box now and the message follows.
-      this.sending = files;
-      this.attached = [];
-      cx.spawn(async (cx) => {
-        const more = await this.attachmentBlocks(v).catch(() => []);
-        this.sending = null;
-        this.source.send(cx, text, [...blocks, ...more], files.map((a) => ({ name: a.name, path: a.path, image: a.image, thumb: a.thumb })));
-        cx.notify();
-      });
-      return cx.notify();
-    }
-    this.source.send(cx, text, blocks);
+    const att = files.length ? files.map((a) => ({ name: a.name, path: a.path, image: a.image, thumb: a.thumb })) : null;
+    const where = this.source.kind === "acp" && checkpointsOn() && v.cwd ? { cwd: v.cwd, on: v.machine ?? undefined } : null;
+    if (!files.length && !where) { this.source.send(cx, text, blocks); return cx.notify(); }
+    // Reading the pictures and snapshotting the files take a moment: the box empties now and the message follows.
+    this.sending = files;
+    this.attached = [];
+    cx.spawn(async (cx) => {
+      const more = files.length ? await this.attachmentBlocks(v).catch(() => []) : [];
+      // The files as they are before this turn (checkpoint.js), for its diff and for "Revert".
+      const n = (this.source.state?.transcript?.nextId ?? Date.now());
+      const before = where ? await snapshot(where, this.chatId ?? "chat", `t${n}-before`) : null;
+      this.sending = null;
+      this.source.send(cx, text, [...blocks, ...more], att);
+      const mine = [...(this.source.state?.transcript?.items ?? [])].reverse().find((m) => m.kind === "user");
+      if (before && mine && !mine.cp) { mine.cp = { before, n }; this.cpOpen = { item: mine, where }; }
+      cx.notify();
+    });
     cx.notify();
+  }
+
+  // The turn is over: the files as they are now, and what the turn changed.
+  turnEnded(cx) {
+    const open = this.cpOpen;
+    if (!open || this.cpBusy || ["working", "blocked", "starting"].includes(this.source.word())) return;
+    this.cpOpen = null;
+    this.cpBusy = true;
+    cx.spawn(async (cx) => {
+      try {
+        const after = await snapshot(open.where, this.chatId ?? "chat", `t${open.item.cp.n}-after`);
+        if (after) Object.assign(open.item.cp, { after, ...(await turnStat(open.where, open.item.cp.before, after)), cwd: open.where.cwd, on: open.where.on ?? null });
+        this.source.changed?.(cx, true);
+      } finally { this.cpBusy = false; cx.notify(); }
+    });
+  }
+
+  // "View diff" on a turn's row: the Diff surface in the side panel, on that turn's two snapshots.
+  turnDiff(m) {
+    const cp = m?.cp;
+    if (!cp?.after) return;
+    setShared(`${MOD}.turn`, { at: Date.now(), from: cp.before, to: cp.after, root: cp.cwd, on: cp.on ?? null, label: String(m.text ?? "").trim().split("\n")[0].slice(0, 60) });
+    run(`${MOD}.add:diff`);
+  }
+
+  // "Revert" on a turn's row: asks first (menus.js RevertMenu), which puts the files back as they were before that message.
+  askRevert(at, m) {
+    const cp = m?.cp;
+    if (!cp?.before) return;
+    openOverlay({ mod: MOD, kind: "popup", at: { x: at.x, y: at.y }, width: 340, height: 172,
+      props: { menu: "revert", chat: this.chatId, sha: cp.before, cwd: cp.cwd, on: cp.on ?? null, item: m.id, label: String(m.text ?? "").trim().split("\n")[0].slice(0, 60) } });
   }
 
   // ---- drawing ----
@@ -622,7 +676,18 @@ export class ChatPanel {
     // text and per code block, each block under a header row that copies it, and every message
     // ends in a slim row that copies all of it (chat/MessageCopyButton.tsx).
     const out = [], lastItem = items[items.length - 1];
+    // A turn that changed files ends in a row that says so (its diff, and Revert).
+    let turn = null;
+    const closeTurn = () => {
+      if (turn?.cp?.after && turn.cp.files > 0) {
+        let at = out.length; // over the notes that came after the turn
+        while (at > 0 && out[at - 1].kind === "notice") at--;
+        out.splice(at, 0, { id: `${turn.id}:files`, kind: "files", of: turn });
+      }
+      turn = null;
+    };
     for (const m of said) {
+      if (m.kind === "user") { closeTurn(); turn = m; }
       if (m.kind === "agent") {
         segments(m.text || "(empty response)").forEach((g, i) => {
           if (g.code) out.push({ id: `${m.id}:h${i}`, kind: "codehead", lang: g.lang, text: g.text });
@@ -634,6 +699,7 @@ export class ChatPanel {
         if (!m.pending) out.push({ id: `${m.id}:cp`, kind: "copy", text: m.text, right: true });
       } else out.push(m);
     }
+    closeTurn();
     return out;
   }
 
@@ -769,6 +835,19 @@ export class ChatPanel {
         // ChatMarkdown's code header: Copy at the right (the block names its language itself).
         return lane(h_flex().mx(4).mt(4).h(28).pl(12).pr(6).items_center().justify_end().rounded_t(8).border(1).border_color(alpha(k.border, 0.6)).bg(alpha(k.muted, 0.08))
           .child(this.copyMark(k, m.id, "Copy")), 0);
+      case "files": {
+        // T3's changed-files card at the end of a turn: what the turn changed, its diff, and Revert.
+        const cp = m.of.cp;
+        return lane(h_flex().h(40).pl(12).pr(6).gap(8).items_center().rounded(12).border(1).border_color(alpha(k.border, 0.7)).bg(alpha(k.card, 0.6)).text_size(13)
+          .child(icon("file-diff").size(14).flex_none().text_color(k.muted))
+          .child(div().flex_none().child(`${cp.files} file${cp.files === 1 ? "" : "s"} changed`))
+          .child(h_flex().flex_1().gap(6).font_family(k.mono).text_size(11)
+            .child(div().text_color(k.successText).child(`+${cp.add}`)).child(div().text_color(k.destructiveText).child(`−${cp.del}`)))
+          .child(button(k, `turn-diff-${m.id}`, "View diff", () => this.turnDiff(m.of), { variant: "ghost" }))
+          .child(div().id(`turn-revert-${m.id}`).h(28).px(8).flex().items_center().rounded(6).text_size(13).text_color(k.muted).cursor_pointer().role("button")
+            .accessibility_label("Revert the files to before this message").tooltip("Put the files back as they were before this message")
+            .hover((s) => s.bg(k.accent).text_color(k.foreground)).on_mouse_down("left", (e) => this.askRevert(e.position, m.of)).child("Revert")), 12);
+      }
       case "copy":
         // chat/MessageCopyButton.tsx, under the message: its right edge for yours, its left for a reply.
         return lane(h_flex().w_full().px(m.right ? 0 : 2).when(!!m.right, (el) => el.justify_end()).child(this.copyMark(k, m.id)), 12);
