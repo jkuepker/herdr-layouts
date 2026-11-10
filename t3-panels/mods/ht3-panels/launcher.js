@@ -5,13 +5,38 @@
 
 import { div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { run, closeOverlay, focused, spaces, panes, home, pickFolder } from "herdr";
+import { exec, run, closeOverlay, focused, spaces, panes, home, pickFolder, appHome, shared, setShared, readTextFile } from "herdr";
+import { agentName } from "./report.js";
 import { MOD, tokens, alpha, icon, agentMark, button, iconButton, shortPath } from "./look.js";
 import { AGENTS, detect } from "./agent-acp.js";
 import { enabledAgents, agentOn, firstAgent } from "./settings.js";
 import { KINDS } from "./core/chat-reader.js";
 
 const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+
+const ago = (ms) => { const m = Math.max(0, Math.round((Date.now() - ms) / 60000)); return m < 1 ? "just now" : m < 60 ? `${m}m ago` : m < 1440 ? `${Math.round(m / 60)}h ago` : `${Math.round(m / 1440)}d ago`; };
+
+// The chats saved under data/ht3-panels/chats (each a state.json), newest first, at most 60:
+// { id, title, agent, argv, cwd, machine, at, text (what was said, to search) }. Chats that never got a message are left out.
+async function savedChats() {
+  const dir = `${appHome()}/data/${MOD}/chats`, named = shared(`${MOD}.named`) ?? {};
+  // (A mod's fs has no readdir or stat: the shell lists them.)
+  const r = await exec("/bin/sh", ["-c", "cd \"$1\" 2>/dev/null && stat -f '%m %N' */state.json 2>/dev/null", "sh", dir]).catch(() => null);
+  const stats = String(r?.stdout ?? "").split("\n").filter(Boolean).map((l) => ({ at: Number(l.slice(0, l.indexOf(" "))) * 1000, id: l.slice(l.indexOf(" ") + 1).split("/")[0] }))
+    .filter((x) => x.at && x.id).sort((a, b) => b.at - a.at).slice(0, 60);
+  const out = [];
+  for (const { id, at } of stats) {
+    try {
+      const s = JSON.parse(await readTextFile(`${dir}/${id}/state.json`));
+      const items = s.transcript?.items ?? [], first = items.find((m) => m.kind === "user")?.text?.trim().split("\n")[0];
+      if (!first || !Array.isArray(s.agentArgv)) continue;
+      out.push({ id, at, title: named[id] || (first.length > 80 ? first.slice(0, 80) + "…" : first), agent: agentName(s.agentArgv, s.agentInfo?.title ?? s.agentInfo?.name),
+        argv: s.agentArgv, cwd: s.cwd ?? null, machine: s.machine ?? null,
+        text: items.filter((m) => m.kind === "user" || m.kind === "agent").map((m) => m.text ?? "").join("\n").slice(0, 200000) });
+    } catch {}
+  }
+  return out;
+}
 
 export class Launcher {
   init(p, cx) {
@@ -28,6 +53,13 @@ export class Launcher {
     this.choice = (this.running.find((x) => x.focused) ?? this.running[0])?.id ?? null;
     this.custom = InputState.new({ placeholder: "or a command that speaks ACP, e.g. my-agent --acp" });
     this.custom.on("change", (_e, cx) => cx.notify());
+    // Earlier chats (T3's thread search and its archived threads): the chats saved on this computer,
+    // newest first, with a field that looks through their names and what was said in them.
+    this.recent = null;
+    this.armed = null; // the chat whose bin was pressed once
+    this.query = InputState.new({ placeholder: "Search chats" });
+    this.query.on("change", (_e, cx) => cx.notify());
+    cx.spawn(async (cx) => { this.recent = await savedChats().catch(() => []); cx.notify(); });
     cx.spawn(async (cx) => {
       const d = await detect(this.machine);
       this.found = d.found;
@@ -39,7 +71,49 @@ export class Launcher {
   }
 
   close() {}
-  command() {}
+  // For scripts: recent:<text> (types into Search chats), reopen:<n> and forget:<n> (the nth row shown, from 0; forget twice deletes).
+  command(c, cx) {
+    if (c.startsWith("recent:")) this.query.set_value(c.slice(7));
+    if (c.startsWith("reopen:")) this.reopen(this.shown()[Number(c.slice(7))]);
+    if (c.startsWith("forget:")) this.forget(cx, this.shown()[Number(c.slice(7))]);
+    cx.notify();
+  }
+
+  // The saved chats that match the search, each with the line that matched when it isn't its name.
+  shown() {
+    const q = this.query.value().trim().toLowerCase(), open = shared(`${MOD}.places`) ?? {};
+    const out = [];
+    for (const c of this.recent ?? []) {
+      const at = q ? c.text.toLowerCase().indexOf(q) : -1;
+      if (q && !c.title.toLowerCase().includes(q) && at < 0) continue;
+      const from = Math.max(0, at - 30);
+      out.push({ ...c, open: open[c.id] ?? null, match: at >= 0 && !c.title.toLowerCase().includes(q) ? (from ? "…" : "") + c.text.slice(from, at + q.length + 50).replace(/\s+/g, " ") : null });
+    }
+    return out.slice(0, 30);
+  }
+
+  // A chat still open is shown; a closed one opens as a tab again, on its agent and folder, with what was said.
+  reopen(c) {
+    if (!c) return;
+    if (c.open) run("pane.focus", { pane: c.open.pane });
+    else {
+      const space = focused()?.space;
+      run("tab.new", { mod: MOD, ...(space ? { space } : {}), name: c.agent, props: { panel: "chat", chat: c.id, agent: c.argv, cwd: c.cwd, machine: c.machine } });
+    }
+    closeOverlay(this.overlay);
+  }
+
+  // The bin: once to ask, again to delete the chat's folder for good. Not a chat that is open.
+  forget(cx, c) {
+    if (!c || c.open) return;
+    if (this.armed !== c.id) { this.armed = c.id; return cx.notify(); }
+    this.armed = null;
+    this.recent = this.recent.filter((x) => x.id !== c.id);
+    const named = { ...(shared(`${MOD}.named`) ?? {}) };
+    if (named[c.id]) { delete named[c.id]; setShared(`${MOD}.named`, named); }
+    if (/^[\w-]+$/.test(c.id)) exec("rm", ["-rf", `${appHome()}/data/${MOD}/chats/${c.id}`]).catch(() => {});
+    cx.notify();
+  }
 
   open() {
     // A chat is a tab of its own, the whole work area, not a split beside the terminal.
@@ -102,7 +176,23 @@ export class Launcher {
           const path = this.found[a.argv[0]];
           return row(a.id, "bot", a.name, path ? a.argv.join(" ") : `not installed${a.hint ? ` · ${a.hint}` : ""}`, { enabled: !!path, agent: a });
         })))
-        .child(div().mx(10).mt(8).h(30).px(11).rounded(8).border(1).border_color(k.input).text_size(14).child(Input.new(this.custom))))
+        .child(div().mx(10).mt(8).h(30).px(11).rounded(8).border(1).border_color(k.input).text_size(14).child(Input.new(this.custom)))
+        .when((this.recent?.length ?? 0) > 0, (el) => {
+          const rows = this.shown();
+          return el.child(label("Earlier chats"))
+            .child(h_flex().mx(10).mb(4).h(30).px(8).gap(6).items_center().rounded(8).border(1).border_color(k.input).text_size(14)
+              .child(icon("search").size(14).flex_none().text_color(k.muted)).child(div().flex_1().child(Input.new(this.query))))
+            .when(!rows.length, (e) => e.child(div().px(10).py(6).text_size(12).text_color(k.muted).child("No chats match.")))
+            .children(rows.map((c) => h_flex().id(`chat-${c.id}`).min_h(40).px(10).py(4).gap(10).flex_none().items_center().rounded(8).cursor_pointer().role("button").accessibility_label(c.title)
+              .hover((s) => s.bg(alpha(k.accent, 0.6))).on_click(() => this.reopen(c))
+              .child(icon(c.open ? "message-square" : "clock").size(16).flex_none().text_color(k.muted))
+              .child(v_flex().flex_1().min_w(0)
+                .child(div().truncate().text_size(14).child(c.title))
+                .child(div().truncate().text_size(12).text_color(k.muted).child(c.match ?? `${c.agent} · ${shortPath(c.cwd) ?? ""} · ${ago(c.at)}${c.open ? " · open" : ""}`)))
+              .when(!c.open, (e) => e.child(this.armed === c.id
+                ? button(k, `forget-${c.id}`, "Delete?", (cx) => this.forget(cx, c), { variant: "outline" })
+                : iconButton(k, `forget-${c.id}`, "trash-2", (cx) => this.forget(cx, c), { tip: "Delete this chat" })))));
+        }))
       .child(h_flex().px(24).py(16).gap(8).flex_none().justify_end().border_t(1).border_color(k.border)
         .child(button(k, "cancel", "Cancel", () => closeOverlay(this.overlay), { variant: "outline", size: "default" }))
         .child(button(k, "open", "Open chat", () => this.open(), { variant: "default", size: "default", disabled: !ready })));

@@ -9,7 +9,7 @@
 
 import { div, list, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, TextView, Scrollbar, VirtualListScrollHandle } from "gpui-base";
-import { run, openOverlay, appHome, home, exec, layout, settings } from "herdr";
+import { run, openOverlay, appHome, home, exec, layout, settings, shared, setShared } from "herdr";
 import { MOD, tokens, alpha, icon, agentMark, button, iconButton, control, badge, workLine, divider, shortPath } from "./look.js";
 import { AcpSource, detect, argvOf } from "./agent-acp.js";
 import { TermSource } from "./agent-term.js";
@@ -78,6 +78,7 @@ const LOCAL_COMMANDS = [
   { name: "model", description: "Switch the model for this chat", local: true },
   { name: "side", description: "Ask a side question in the right panel", local: true },
   { name: "new", description: "Start a new chat", local: true },
+  { name: "rename", description: "Rename this thread", local: true, args: true },
 ];
 
 export function openLauncher() {
@@ -149,6 +150,8 @@ export class ChatPanel {
     }
     // The "Working for …" line counts seconds; nothing else here redraws on a timer.
     cx.timer.every(1000, (cx) => {
+      // A name given elsewhere (the Inbox's thread menu) shows here and in the lists.
+      if (this.named() !== (this.wasNamed ?? null)) { this.wasNamed = this.named(); this.report(); cx.notify(); }
       if (this.since != null || this.fitHint()) cx.notify();
       // A finished turn nobody saw is "done" until its tab is looked at.
       if (this.reporter?.tab) this.reporter.seen();
@@ -351,7 +354,7 @@ export class ChatPanel {
       this.input.focus();
       return cx.notify();
     }
-    if (item.local) {
+    if (item.local && !item.args) {
       this.input.set_value(before);
       this.hasText = !!before.trim();
       if (item.name === "model") { const o = this.view?.options.find((x) => (x.category ?? x.id) === "model"); if (o) { this.picker = o.id; this.filter.set_value(""); if (o.choices.length > 8) this.filter.focus(); } }
@@ -374,6 +377,21 @@ export class ChatPanel {
     return true;
   }
 
+  // The thread's own name (threadActionMenu "Rename thread"), kept by chat in shared("ht3-panels.named");
+  // without one a chat goes by its first message.
+  named() {
+    return (this.chatId && shared(`${MOD}.named`)?.[this.chatId]) || null;
+  }
+
+  rename(cx, name) {
+    if (!this.chatId) return;
+    const all = { ...(shared(`${MOD}.named`) ?? {}) }, to = String(name ?? "").trim().slice(0, 120);
+    if (to) all[this.chatId] = to; else delete all[this.chatId];
+    setShared(`${MOD}.named`, all);
+    this.report();
+    cx.notify();
+  }
+
   // What the agent offers as models, for Settings to list: remembered when it changes.
   models() {
     const s = this.source?.kind === "acp" ? this.source.state : null, o = s?.configOptions?.find((x) => x.type === "select" && (x.category ?? x.id) === "model");
@@ -386,7 +404,7 @@ export class ChatPanel {
   report() {
     const s = this.source?.state;
     if (this.reporter && s) this.reporter.update(s.permission && this.source.alive ? "blocked" : this.source.word(), s.agentArgv, s.agentInfo?.title ?? s.agentInfo?.name,
-      s.transcript.items.find((m) => m.kind === "user")?.text,
+      this.named() ?? s.transcript.items.find((m) => m.kind === "user")?.text,
       { cwd: s.cwd, machine: s.machine ?? null, crumb: this.crumb({ cwd: s.cwd, machine: s.machine, items: s.transcript.items, status: this.source.word(), permission: s.permission, usage: s.transcript.usage, name: "Agent" }) });
   }
 
@@ -417,6 +435,7 @@ export class ChatPanel {
     // menu-key:<up|down|enter|escape>.
     if (c.startsWith("type:")) { this.input.set_value(c.slice(5)); this.hasText = !!c.slice(5).trim(); this.typed(cx); }
     if (c === "send") this.send(cx);
+    if (c.startsWith("rename:")) this.rename(cx, c.slice(7));
     // attach:<path> (as a dropped file), detach:<n>, paste-image (as Cmd+V with a picture on the clipboard).
     if (c.startsWith("attach:")) this.addFiles(cx, [c.slice(7)]);
     if (c.startsWith("detach:")) this.attached?.splice(Number(c.slice(7)), 1);
@@ -445,6 +464,9 @@ export class ChatPanel {
   send(cx) {
     const v = this.view;
     const text = this.input.value().trim(), files = this.source.kind === "acp" ? this.attached ?? [] : [];
+    // "/rename New name" is T3's own: it names the thread, nothing is sent ("/rename" alone: its first message again).
+    const naming = /^\/rename(?:\s+([\s\S]*))?$/.exec(text);
+    if (naming) { this.input.set_value(""); this.hasText = false; this.trig = null; return this.rename(cx, naming[1] ?? ""); }
     if ((!text && !files.length) || !v?.alive || this.sending) return;
     // An ACP agent takes one message per turn; a terminal agent takes one mid-turn too.
     if (this.source.kind === "acp" && v.status !== "ready") return;
@@ -529,7 +551,7 @@ export class ChatPanel {
     const folder = v.cwd ? shortPath(v.cwd).split("/").filter(Boolean).pop() ?? "~" : null;
     // T3's header: the project's badge and name, then the thread's title, its first message.
     const said = v.items.find((m) => m.kind === "user")?.text?.trim().split("\n")[0] ?? "";
-    const title = said ? (said.length > 80 ? said.slice(0, 80) + "…" : said) : (this.source.kind === "acp" && agentOf(this.source.state?.agentArgv)?.name) || v.name;
+    const title = this.named() ? this.named() : said ? (said.length > 80 ? said.slice(0, 80) + "…" : said) : (this.source.kind === "acp" && agentOf(this.source.state?.agentArgv)?.name) || v.name;
     const where = v.cwd ? (v.machine ? `${v.machine}:${v.cwd}` : shortPath(v.cwd)) : "";
     // An ACP agent waiting for an approval still says working; the badge says what it waits for.
     const state = v.permission && v.status === "working" ? "blocked" : v.status;

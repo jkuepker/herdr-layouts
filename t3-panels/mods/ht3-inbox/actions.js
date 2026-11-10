@@ -110,6 +110,14 @@ export function inboxActions(view, model) {
     else if (!busy(a)) settle([a], cx);
   };
 
+  // `ht3-inbox.settle-card:<address>`, the thread menu's Settle: that card, or back if it is settled.
+  view.settleCard = (address, cx) => {
+    const a = every.find((x) => x.address === address);
+    if (!a) return;
+    if (settledAt(a)) unsettle(a, cx);
+    else if (!busy(a)) settle([a], cx);
+  };
+
   // Clear closes settled agents' panes; Herdr then closes emptied tabs. The one in view stays.
   const spaceNow = sp.find((s) => s.active), tabNow = spaceNow?.tabs.find((c) => c.active)?.id;
   const doomed = put.filter((a) => a.pane && !keeps(a) && !viewing(a) && a.tab !== tabNow);

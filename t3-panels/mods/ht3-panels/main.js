@@ -19,7 +19,7 @@ import { ChatPanel, openLauncher } from "./chat.js";
 import { FilePanel } from "./editor.js";
 import { Launcher } from "./launcher.js";
 import { Strip, ADD_MENU } from "./strip.js";
-import { AddMenu, ProjectMenu, CopyMenu } from "./menus.js";
+import { AddMenu, ProjectMenu, CopyMenu, ThreadMenu } from "./menus.js";
 import { DiffPanel } from "./diff.js";
 import { PrPanel } from "./pr.js";
 import { BrowserPanel } from "./browser.js";
@@ -112,7 +112,7 @@ export default class T3Panels extends View {
   init(_props, cx) {
     const p = props() ?? {};
     this.face = p.overlay
-      ? p.menu === "add" ? new AddMenu() : p.menu === "project" ? new ProjectMenu() : p.menu === "settings" ? new Settings() : p.menu === "copy" ? new CopyMenu() : new Launcher()
+      ? p.menu === "add" ? new AddMenu() : p.menu === "project" ? new ProjectMenu() : p.menu === "settings" ? new Settings() : p.menu === "copy" ? new CopyMenu() : p.menu === "thread" ? new ThreadMenu() : new Launcher()
       : (FACES[p.panel] ?? (() => new ChatPanel()))();
     this.face.init(p, cx);
     // Key commands from keys.json's "mod:ht3-panels" section (save), and "focus" from pane.go.

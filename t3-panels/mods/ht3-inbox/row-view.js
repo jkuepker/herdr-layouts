@@ -1,6 +1,6 @@
 import { div, svg } from "gpui-kit";
 import { v_flex, h_flex, Popup } from "gpui-base";
-import { settings } from "herdr";
+import { settings, openOverlay, shared } from "herdr";
 import { namer } from "./name.js";
 import { projectMark } from "./project.js";
 import { glow, tip, tipMark, keyOf } from "./tip.js";
@@ -10,6 +10,15 @@ import { programIcon } from "./program.js";
 import { stop, within } from "./focus.js";
 import { snoozeButton } from "./snooze.js";
 import { SLIM } from "./list-view.js";
+
+// A card's right-click menu, when the T3 panels mod is there to draw it. A chat is known by its id
+// (shared("ht3-panels.places"): chat -> its pane), a terminal agent by its tab.
+function threadMenu(a, title, at, settled) {
+  const places = shared("ht3-panels.places");
+  if (!places) return;
+  const chat = a.mod === "ht3-panels" ? Object.entries(places).find(([, x]) => x.pane === a.pane)?.[0] ?? null : null;
+  openOverlay({ mod: "ht3-panels", kind: "popup", at: { x: at.x, y: at.y }, width: 200, height: 64, props: { menu: "thread", address: a.address, tab: a.tab, title, chat, settled } });
+}
 
 // The settle key: the layout's tab bar holds it; a standalone Inbox, its own command.
 const settleKey = () => keyOf("ht3-tabs.settle") ? "ht3-tabs.settle" : "ht3-inbox.settle";
@@ -41,6 +50,7 @@ export function inboxRowView(view, t, model, actions, drag) {
   const { dragging, plan, verb, badge, swept, row, open, sweepFrom, justDropped } = drag;
   const zoom = Number(settings()?.zoom) || 1;
   const title = namer();
+  view.threadMenu = (address) => { const a = model.every?.find((x) => x.address === address); if (a) threadMenu(a, title(a), { x: 120, y: 160 }, !!settledAt(a)); };
   const hover = (a) => (on, cx) => {
     if (on) { view.hovered = a.address; detailsFor(view, a.address, cx); }
     else if (view.hovered === a.address) { view.hovered = null; detailsFor(view, null, cx); }
@@ -158,7 +168,9 @@ export function inboxRowView(view, t, model, actions, drag) {
       // A working row recedes until it's hovered or in view, as T3's.
       .when(!ghost, (el) => el.opacity(running(a) && !woke(a) && !on && !over ? 0.7 : 1).transition("opacity", MOTION));
     return (ghost ? base : row(base, a, details).role("button").accessibility_label(title(a)).on_hover(hover(a))
-      .on_click(open(a)).on_size_change((size) => { view.cardH = size.height / zoom; }))
+      .on_click(open(a)).on_size_change((size) => { view.cardH = size.height / zoom; })
+      // T3's thread menu, drawn by the panels mod: Rename thread, Settle.
+      .on_mouse_down("right", (e) => threadMenu(a, title(a), e.position, !!settledAt(a))))
       .when(on, (el) => el.bg(t.selected))
       .when(!on && !ghost && !dragging && !view.sweep?.moved, (el) => el.when(menu, (m) => m.bg(t.hover)).hover((s) => s.bg(t.hover)).active((s) => s.bg(t.selected)))
       .child(h_flex().h(20).gap(6).items_center().text_size(12).text_color(t.dim)
@@ -204,7 +216,7 @@ export function inboxRowView(view, t, model, actions, drag) {
       ? h_flex().gap(4).items_center().text_color(t.accent).child(svg("mods/ht3-inbox/icons/alarm-clock.svg").size(12).flex_none().text_color(t.accent)).child(left(napUntil(a), now))
       : !ghost && ago(settledAt(a)[0], now);
     const base = h_flex().id(`${ghost ? "ghost-" : ""}slim-${a.address}`).h(SLIM).px(10).gap(10).flex_none().items_center().rounded(6);
-    return (ghost ? base : row(base, a, details).role("button").accessibility_label(title(a)).on_hover(hover(a)).on_click(open(a)))
+    return (ghost ? base : row(base, a, details).role("button").accessibility_label(title(a)).on_hover(hover(a)).on_click(open(a)).on_mouse_down("right", (e) => threadMenu(a, title(a), e.position, !!settledAt(a))))
       .when(on, (el) => el.bg(t.selected))
       .when(!on && !ghost && !dragging && !view.sweep?.moved, (el) => el.hover((s) => s.bg(t.hover)).active((s) => s.bg(t.selected)))
       .child(h_flex().id(`slim-mark-${a.address}`).size(16).flex_none().items_center().justify_center().opacity(bright ? 1 : 0.4).transition("opacity", MOTION).child(ghost ? mark : tipMark(view, t, `slim-space-${a.address}`, a.space_name, mark, { delay })))

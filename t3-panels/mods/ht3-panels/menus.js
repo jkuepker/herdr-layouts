@@ -3,8 +3,8 @@
 // the menu is open) and the project popover (the machine, its folder, the editor, the branch).
 
 import { div, image } from "gpui-kit";
-import { v_flex, h_flex } from "gpui-base";
-import { closeOverlay, exec, run, appHome } from "herdr";
+import { v_flex, h_flex, InputState, Input } from "gpui-base";
+import { closeOverlay, exec, run, appHome, shared, setShared } from "herdr";
 import { MOD, tokens, icon, iconButton, shortPath } from "./look.js";
 import { editorOn } from "./settings.js";
 import { SURFACES, send, placeOf, activeSpace, surfaceOff, surfacesHere } from "./side.js";
@@ -126,6 +126,55 @@ export class CopyMenu {
       .child(h_flex().id("copy-row").h(28).px(8).gap(8).items_center().rounded(4).cursor_pointer().role("button").accessibility_label("Copy")
         .hover((s) => s.bg(k.accent)).on_click((_e, cx) => this.key("enter", cx))
         .child(icon("copy").size(16).flex_none().text_color(k.muted)).child(div().flex_1().child("Copy")));
+  }
+}
+
+// The right-click menu of an Inbox card (threadActionMenu.logic.ts): Rename thread, and Settle (T3's
+// Archive). props: { address, tab, title, chat (a chat's id, else null), settled }. A chat's name is kept
+// in shared("ht3-panels.named"); a terminal agent's is its tab's. Keys: R, S, Esc; in the field Enter.
+// `ht3-panels.key:<r|s|escape>` and `ht3-panels.name:<text>` (types and takes it) for scripts.
+export class ThreadMenu {
+  init(p, cx) {
+    this.overlay = p.overlay;
+    this.p = p;
+    this.field = InputState.new({ placeholder: "Thread name", value: String(p.title ?? "") });
+    this.field.on("submit", () => this.apply(this.field.value()));
+    this.naming = false;
+    this.focus = cx.focus_handle();
+    cx.timer.after(0, () => this.focus.focus());
+  }
+  close() {}
+  command(c, cx) {
+    if (c.startsWith("key:")) this.key(c.slice(4), cx);
+    if (c.startsWith("name:")) this.apply(c.slice(5));
+  }
+  apply(name) {
+    const to = String(name ?? "").trim().slice(0, 120), p = this.p;
+    if (p.chat) {
+      const all = { ...(shared(`${MOD}.named`) ?? {}) };
+      if (to) all[p.chat] = to; else delete all[p.chat];
+      setShared(`${MOD}.named`, all);
+    } else if (p.tab) run("tab.rename", { id: p.tab, name: to });
+    closeOverlay(this.overlay);
+  }
+  key(key, cx) {
+    if (key === "escape") return closeOverlay(this.overlay);
+    if (this.naming) return;
+    if (key === "r") { this.naming = true; this.field.focus(); cx.notify(); }
+    if (key === "s") { run(`ht3-inbox.settle-card:${this.p.address}`); closeOverlay(this.overlay); }
+  }
+  render() {
+    const k = tokens();
+    const row = (id, glyph, label, key) => h_flex().id(id).h(28).px(8).gap(8).items_center().rounded(4).cursor_pointer().role("button").accessibility_label(label)
+      .hover((s) => s.bg(k.accent)).on_click((_e, cx) => this.key(key, cx))
+      .child(icon(glyph).size(16).flex_none().text_color(k.muted)).child(div().flex_1().child(label));
+    return v_flex().id("ht3-thread-menu").size_full().p(4).bg(k.popover).text_color(k.foreground).text_size(14)
+      .track_focus(this.focus)
+      .on_key_down((e, cx) => this.key(e.key.toLowerCase(), cx))
+      .when(this.naming, (el) => el.child(div().h(28).mt(14).mx(4).px(8).rounded(6).border(1).border_color(k.input).child(Input.new(this.field))))
+      .when(!this.naming, (el) => el
+        .child(row("thread-rename", "pen-line", "Rename thread", "r"))
+        .child(row("thread-settle", "check", this.p.settled ? "Bring back" : "Settle", "s")));
   }
 }
 
