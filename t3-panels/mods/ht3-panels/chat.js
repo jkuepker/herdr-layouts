@@ -19,7 +19,7 @@ import { snapshot, turnStat } from "./checkpoint.js";
 import { checkpointsOn, followUp } from "./settings.js";
 import { addNotice, toMarkdown } from "./transcript.js";
 import { limitModels, rememberModels } from "./settings.js";
-import { agentOf, chatLike } from "./agent-acp.js";
+import { agentOf, chatLike, askOnce } from "./agent-acp.js";
 import { repoOf } from "./launcher.js";
 
 const LANE = 736; // --chat-content-max-width: 46rem
@@ -82,6 +82,7 @@ const LOCAL_COMMANDS = [
   { name: "side", description: "Ask a side question in the right panel", local: true },
   { name: "new", description: "Start a new chat", local: true },
   { name: "rename", description: "Rename this thread", local: true, args: true },
+  { name: "title", description: "Have the agent give this thread a short title", local: true },
   { name: "fork", description: "Continue this thread in a new chat", local: true },
   { name: "stash", description: "Park this draft, or bring one back", local: true },
   { name: "find", description: "Find in this thread", local: true },
@@ -212,6 +213,13 @@ export class ChatPanel {
           this.input.focus();
           cx.notify();
         }
+      }
+      // "Regenerate title" in the card's menu (menus.js) asks this chat to name itself.
+      const rt = shared(`${MOD}.retitle`);
+      if (rt && rt.at !== this.retitleSeen) {
+        const stale = this.retitleSeen === undefined && Date.now() - rt.at > 5000;
+        this.retitleSeen = rt.at;
+        if (!stale && rt.chat === this.chatId) this.retitle(cx);
       }
       // A name given elsewhere (the Inbox's thread menu) shows here and in the lists.
       if (this.named() !== (this.wasNamed ?? null)) { this.wasNamed = this.named(); this.report(); cx.notify(); }
@@ -429,6 +437,7 @@ export class ChatPanel {
       if (item.name === "copy") this.copyThread(cx);
       if (item.name === "branch" && this.source.kind === "acp") chatLike(this.source.state);
       if (item.name === "terminal") this.toggleTerminal(cx);
+      if (item.name === "title") this.retitle(cx);
       if (item.name === "send-new" || item.name === "send-background") return this.sendNew(cx, item.name === "send-background", before);
       // With a draft before "/stash" it is parked; alone, the parked drafts open.
       if (item.name === "stash") { if (before.trim()) this.stash(cx); else this.picker = "__stash"; }
@@ -538,6 +547,8 @@ export class ChatPanel {
     if (c === "stash:menu") this.picker = this.picker === "__stash" ? null : "__stash";
     if (c.startsWith("unstash:")) this.unstash(cx, Number(c.slice(8)));
     if (c.startsWith("stash:drop:")) this.dropStash(cx, Number(c.slice(11)));
+    // title is "/title": the agent names the thread (retitle).
+    if (c === "title") this.retitle(cx);
     // term: the chat's own terminal under it (toggleTerminal); the layout's key.
     if (c === "term") this.toggleTerminal(cx);
     // send:new and send:background: the draft becomes the first message of a new chat (sendNew); the layout's keys.
@@ -804,6 +815,37 @@ export class ChatPanel {
         .child(`${Math.round((100 * v.usage.used) / v.usage.size)}% context`)))
       .when(!!v.terminal, (el) => el.child(iconButton(k, "to-term", "square-terminal", () => run("pane.focus", { terminal: v.terminal }), { tip: `Go to its terminal (${v.terminal})` })))
       .child(iconButton(k, "new-chat", "square-pen", () => openLauncher(), { tip: "New chat" }));
+  }
+
+  // T3's "Regenerate title": a short title for the thread from its first messages, asked of the chat's own agent in
+  // a session of its own that is thrown away (agent-acp.js askOnce), on the chat's model. The chat's session and
+  // transcript are not touched; the title is kept as a rename is (shared "ht3-panels.named"). This computer only.
+  retitle(cx) {
+    const s = this.source.kind === "acp" ? this.source.state : null;
+    if (!s || this.titling) return;
+    const said = s.transcript.items.filter((m) => (m.kind === "user" || m.kind === "agent") && String(m.text ?? "").trim()).slice(0, 6);
+    if (!said.length) return;
+    if (s.machine) return notify({ title: "No title", body: "A chat on another machine can't be titled yet.", level: "warning" });
+    this.titling = true;
+    const model = s.configOptions?.find((o) => (o.category ?? o.id) === "model" && !o.legacyMode);
+    const text = `Reply with only a short title for the conversation below: 3 to 6 words, plain text, no quotes, no period, no explanation. Do not use any tools.\n\n<conversation>\n${
+      said.map((m) => `${m.kind === "user" ? "User" : "Assistant"}: ${String(m.text).trim().slice(0, 600)}`).join("\n\n")}\n</conversation>`;
+    notify({ title: "Asking for a title…", body: this.named() ?? said[0].text.trim().split("\n")[0].slice(0, 80), level: "info", timeout: 2500 });
+    cx.spawn(async (cx) => {
+      try {
+        const answer = await askOnce(s.agentArgv, s.cwd ?? home(), text, { set: model?.currentValue != null ? { [model.id]: model.currentValue } : null,
+          timer: new Promise((ok) => cx.timer.after(90000, () => ok())) });
+        const title = answer.split("\n").map((l) => l.trim()).filter(Boolean).pop().replace(/^(title:\s*)/i, "").replace(/^["'“‘*_#\s]+|["'”’*_.\s]+$/g, "").slice(0, 80);
+        if (!title) throw new Error("The agent gave no title.");
+        setShared(`${MOD}.named`, { ...(shared(`${MOD}.named`) ?? {}), [this.chatId]: title });
+        notify({ title: "Thread titled", body: title, level: "success", timeout: 3000 });
+      } catch (e) {
+        notify({ title: "No title", body: String(e?.message ?? e).slice(0, 160), level: "error" });
+      }
+      this.titling = false;
+      this.report();
+      cx.notify();
+    });
   }
 
   // A terminal of the chat's own (T3's ThreadTerminalDrawer), with nothing added to the layout: the chat's tab is split

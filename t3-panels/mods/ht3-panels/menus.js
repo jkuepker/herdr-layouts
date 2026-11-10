@@ -175,6 +175,8 @@ export class ThreadMenu {
     if (this.naming) return;
     if (key === "r") { this.naming = true; this.field.focus(); cx.notify(); }
     if (key === "s") { run(`ht3-inbox.settle-card:${this.p.address}`); closeOverlay(this.overlay); }
+    // Regenerate title: the chat itself asks its agent (chat.js retitle), so the menu only leaves the request.
+    if (key === "g" && this.p.chat) { setShared(`${MOD}.retitle`, { chat: this.p.chat, at: Date.now() }); closeOverlay(this.overlay); }
     // New chat on this branch: the same agent, in this chat's folder, as a tab beside it.
     if (key === "n" && this.p.chat && /^[\w-]+$/.test(this.p.chat)) cx.spawn(async () => {
       try {
@@ -217,6 +219,7 @@ export class ThreadMenu {
       .when(this.naming, (el) => el.child(div().h(28).mt(14).mx(4).px(8).rounded(6).border(1).border_color(k.input).child(Input.new(this.field))))
       .when(!this.naming, (el) => el
         .child(row("thread-rename", "pen-line", "Rename thread", "r"))
+        .when(!!this.p.chat, (e) => e.child(row("thread-title", "sparkles", "Regenerate title", "g")))
         .child(row("thread-settle", "check", this.p.settled ? "Bring back" : "Settle", "s"))
         .when(!!this.p.address, (e) => e.child(row("thread-pin", (shared("agents.pins") ?? []).includes(this.p.address) ? "pin-off" : "pin", (shared("agents.pins") ?? []).includes(this.p.address) ? "Unpin" : "Pin", "i")))
         .when(!!this.p.chat, (e) => e.child(row("thread-unread", "circle-dot", "Mark unread", "u"))

@@ -102,6 +102,39 @@ export function argvOf(agent, found) {
 // starts with this chat's messages, all of them or those up to and with item `upto`. ACP has no
 // fork, so the new chat is a new session, told what was said with its first message (session.js
 // `handoff`). Reads the chat as it was last saved (at most a second old). -> the new chat's id, or null.
+// One question to an agent in a session of its own that is thrown away after: the agent is started as a chat's is
+// (login shell, the chat's folder), asked once, and ended. Nothing is saved, and the chat's own session never sees it.
+// `set`: options to set first, e.g. the chat's model, so the question goes where the chat's messages go.
+// An approval the agent asks for is refused. -> the agent's answer as text; rejects when it gives none in time.
+// This computer only.
+// `timer`: a promise that settles when the wait is over (mods have no setTimeout; the caller makes it with cx.timer).
+export async function askOnce(argv, cwd, text, { set = null, timer = new Promise(() => {}) } = {}) {
+  const line = `exec ${argv.map(shq).join(" ")}`;
+  const proc = spawn("/bin/sh", ["-c", `exec "\${SHELL:-/bin/sh}" -lic ${shq(line)}`], { cwd });
+  let done = null;
+  const finished = new Promise((ok) => { done = ok; });
+  const session = new ChatSession({ argv, cwd, machine: null, old: null,
+    write: (l) => processWrite(proc, l).catch(() => {}), kill: () => processKill(proc),
+    changed: () => {
+      if (session.state.permission) session.handle({ type: "cancel" });
+      if (asked && session.state.status !== "working") done();
+    } });
+  let asked = false;
+  (async () => { for (let l; (l = await processNextLine(proc)) != null;) session.feed(l); done(); })();
+  try {
+    if (!(await Promise.race([session.start(), timer.then(() => false)]))) throw new Error(session.state.error ?? "The agent didn't start in time.");
+    for (const [id, value] of Object.entries(set ?? {})) await session.setConfig(id, value);
+    asked = true;
+    session.handle({ type: "prompt", text });
+    await Promise.race([finished, timer]);
+    const said = session.state.transcript.items.filter((m) => m.kind === "agent").map((m) => m.text).join("\n").trim();
+    if (!said) throw new Error(session.state.error ?? "The agent gave no answer.");
+    return said;
+  } finally {
+    processKill(proc);
+  }
+}
+
 // "New chat on this branch" (T3's thread menu): a fresh chat with the same agent in the same folder, which is that
 // branch's checkout (a worktree chat's own folder), as a tab of `space` (default: the shown one). `from`: a chat's state.
 // `prompt`: its first message, sent as soon as the agent is up.
