@@ -60,6 +60,8 @@ async function savedChats() {
 export class Launcher {
   init(p, cx) {
     this.overlay = p.overlay;
+    // Opened to find an earlier chat (`ht3-panels.earlier`): that list alone.
+    this.find = p.find === true;
     const f = focused();
     this.pane = f?.pane ?? null;
     this.machine = (f && spaces().find((s) => s.id === f.space)?.machine) ?? null;
@@ -84,6 +86,7 @@ export class Launcher {
     this.armed = null; // the chat whose bin was pressed once
     this.query = InputState.new({ placeholder: "Search chats" });
     this.query.on("change", (_e, cx) => cx.notify());
+    if (this.find) { this.query.focus(); cx.timer.after(300, () => this.query.focus()); }
     cx.spawn(async (cx) => { this.recent = await savedChats().catch(() => []); cx.notify(); });
     cx.spawn(async (cx) => {
       const d = await detect(this.machine);
@@ -197,6 +200,30 @@ export class Launcher {
     };
     const ready = !!this.custom.value().trim() || this.running.some((x) => x.id === this.choice)
       || !!(enabledAgents().find((a) => a.id === this.choice) && this.found?.[AGENTS.find((a) => a.id === this.choice).argv[0]]);
+    const earlier = (el) => {
+          const rows = this.shown();
+          return (this.find ? el : el.child(label("Earlier chats")))
+            .child(h_flex().mx(10).mb(4).h(30).px(8).gap(6).items_center().rounded(8).border(1).border_color(k.input).text_size(14)
+              .child(icon("search").size(14).flex_none().text_color(k.muted)).child(div().flex_1().child(Input.new(this.query))))
+            .when(!rows.length, (e) => e.child(div().px(10).py(6).text_size(12).text_color(k.muted).child("No chats match.")))
+            .children(rows.map((c) => h_flex().id(`chat-${c.id}`).min_h(40).px(10).py(4).gap(10).flex_none().items_center().rounded(8).cursor_pointer().role("button").accessibility_label(c.title)
+              .hover((s) => s.bg(alpha(k.accent, 0.6))).on_click(() => this.reopen(c))
+              .child(icon(c.open ? "message-square" : "clock").size(16).flex_none().text_color(k.muted))
+              .child(v_flex().flex_1().min_w(0)
+                .child(div().truncate().text_size(14).child(c.title))
+                .child(div().truncate().text_size(12).text_color(k.muted).child(c.match ?? `${c.agent} · ${shortPath(c.cwd) ?? ""} · ${ago(c.at)}${c.open ? " · open" : ""}`)))
+              .when(!c.open, (e) => e.child(this.armed === c.id
+                ? button(k, `forget-${c.id}`, "Delete?", (cx) => this.forget(cx, c), { variant: "outline" })
+                : iconButton(k, `forget-${c.id}`, "trash-2", (cx) => this.forget(cx, c), { tip: "Delete this chat" })))));
+        };
+    if (this.find) return v_flex().id("ht3-launcher").size_full().bg(k.popover).text_color(k.foreground).text_size(14)
+      .child(v_flex().px(24).pt(24).pb(12).gap(8).flex_none()
+        .child(div().text_size(20).font_semibold().child("Earlier chats"))
+        .child(div().text_size(14).text_color(k.muted).child("Chats saved on this computer. A click shows one that is open, or opens it again as a tab.")))
+      .child(v_flex().id("ht3-launcher-list").flex_1().min_h(0).px(14).pb(14).overflow_y_scrollbar()
+        .when(this.recent == null, (el) => el.child(div().px(10).py(6).text_size(12).text_color(k.muted).child("Looking…")))
+        .when(this.recent != null && !this.recent.length, (el) => el.child(div().px(10).py(6).text_size(12).text_color(k.muted).child("No chats yet.")))
+        .when((this.recent?.length ?? 0) > 0, earlier));
     return v_flex().id("ht3-launcher").size_full().bg(k.popover).text_color(k.foreground).text_size(14)
       .child(v_flex().px(24).pt(24).pb(8).gap(8).flex_none()
         .child(h_flex().items_center()
@@ -237,22 +264,7 @@ export class Launcher {
           return row(a.id, "bot", a.name, path ? a.argv.join(" ") : `not installed${a.hint ? ` · ${a.hint}` : ""}`, { enabled: !!path, agent: a });
         })))
         .child(div().mx(10).mt(8).h(30).px(11).rounded(8).border(1).border_color(k.input).text_size(14).child(Input.new(this.custom)))
-        .when((this.recent?.length ?? 0) > 0, (el) => {
-          const rows = this.shown();
-          return el.child(label("Earlier chats"))
-            .child(h_flex().mx(10).mb(4).h(30).px(8).gap(6).items_center().rounded(8).border(1).border_color(k.input).text_size(14)
-              .child(icon("search").size(14).flex_none().text_color(k.muted)).child(div().flex_1().child(Input.new(this.query))))
-            .when(!rows.length, (e) => e.child(div().px(10).py(6).text_size(12).text_color(k.muted).child("No chats match.")))
-            .children(rows.map((c) => h_flex().id(`chat-${c.id}`).min_h(40).px(10).py(4).gap(10).flex_none().items_center().rounded(8).cursor_pointer().role("button").accessibility_label(c.title)
-              .hover((s) => s.bg(alpha(k.accent, 0.6))).on_click(() => this.reopen(c))
-              .child(icon(c.open ? "message-square" : "clock").size(16).flex_none().text_color(k.muted))
-              .child(v_flex().flex_1().min_w(0)
-                .child(div().truncate().text_size(14).child(c.title))
-                .child(div().truncate().text_size(12).text_color(k.muted).child(c.match ?? `${c.agent} · ${shortPath(c.cwd) ?? ""} · ${ago(c.at)}${c.open ? " · open" : ""}`)))
-              .when(!c.open, (e) => e.child(this.armed === c.id
-                ? button(k, `forget-${c.id}`, "Delete?", (cx) => this.forget(cx, c), { variant: "outline" })
-                : iconButton(k, `forget-${c.id}`, "trash-2", (cx) => this.forget(cx, c), { tip: "Delete this chat" })))));
-        }))
+        .when((this.recent?.length ?? 0) > 0, earlier))
       .child(h_flex().px(24).py(16).gap(8).flex_none().justify_end().border_t(1).border_color(k.border)
         .child(button(k, "cancel", "Cancel", () => closeOverlay(this.overlay), { variant: "outline", size: "default" }))
         .child(button(k, "open", this.busy ? "Making the worktree…" : "Open chat", (cx) => this.open(cx), { variant: "default", size: "default", disabled: !ready || this.busy || (this.wt && !this.branch.value().trim()) })));

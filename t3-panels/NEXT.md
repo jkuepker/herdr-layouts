@@ -34,6 +34,8 @@ Ranked from a survey of /opt/code/t3code/apps/web/src and apps/server/src agains
 
 - A worktree per chat: New worktree in New chat, Remove worktree… (asks first) in the Project popover. Left: not run on another machine (the commands take `on:`, but no repository was made on one); a new branch only, an existing branch can't be checked out into a worktree; it starts from the main checkout's HEAD with no base picker; a chat left open in a removed worktree keeps a folder that is gone; the branch is never deleted; clicks and typing were driven by command.
 
+- Command palette: `ht3-palette`, Herdr's palette plus a T3 group, on `cmd-shift-p` in this layout. Left: they are not entries of `app.palette` itself, which a mod can't extend (anything else that runs `app.palette`, like a button of another mod, still opens Herdr's); the copy won't follow changes to Herdr's palette; the key and typing were driven by command, not pressed; single earlier chats aren't palette rows, only the list is.
+
 ## Candidates
 
 Each entry: what it does / T3 location / mod API support / value for multi-machine agent users / effort.

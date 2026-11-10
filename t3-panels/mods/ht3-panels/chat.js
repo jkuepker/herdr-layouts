@@ -85,7 +85,7 @@ const LOCAL_COMMANDS = [
 ];
 
 export function openLauncher() {
-  openOverlay({ mod: MOD, kind: "dialog", width: 512, height: 520 });
+  openOverlay({ mod: MOD, kind: "dialog", width: 512, height: 660 });
 }
 
 // The composer's placeholder, T3's words, and the one for a lane too narrow to show them whole.

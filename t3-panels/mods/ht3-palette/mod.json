@@ -1,0 +1,1 @@
+{ "place": "none", "title": "T3 command palette", "overlay": { "kind": "popup", "at": "top", "offset": 96, "width": 640, "height": 414 } }

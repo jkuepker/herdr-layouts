@@ -54,7 +54,7 @@ class Buttons {
   // chat with that agent), menu:add[:<group>], menu:project, pin:<folder> (the folder Files, Diff
   // and the pull request surfaces look at for the shown space; pin: with none goes back to the
   // terminal's), settings (the Settings dialog), set:<path>=<json> (one setting, e.g.
-  // set:agents.pi.enabled=false; set:<path> alone goes back to its default).
+  // set:agents.pi.enabled=false; set:<path> alone goes back to its default), earlier (the earlier chats, to search and reopen).
   command(c, cx) {
     const [name, a, b] = c.split(":");  // (pin keeps its whole path)
     const fail = (e) => console.log(`ht3-panels.${c}: ${String(e?.message ?? e)}`);
@@ -75,6 +75,8 @@ class Buttons {
       setShared("ht3-files.pinned", all);
     }
     else if (name === "bottom") cx.spawn(async (cx) => { try { await toggleBottom(); } catch (e) { fail(e); } cx.notify(); });
+    // earlier: the New chat dialog as a list of the earlier chats alone, its search focused (the palette's "Earlier chats…").
+    else if (name === "earlier") openOverlay({ mod: MOD, kind: "dialog", width: 512, height: 520, props: { find: true } });
     else if (name === "menu") openOverlay({ mod: MOD, kind: "popup", at: { x: 900, y: 48 }, width: a === "project" ? 344 : ADD_MENU.w, height: a === "project" ? 660 : ADD_MENU.h, props: { menu: a, group: b ?? "a" } });
     cx.notify();
   }
