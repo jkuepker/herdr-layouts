@@ -34,6 +34,7 @@ const NAMED = [
   ["ht3-tabs.settle", {}, "T3", "Settle this chat or agent", "archive done inbox put away"],
   ["ht3-panels.menu:project", {}, "T3", "Project: branch, commit, scripts", "git push pull request editor worktree"],
   ["ht3-panels.new:here", {}, "T3", "New chat on this branch", "thread same agent folder worktree"],
+  ["ht3-panels.term", {}, "T3", "This chat's terminal", "drawer shell under chat toggle hide show"],
   ["ht3-panels.send:new", {}, "T3", "Send draft as a new chat", "thread first message same agent folder"],
   ["ht3-panels.send:background", {}, "T3", "Send draft as a new chat in the background", "thread first message stay here"],
   ["ht3-tabs.chat:next", {}, "T3", "Next chat", "thread card inbox agents list walk"],

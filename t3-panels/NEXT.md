@@ -108,6 +108,8 @@ Looked for and not in T3 Code (so not ported): editing a sent message and resend
 
 - Round 6, added: the chat toasts carry the agent's mark; the osascript system notification is gone. Left: with Herdr behind another app nothing shows outside Herdr's window (no system notification, dock badge or bounce: the app has system notifications inside, `gpui_macos::system_notifications`, but no command or mod call reaches them, and macOS has no notification entry for Herdr); the toast for the shown tab's chat while Herdr is behind times out like any toast, so it may be gone on coming back (the card still says Done); a custom agent with an icon of its own isn't known, it gets the check or the "!".
 
+- Round 6, 2. A terminal per chat: a split under the chat in its folder, hidden and shown with the tab's zoom. Left: it is not kept past the tab (a chat reopened from Earlier chats starts without it); the tab's icon in the tab bar becomes the terminal's while it has one; no set height (half the tab) and no command to size it; on another machine not tried; the key and the button were not pressed by hand.
+
 ## Candidates
 
 Each entry: what it does / T3 location / mod API support / value for multi-machine agent users / effort.

@@ -65,6 +65,7 @@ Copy rows, the `/` `$` `@` menu, attachments, thread names, earlier chats, fork,
 - In a chat's git repository: refs under `refs/herdr/checkpoints/<chat id>/` (see RECIPE.md, Checkpoints). Nothing else in the repository is written until you press Commit, Push or Revert.
 - Settings in `~/.config/herdr-app/data/ht3-settings.json`: `followUp` (`"steer"`), `checkpoints` (`false`), `notifications` (`false`) and `sounds` (`true`).
 - Herdr's toasts (`notify`) and its `done` / `blocked` sounds, for a chat that finishes or needs you while you look elsewhere. The layout needs no toast block for them.
+- `cmd-alt-j` (`ht3-panels.term`): the chat's own terminal under it. It is a split of the chat's tab (`terminal.open` with `place: "down"`), hidden with the tab's zoom, so the layout file has no block for it.
 - Keys for the message box in the same section: `cmd-alt-enter` (`ht3-panels.send:new`) and `cmd-alt-shift-enter` (`ht3-panels.send:background`).
 - Keys for chats in the layout's section of `keys.json`: `ctrl-shift-]`, `ctrl-shift-[` and `ctrl-shift-1`..`9` (`ht3-tabs.chat:next`, `chat:prev`, `chat:<n>`).
 - A key in the layout's section of `keys.json`, `cmd-shift-p`: `mod.open:ht3-palette`, the command palette with the T3 actions (the mod `ht3-palette`; an overlay, so the layout file doesn't name it).

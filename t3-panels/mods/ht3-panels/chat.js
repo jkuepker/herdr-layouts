@@ -9,7 +9,7 @@
 
 import { div, list, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, TextView, Scrollbar, VirtualListScrollHandle } from "gpui-base";
-import { run, openOverlay, appHome, home, exec, layout, settings, shared, setShared, notify, focused } from "herdr";
+import { run, openOverlay, appHome, home, exec, layout, settings, shared, setShared, notify, focused, panes } from "herdr";
 import { MOD, tokens, alpha, icon, agentMark, button, iconButton, control, badge, workLine, divider, shortPath } from "./look.js";
 import { AcpSource, detect, argvOf, forkChat } from "./agent-acp.js";
 import { TermSource } from "./agent-term.js";
@@ -87,6 +87,7 @@ const LOCAL_COMMANDS = [
   { name: "find", description: "Find in this thread", local: true },
   { name: "copy", description: "Copy this thread as Markdown", local: true },
   { name: "branch", description: "New chat on this branch: same agent, same folder", local: true },
+  { name: "terminal", description: "This chat's terminal, under the chat: open, hide or show it", local: true },
   { name: "send-new", description: "Send this draft as a new chat, and go there", local: true },
   { name: "send-background", description: "Send this draft as a new chat, and stay here", local: true },
   { name: "usage", description: "Tokens and context: this chat and every agent", local: true },
@@ -427,6 +428,7 @@ export class ChatPanel {
       if (item.name === "find") return this.setFind(cx, true);
       if (item.name === "copy") this.copyThread(cx);
       if (item.name === "branch" && this.source.kind === "acp") chatLike(this.source.state);
+      if (item.name === "terminal") this.toggleTerminal(cx);
       if (item.name === "send-new" || item.name === "send-background") return this.sendNew(cx, item.name === "send-background", before);
       // With a draft before "/stash" it is parked; alone, the parked drafts open.
       if (item.name === "stash") { if (before.trim()) this.stash(cx); else this.picker = "__stash"; }
@@ -536,6 +538,8 @@ export class ChatPanel {
     if (c === "stash:menu") this.picker = this.picker === "__stash" ? null : "__stash";
     if (c.startsWith("unstash:")) this.unstash(cx, Number(c.slice(8)));
     if (c.startsWith("stash:drop:")) this.dropStash(cx, Number(c.slice(11)));
+    // term: the chat's own terminal under it (toggleTerminal); the layout's key.
+    if (c === "term") this.toggleTerminal(cx);
     // send:new and send:background: the draft becomes the first message of a new chat (sendNew); the layout's keys.
     if (c === "send:new" || c === "send:background") this.sendNew(cx, c === "send:background");
     // new:here is "/branch": a new chat with this one's agent in this one's folder (its branch).
@@ -800,6 +804,29 @@ export class ChatPanel {
         .child(`${Math.round((100 * v.usage.used) / v.usage.size)}% context`)))
       .when(!!v.terminal, (el) => el.child(iconButton(k, "to-term", "square-terminal", () => run("pane.focus", { terminal: v.terminal }), { tip: `Go to its terminal (${v.terminal})` })))
       .child(iconButton(k, "new-chat", "square-pen", () => openLauncher(), { tip: "New chat" }));
+  }
+
+  // A terminal of the chat's own (T3's ThreadTerminalDrawer), with nothing added to the layout: the chat's tab is split
+  // and a shell started in the chat's folder is put under the chat. It is a pane of the chat's tab, so it stays with
+  // the chat and ends when the tab is closed. Hiding it is the tab's zoom on the chat (the shell keeps running);
+  // showing it again takes the zoom off. A second terminal split in by hand rides along.
+  terminals() {
+    const tab = this.reporter?.tab;
+    return tab ? panes().filter((p) => p.tab === tab && p.terminal) : [];
+  }
+  toggleTerminal(cx) {
+    const pane = this.reporter?.pane, me = pane ? panes().find((p) => p.pane === pane) : null;
+    if (!me) return;
+    if (!this.terminals().length) {
+      const cwd = this.view?.cwd ?? this.source.state?.cwd;
+      run("pane.focus", { pane });
+      run("terminal.open", { place: "down", name: "Terminal", ...(cwd ? { folder: cwd } : {}) });
+    } else {
+      // Zoomed on the chat: the terminal is hidden. Otherwise it shows, and the toggle hides it.
+      run("pane.zoom", { pane });
+      if (me.zoomed) { const t = this.terminals()[0]; if (t) cx.timer.after(60, () => run("pane.focus", { pane: t.pane })); }
+    }
+    cx.notify();
   }
 
   // T3's composer.sendAndNewThread and composer.sendBackground: the draft is not sent here. It becomes the first
@@ -1397,6 +1424,7 @@ export class ChatPanel {
 
     const plan = this.planMode();
     const stashKey = this.stashKey(), nStash = this.stashed().length;
+    const nTerm = this.terminals().length, termShown = nTerm > 0 && !panes().find((p) => p.pane === this.reporter?.pane)?.zoomed;
     const controls = v.options.map((o) => {
       const cur = o.choices.find((c) => c.value === o.current);
       // A model named by its path ("provider/Model") shows as the model alone, as T3's "Qwen3.8 (tatooine-r9700)":
@@ -1456,6 +1484,12 @@ export class ChatPanel {
           .accessibility_label("Prompt stash").tooltip(nStash ? `${nStash} parked draft${nStash === 1 ? "" : "s"} for this project` : "Park this draft to come back to it (/stash)")
           .hover((st) => st.bg(k.accent).text_color(k.foreground)).on_click((_e, cx) => { this.picker = this.picker === "__stash" ? null : "__stash"; cx.notify(); })
           .child(icon("archive").size(14).flex_none()).when(nStash > 0, (e) => e.child(String(nStash)))))
+        // The chat's own terminal: lit while it shows under the chat.
+        .when(this.source.kind === "acp" && !!this.reporter?.tab, (el) => el.child(h_flex().id("chat-term").size(28).flex_none().items_center().justify_center().rounded(8).cursor_pointer().role("button")
+          .bg(termShown ? k.accent : "#00000000").text_color(termShown ? k.foreground : k.muted)
+          .accessibility_label("This chat's terminal").tooltip(!nTerm ? "Open a terminal for this chat, under it" : termShown ? "Hide this chat's terminal (it keeps running)" : "Show this chat's terminal")
+          .hover((st) => st.bg(k.accent).text_color(k.foreground)).on_click((_e, cx) => this.toggleTerminal(cx))
+          .child(icon("square-terminal").size(14).flex_none())))
         .when(!!plan, (el) => el.child(h_flex().id("plan-toggle").h(28).px(8).gap(6).flex_none().items_center().rounded(8).text_size(14).font_medium()
           .bg(plan.on ? alpha(k.primary, 0.14) : "#00000000").text_color(plan.on ? k.primary : alpha(k.foreground, 0.8)).cursor_pointer().role("button")
           .accessibility_label(plan.on ? "Plan mode is on" : "Plan mode").tooltip(plan.on ? "Plan mode is on: the agent plans and changes nothing. Click to leave it." : "Plan first: the agent proposes a plan and changes nothing")
