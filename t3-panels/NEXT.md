@@ -22,6 +22,7 @@ Ranked from a survey of /opt/code/t3code/apps/web/src and apps/server/src agains
 - 4. Thread names (`/rename`, Inbox right-click menu) and Earlier chats with search, reopen and delete in the New chat dialog. Left: the right-click itself and typing in the rename field were driven by command, not by hand; search reads at most the 60 newest chats; chats on another machine reopen only if that machine is reachable.
 - 5. Fork a thread: `/fork`, "Fork from here" on a message. A replay, not a native fork: the new session is told the earlier messages as text. Left: a fork has the same name as its source until renamed; no `session/fork` for agents that have one; a terminal agent's chat can't be forked.
 - 6. Checkpoints: a snapshot before and after each turn, a changed-files row with View diff and Revert. Left: no button to undo a revert (the `undo-<time>` ref is there, by hand); checkpoint refs are never pruned; nothing in the Settings dialog (only `set:checkpoints=false`); the snapshot runs `git add -A` into a private index before every message, which will be slow in a very large repository; not tried on another machine or with a terminal agent.
+- 7. Queued messages, send-now and a steer setting. Left: the queue can't be reordered and is lost on a reload; steer is cancel-then-send, not a message into the running turn; a terminal agent's chat sends mid-turn as before; the buttons were driven by command.
 - Known, same cause as the fix in ht3-panels: the acp-chat mod's chat is a `list`, so it doesn't follow its end in a long chat either.
 
 ## Candidates

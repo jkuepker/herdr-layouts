@@ -41,6 +41,8 @@ export const editorOn = (id) => plain(prefs().editors)[id] !== false;
 export const sideStartsHidden = () => prefs().sidePanelHiddenInNewSpaces === true;
 // "checkpoints": false turns the per-turn snapshots (checkpoint.js) off.
 export const checkpointsOn = () => prefs().checkpoints !== false;
+// "followUp": "steer" makes a message sent while the agent works interrupt it; the default queues it.
+export const followUp = () => (prefs().followUp === "steer" ? "steer" : "queue");
 
 // A chat's options with its model choices cut to the agent's list; the model in use always stays.
 export function limitModels(id, options) {

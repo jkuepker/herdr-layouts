@@ -15,7 +15,7 @@ import { closeOverlay } from "herdr";
 import { tokens, alpha, icon, agentMark, button, iconButton, shortPath } from "./look.js";
 import { AGENTS, detect } from "./agent-acp.js";
 import { EDITORS, editors } from "./menus.js";
-import { prefs, agentOn, modelsOf, knownModels, editorOn, sideStartsHidden, firstAgent, setPref, settingsFile } from "./settings.js";
+import { prefs, agentOn, modelsOf, knownModels, editorOn, sideStartsHidden, firstAgent, setPref, settingsFile, followUp, checkpointsOn } from "./settings.js";
 
 export const SETTINGS_SIZE = { width: 640, height: 680 };
 
@@ -48,6 +48,8 @@ export class Settings {
     else if (what === "allmodels") setPref(`agents.${rest}.models`, undefined);
     else if (what === "editor") setPref(`editors.${rest}`, editorOn(rest) ? false : undefined);
     else if (what === "side") this.flipSide();
+    else if (what === "steer") setPref("followUp", followUp() === "steer" ? undefined : "steer");
+    else if (what === "checkpoints") setPref("checkpoints", checkpointsOn() ? false : undefined);
     else if (what === "close") closeOverlay(this.overlay);
     cx.notify();
   }
@@ -173,6 +175,11 @@ export class Settings {
         .child(this.section(k, "Editors", "The editors the Project popover lists, of those installed on this computer.",
           EDITORS.map((e) => this.row(this.editorIcons?.[e.id] ? image(this.editorIcons[e.id]).w(16).h(16).flex_none() : icon("code-xml").size(16).flex_none().text_color(k.muted), e.name, `${e.app}.app, or ${e.bin} on the PATH`,
             [this.toggle(k, `set-editor-${e.id}`, editorOn(e.id), e.name, () => setPref(`editors.${e.id}`, editorOn(e.id) ? false : undefined))]))))
+        .child(this.section(k, "Chats", "How a chat with an agent behaves.",
+          [this.row(icon("rows-2").size(16).flex_none().text_color(k.muted), "Steer instead of queue", "A message sent while the agent works interrupts it. Off: it waits for the turn to end.",
+            [this.toggle(k, "set-steer", followUp() === "steer", "Steer instead of queue", () => setPref("followUp", followUp() === "steer" ? undefined : "steer"))]),
+          this.row(icon("rotate-ccw").size(16).flex_none().text_color(k.muted), "Checkpoints", "In a Git repository, snapshot the files before and after each turn, for its diff and for Revert.",
+            [this.toggle(k, "set-checkpoints", checkpointsOn(), "Checkpoints", () => setPref("checkpoints", checkpointsOn() ? false : undefined))])]))
         .child(this.section(k, "Side panel", "How the right panel comes up.",
           [this.row(icon("panel-right").size(16).flex_none().text_color(k.muted), "Start hidden in new spaces", "A space shown for the first time comes up without the side panel.",
             [this.toggle(k, "set-side", sideStartsHidden(), "Start hidden in new spaces", () => this.flipSide())])])))

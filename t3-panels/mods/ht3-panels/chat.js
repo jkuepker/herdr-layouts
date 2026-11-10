@@ -16,7 +16,7 @@ import { TermSource } from "./agent-term.js";
 import { Reporter } from "./report.js";
 import { fileIcon } from "./fileicons.js";
 import { snapshot, turnStat } from "./checkpoint.js";
-import { checkpointsOn } from "./settings.js";
+import { checkpointsOn, followUp } from "./settings.js";
 import { addNotice } from "./transcript.js";
 import { limitModels, rememberModels } from "./settings.js";
 import { agentOf } from "./agent-acp.js";
@@ -449,6 +449,8 @@ export class ChatPanel {
     // menu-key:<up|down|enter|escape>.
     if (c.startsWith("type:")) { this.input.set_value(c.slice(5)); this.hasText = !!c.slice(5).trim(); this.typed(cx); }
     if (c === "send") this.send(cx);
+    // queue:<steer|edit|drop>:<n>: a queued message's buttons (n from 0).
+    if (c.startsWith("queue:")) { const [, what, n] = c.split(":"); this.queued(cx, what, Number(n) || 0); }
     // turn-diff:<last|item id> and revert:<last|item id>: "View diff" and "Revert" of a turn that changed files.
     if (c.startsWith("turn-diff:") || c.startsWith("revert:")) {
       const w = c.slice(c.indexOf(":") + 1);
@@ -475,6 +477,7 @@ export class ChatPanel {
     this.models();
     this.clock();
     this.turnEnded(cx);
+    this.drain(cx);
     const draw = (cx) => {
       cx.notify();
     };
@@ -490,9 +493,7 @@ export class ChatPanel {
     // "/rename New name" is T3's own: it names the thread, nothing is sent ("/rename" alone: its first message again).
     const naming = /^\/rename(?:\s+([\s\S]*))?$/.exec(text);
     if (naming) { this.input.set_value(""); this.hasText = false; this.trig = null; return this.rename(cx, naming[1] ?? ""); }
-    if ((!text && !files.length) || !v?.alive || this.sending) return;
-    // An ACP agent takes one message per turn; a terminal agent takes one mid-turn too.
-    if (this.source.kind === "acp" && v.status !== "ready") return;
+    if ((!text && !files.length) || !v?.alive) return;
     // Each file named with "@" goes along as an ACP resource link (the text keeps its "@path").
     const seen = new Set(), blocks = [];
     for (const s of this.source.kind === "acp" ? this.input.tokens() : []) {
@@ -506,12 +507,44 @@ export class ChatPanel {
     this.hasText = false;
     this.trig = null;
     this.follow = true;
+    this.attached = [];
+    const payload = { text, blocks, files };
+    // An ACP agent takes one message per turn. One sent while it works waits in a queue for the turn to end
+    // (QueuedRunsControl.tsx), or, with "Steer instead of queue" on, interrupts it and goes in at once.
+    if (this.source.kind === "acp" && (v.status !== "ready" || this.sending || this.queue?.length)) {
+      this.queue ??= [];
+      if (followUp() === "steer" && ["working", "blocked"].includes(v.status)) { this.queue.unshift(payload); this.source.stop(); }
+      else this.queue.push(payload);
+      return cx.notify();
+    }
+    this.dispatch(cx, payload);
+  }
+
+  // The next queued message goes out once the agent is ready for one.
+  drain(cx) {
+    if (!this.queue?.length || this.sending || this.source.kind !== "acp" || !this.source.alive || this.source.word() !== "ready") return;
+    this.dispatch(cx, this.queue.shift());
+  }
+
+  // A queued message's buttons: steer (it goes in now: the turn is interrupted), edit (back into the message box), drop.
+  queued(cx, what, i) {
+    const q = this.queue?.[i];
+    if (!q) return;
+    this.queue.splice(i, 1);
+    if (what === "steer") { this.queue.unshift(q); if (this.source.word() === "ready") this.drain(cx); else this.source.stop(); }
+    if (what === "edit") { this.input.set_value(q.text); this.hasText = !!q.text.trim(); this.attached = [...(this.attached ?? []), ...q.files]; this.input.focus(); }
+    cx.notify();
+  }
+
+  // Sends one message: { text, blocks (ACP blocks for "@" files), files (attachments) }.
+  dispatch(cx, { text, blocks, files }) {
+    const v = this.view ?? this.source.view();
+    this.follow = true;
     const att = files.length ? files.map((a) => ({ name: a.name, path: a.path, image: a.image, thumb: a.thumb })) : null;
     const where = this.source.kind === "acp" && checkpointsOn() && v.cwd ? { cwd: v.cwd, on: v.machine ?? undefined } : null;
     if (!files.length && !where) { this.source.send(cx, text, blocks); return cx.notify(); }
     // Reading the pictures and snapshotting the files take a moment: the box empties now and the message follows.
     this.sending = files;
-    this.attached = [];
     cx.spawn(async (cx) => {
       const more = files.length ? await this.attachmentBlocks(v).catch(() => []) : [];
       // The files as they are before this turn (checkpoint.js), for its diff and for "Revert".
@@ -998,17 +1031,35 @@ export class ChatPanel {
     }
 
     const working = v.status === "working";
-    const stop = working && (!this.hasText || this.source.kind === "acp");
-    const can = v.alive && (this.hasText || (this.source.kind === "acp" && this.attached?.length > 0)) && !this.sending && (this.source.kind === "term" || v.status === "ready");
-    const action = stop
-      ? h_flex().id("stop").size(32).flex_none().items_center().justify_center().rounded_full().bg(alpha(k.destructive, 0.9)).text_color("#ffffff")
-        .shadow_xs().cursor_pointer().tooltip("Interrupt").role("button").accessibility_label("Stop generation").hover((s) => s.bg(k.destructive))
-        .on_click(() => this.source.stop()).child(icon("stop").size(12))
-      : h_flex().id("send").size(32).flex_none().items_center().justify_center().rounded_full()
-        .bg(can ? k.primary : alpha(k.foreground, 0.12)).text_color(can ? k.primaryText : k.muted)
-        .role("button").accessibility_label("Submit message")
-        .when(can, (el) => el.shadow_xs().cursor_pointer().hover((s) => s.bg(alpha(k.primary, 0.9))).on_click((_e, cx) => this.send(cx)))
-        .child(icon("arrow-up").size(14));
+    const acp = this.source.kind === "acp";
+    const has = this.hasText || (acp && this.attached?.length > 0);
+    // While an ACP agent works, a message can still be sent: it queues (or steers). Stop stays beside Send then.
+    const busy = acp && ["working", "blocked", "starting"].includes(v.status);
+    const can = v.alive && has && (acp || this.source.kind === "term");
+    const stopBtn = () => h_flex().id("stop").size(32).flex_none().items_center().justify_center().rounded_full().bg(alpha(k.destructive, 0.9)).text_color("#ffffff")
+      .shadow_xs().cursor_pointer().tooltip("Interrupt").role("button").accessibility_label("Stop generation").hover((s) => s.bg(k.destructive))
+      .on_click(() => this.source.stop()).child(icon("stop").size(12));
+    const sendBtn = () => h_flex().id("send").size(32).flex_none().items_center().justify_center().rounded_full()
+      .bg(can ? k.primary : alpha(k.foreground, 0.12)).text_color(can ? k.primaryText : k.muted)
+      .role("button").accessibility_label(busy ? (followUp() === "steer" ? "Steer: interrupt and send" : "Queue message") : "Submit message")
+      .when(can && busy, (el) => el.tooltip(followUp() === "steer" ? "Interrupt and send now" : "Queue for when the agent is done"))
+      .when(can, (el) => el.shadow_xs().cursor_pointer().hover((s) => s.bg(alpha(k.primary, 0.9))).on_click((_e, cx) => this.send(cx)))
+      .child(icon("arrow-up").size(14));
+    const action = working && !(acp && has) ? stopBtn() : working ? h_flex().gap(6).flex_none().child(stopBtn()).child(sendBtn()) : sendBtn();
+
+    // QueuedRunsControl.tsx: the waiting messages over the message box, at its right edge: the first three, then a count.
+    const queue = acp ? this.queue ?? [] : [];
+    const qBtn = (id, glyph, tip, fn) => h_flex().id(id).size(22).flex_none().items_center().justify_center().rounded(6).text_color(k.muted).cursor_pointer().role("button").accessibility_label(tip).tooltip(tip)
+      .hover((s) => s.bg(k.accent).text_color(k.foreground)).on_click((_e, cx) => fn(cx)).child(icon(glyph).size(13));
+    const queueRows = v_flex().w_full().items_end().gap(6).pb(8)
+      .child(div().text_size(11).text_color(k.muted).child(`${queue.length} queued${v.status === "ready" ? "" : ": sent when the agent is done"}`))
+      .children(queue.slice(0, 3).map((q, i) => h_flex().max_w("80%").min_w(0).h(34).pl(12).pr(4).gap(4).items_center().rounded(12).border(1).border_color(alpha(k.border, 0.8)).bg(alpha(k.message, 0.5)).text_size(13)
+        .child(div().flex_1().min_w(0).truncate().text_color(alpha(k.foreground, 0.8)).child(q.text || `${q.files.length} file${q.files.length === 1 ? "" : "s"}`))
+        .when(q.files.length > 0 && !!q.text, (el) => el.child(div().flex_none().text_size(11).text_color(k.muted).child(`+${q.files.length}`)))
+        .child(qBtn(`q-steer-${i}`, "corner-down-left", "Send now: interrupt the agent", (cx) => this.queued(cx, "steer", i)))
+        .child(qBtn(`q-edit-${i}`, "pen-line", "Edit: back into the message box", (cx) => this.queued(cx, "edit", i)))
+        .child(qBtn(`q-drop-${i}`, "x", "Remove from the queue", (cx) => this.queued(cx, "drop", i)))))
+      .when(queue.length > 3, (el) => el.child(div().text_size(11).text_color(k.muted).child(`and ${queue.length - 3} more`)));
 
     const controls = v.options.map((o) => {
       const cur = o.choices.find((c) => c.value === o.current);
@@ -1046,7 +1097,7 @@ export class ChatPanel {
     const card = v_flex().rounded(16).border(1).border_color(line).bg(k.card).shadow_xs()
       .on_drop((e, cx) => { if (this.source.kind === "acp") this.addFiles(cx, e.paths); })
       .when(files.length > 0, (el) => el.child(strip))
-      .when(!!this.sending, (el) => el.child(div().px(16).pt(10).text_size(12).text_color(k.muted).child(`Sending ${this.sending.length} file${this.sending.length === 1 ? "" : "s"}…`)))
+      .when(this.sending?.length > 0, (el) => el.child(div().px(16).pt(10).text_size(12).text_color(k.muted).child(`Sending ${this.sending.length} file${this.sending.length === 1 ? "" : "s"}…`)))
       .child(div().px(16).pt(14).pb(8).text_size(14).line_height("23px")
         .on_size_change((size, cx) => {
           const w = size.width / (Number(settings()?.zoom) || 1);
@@ -1067,6 +1118,7 @@ export class ChatPanel {
         .children(controls)
         .child(div().w(6).flex_none())
         .child(action));
-    return lane(drawer ? v_flex().child(drawer).child(card) : card);
+    const box = drawer ? v_flex().child(drawer).child(card) : card;
+    return lane(queue.length ? v_flex().child(queueRows).child(box) : box);
   }
 }
