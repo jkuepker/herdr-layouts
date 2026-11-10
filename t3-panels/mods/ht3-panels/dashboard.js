@@ -16,6 +16,7 @@ import { MOD, tokens, alpha, icon, iconButton, shortPath } from "./look.js";
 import { showing } from "./side.js";
 import { pick, field, num, show, level, stateLevel, keep, sortRows, age, readDashboard } from "./dash-data.js";
 import { fetchSource } from "./dash-sources.js";
+import { editor } from "./dash-editor.js";
 
 const TICK_MS = 5000, SHARE_MS = 4000; // widgets asking for the same source within a tick share one answer
 const KEEP = 40; // values a stat keeps for its sparkline
@@ -30,15 +31,18 @@ export class DashboardPanel {
     this.menu = false;
     this.state = new Map(); // widget id -> { data, error, at, tried, loading, past }
     this.answers = new Map(); // a source as JSON -> { at, promise }
+    this.initEditor();
     this.loadFiles(cx);
     cx.timer.every(TICK_MS, (cx) => { if (showing(this.group, "dashboard")) { this.poll(cx); cx.notify(); } });
   }
   close() {}
+  dir() { return dir(); }
 
   // For scripts: `dashboard:<file name without .json>` shows that one, `dashboard-refresh` reads the files again
   // and asks every source now, `dashboard-menu` opens or closes the picker, `dashboard-row:<widget>:<row>` clicks a table's row.
   command(c, cx) {
-    if (c.startsWith("dashboard:")) this.choose(cx, c.slice(10));
+    if (c.startsWith("dash-") && showing(this.group, "dashboard")) this.editCommand(c, cx);
+    else if (c.startsWith("dashboard:")) this.choose(cx, c.slice(10));
     else if (c === "dashboard-refresh") this.loadFiles(cx, true);
     else if (c === "dashboard-menu") this.menu = !this.menu;
     else if (c.startsWith("dashboard-row:") && showing(this.group, "dashboard")) {
@@ -62,7 +66,9 @@ export class DashboardPanel {
           try {
             const text = await readTextFile(`${dir()}/${f}`);
             if (text == null) throw new Error(`${name}: couldn't be read (over 1 MiB?)`);
-            files.push({ name, dash: readDashboard(text, name) });
+            // text and raw: what edit mode changes and writes back (dash-editor.js).
+            const dash = readDashboard(text, name);
+            files.push({ name, dash, text, raw: JSON.parse(text) });
           } catch (e) { files.push({ name, error: String(e?.message ?? e) }); }
         }
         this.files = files;
@@ -151,6 +157,7 @@ export class DashboardPanel {
         .child(div().min_w(0).truncate().child(cur?.dash.title ?? "Dashboard"))
         .child(icon(this.menu ? "chevron-up" : "chevron-down").size(12).flex_none().text_color(k.muted)))
       .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(failing && shown ? k.warningText : k.muted).child(said))
+      .child(iconButton(k, "dash-edit", "pen-line", (cx) => this.setEditing(cx, !this.editing), { size: "sm", on: this.editing, tip: this.editing ? "Done editing" : "Edit this dashboard: add, move, resize and set up widgets" }))
       .child(iconButton(k, "dash-refresh", "refresh-cw", (cx) => this.loadFiles(cx, true), { size: "sm", tip: "Read the dashboard files again and refresh every widget" }));
     const menu = v_flex().mx(10).my(4).p(4).w(260).flex_none().rounded(8).border(1).border_color(k.border).bg(k.popover).shadow_lg()
       .children(files.map((f) => h_flex().id(`dash-file-${f.name}`).min_h(28).px(8).py(4).gap(8).flex_none().items_center().rounded(6).text_size(13)
@@ -163,16 +170,20 @@ export class DashboardPanel {
     const note = (title, body) => v_flex().flex_1().items_center().justify_center().gap(6).px(24)
       .child(div().font_medium().text_size(13).child(title)).child(div().max_w(360).text_center().line_height("18px").text_color(k.muted).child(body));
     return root.child(head)
+      .when(this.editing, (el) => el.child(this.editBar(k)))
       .when(this.menu, (el) => el.child(menu))
       .when(!this.files, (el) => el.child(note("Reading dashboards…", "")))
       .when(!!this.files && !cur, (el) => el.child(note(files.length ? "No dashboard could be read" : "No dashboards yet",
         files.length ? files.map((f) => f.error).join(" ") : `Put a JSON file in ${shortPath(dir())}. The examples are in t3-panels/dashboards/ and the format is in RECIPE.md.`)))
       .when(!!cur, (el) => el.child(div().id(`ht3-dash-body-${this.group}`).flex_1().min_h(0).overflow_y_scrollbar()
-        .child(h_flex().flex_wrap().items_stretch().p(12).gap(8).children(widgets.map((w) => this.widget(k, w))))));
+        .when(this.editing && this.adding, (e) => e.child(this.addPicker(k)))
+        .when(this.editing && !!this.form, (e) => e.child(this.formView(k)))
+        .child(h_flex().flex_wrap().items_stretch().p(12).gap(8).children(widgets.map((w, i) => this.widget(k, w, i, widgets.length)))
+          .when(this.editing, (e) => e.child(this.addTile(k))))));
   }
 
   // One card. Its width is a share of the row that wraps when the panel is narrow.
-  widget(k, w) {
+  widget(k, w, i = 0, n = 1) {
     const st = this.of(w.id), has = st.data !== undefined;
     const empty = has && (st.data == null || (Array.isArray(st.data) && !st.data.length));
     const body = !w.type ? this.say(k, `No widget type "${w.typeName}". There are: stat, table, list, bars, line, status.`, k.destructiveText)
@@ -180,7 +191,8 @@ export class DashboardPanel {
         : empty ? this.say(k, w.empty ?? "No data", k.muted)
           : this.safely(k, () => this[`draw_${w.type}`](k, w, st));
     return v_flex().id(`dash-w-${w.id}`).flex_grow(w.w).flex_shrink(1).flex_basis(w.w * 168 + (w.w - 1) * 8).min_w(Math.min(w.w, 2) * 150).max_w_full()
-      .p(12).gap(8).rounded(10).border(1).border_color(alpha(k.border, 0.7)).bg(k.card).overflow_hidden()
+      .p(12).gap(8).rounded(10).border(1).border_color(this.editing && this.form?.i === i ? k.primary : alpha(k.border, 0.7)).bg(k.card).overflow_hidden()
+      .when(this.editing, (el) => el.child(this.widgetTools(k, w, i, n)))
       .child(h_flex().flex_none().gap(6).items_center().text_size(12)
         .child(div().flex_1().min_w(0).truncate().font_medium().text_color(k.muted).child(w.title || w.typeName))
         .when(st.loading && !has, (el) => el.child(icon("refresh-cw").size(12).flex_none().text_color(k.dim).spin(1000)))
@@ -322,3 +334,4 @@ export class DashboardPanel {
     }));
   }
 }
+Object.assign(DashboardPanel.prototype, editor);

@@ -76,6 +76,56 @@ assert.deepEqual(d.readDashboard('{"sources":{"s":{"type":"static","data":1}},"w
 assert.throws(() => d.readDashboard("{", "broken"), /not valid JSON/);
 assert.throws(() => d.readDashboard("{}", "empty"), /widgets/);
 
+// ---- edit mode's save path (dash-edit.js): a change is an edit(), then checked() gives the text to write ----
+const e = await import(join(here, "../mods/ht3-panels/dash-edit.js"));
+let raw = e.blank("  My fleet ");
+assert.equal(raw.title, "My fleet");
+assert.equal(e.fileName("My fleet!", ["my-fleet", "my-fleet-2"]), "my-fleet-3");
+assert.equal(e.fileName("???"), "dashboard");
+for (const w of e.WIDGETS) raw = e.edit(raw, { add: w.type });
+assert.equal(raw.widgets.length, e.WIDGETS.length);
+// Every type's starting widget reads back, and its settings form applied unchanged gives the same widget.
+const all = d.readDashboard(e.checked(raw, "t"), "t");
+assert.ok(all.widgets.every((w) => w.type));
+raw.widgets.forEach((w, i) => {
+  const kind = e.sourceKindOf(w), texts = {};
+  for (const g of e.fieldsFor(w.type, kind)) for (const f of g.fields) texts[f.key] = e.fieldText(w, f);
+  const r = e.applyForm(w, kind, texts);
+  assert.deepEqual(r.widget, w, `${w.type}: the form changed an untouched widget ${JSON.stringify(r.errors ?? {})}`);
+  assert.throws(() => e.edit(raw, { add: "nope" }), /No widget type/);
+});
+assert.throws(() => e.edit(raw, { remove: 99 }), /No widget/);
+const first = raw.widgets[0].type, second = raw.widgets[1].type;
+raw = e.edit(raw, { move: 0, by: 1 });
+assert.deepEqual([raw.widgets[0].type, raw.widgets[1].type], [second, first]);
+assert.deepEqual(e.edit(raw, { move: 0, by: -1 }), raw); // already first: nothing moves
+raw = e.edit(raw, { width: 0, w: 9 });
+assert.equal(raw.widgets[0].w, 4);
+raw = e.edit(raw, { remove: 0 });
+assert.equal(raw.widgets[0].type, first);
+assert.throws(() => e.edit(raw, { title: "  " }), /needs a name/);
+assert.equal(e.edit(raw, { title: "Renamed" }).title, "Renamed");
+// The settings form: fields become values, an empty one leaves its key out, a wrong one is an error and no widget.
+const stat = { type: "stat", title: "Old", w: 2, source: { type: "static", data: 1 }, unit: "GB", keepMe: { odd: true } };
+let r = e.applyForm(stat, "command", { title: "Load", "source.shell": "uptime", "source.timeout": "5", unit: "", decimals: "2", thresholds: '{"warn":2}', spark: "yes", count: "", refresh: "", pick: ".a[0]" });
+assert.deepEqual(r.widget, { type: "stat", title: "Load", w: 2, source: { type: "command", shell: "uptime", timeout: 5 }, keepMe: { odd: true }, decimals: 2, thresholds: { warn: 2 }, spark: true, pick: ".a[0]" });
+r = e.applyForm(stat, "static", { thresholds: "{bad", decimals: "two", pick: "hosts", refresh: "2", format: "nope", "source.data": "" });
+assert.deepEqual(Object.keys(r.errors).sort(), ["decimals", "format", "pick", "refresh", "source.data", "thresholds"]);
+assert.equal(r.widget, undefined);
+r = e.applyForm(stat, "named", { source: "fleet" });
+assert.equal(r.widget.source, "fleet");
+assert.ok(e.applyForm(stat, "named", { source: "" }).errors.source);
+r = e.applyForm({ type: "table", source: { type: "static", data: [] } }, "static", { columns: '{"not":"a list"}', "source.data": "[]" });
+assert.match(r.errors.columns, /list/);
+// checked(): a file that wouldn't read as a dashboard is never text to write.
+assert.throws(() => e.checked({ title: "x" }, "x"), /widgets/);
+assert.throws(() => e.checked({ widgets: [{ type: "pie" }] }, "x"), /No widget type "pie"/);
+assert.equal(JSON.parse(e.checked(raw, "t")).widgets.length, raw.widgets.length);
+// A file that already had an unknown type can still be changed; a change can't bring a new one.
+const odd = { widgets: [{ type: "pie" }] };
+assert.ok(e.checked(e.edit(odd, { add: "stat" }), "x", odd));
+assert.throws(() => e.checked({ widgets: [{ type: "pie" }, { type: "donut" }] }, "x", odd), /donut/);
+
 // Every shipped dashboard reads, names known widget types, and its paths parse.
 let files = 0;
 for (const f of readdirSync(here).filter((x) => x.endsWith(".json"))) {

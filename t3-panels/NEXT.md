@@ -71,6 +71,17 @@ Left:
 - Projects asks `gh` once per GitHub repository every two minutes; no open pull request was there to see, so the PR and CI columns were only tested on made-up data (`kit.json`) and in `test.mjs`.
 - The picked dashboard is kept per panel group, not per space. No editor for the JSON in the surface (open the file in Files).
 
+## Round 8: editing dashboards in the surface (done in part)
+
+Edit mode: add, move, resize, set up and remove widgets, and New, Rename, Duplicate, Edit JSON and Delete for dashboards, all saved to the JSON file (RECIPE.md, "Editing in the surface").
+
+Left:
+- Widget types that are not data widgets (a link or command button, another mod's view such as xo-map) are not built. `dash-edit.js` has `registerWidget` for them; a mod can't import another mod's code or embed its view, so an xo-map widget would have to redraw from shared `xo.data`.
+- No drag to reorder or resize: arrows and - / + instead.
+- Table columns, filter, thresholds and click are JSON fields in the form, not their own editors.
+- A saved file loses its hand formatting, and a named source under "sources" can be picked but not edited in the form.
+- Every click, the form's typing, Cmd+Enter and Esc were driven by command, never by hand.
+
 ## After quota reset
 
 What to build next, ranked by value against effort. T3 paths are under /opt/code/t3code/apps/web/src unless marked (shared = packages/shared/src, contracts = packages/contracts/src). "Ours" marks a rough edge of what is already here, not a T3 feature.
