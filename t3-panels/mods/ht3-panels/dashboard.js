@@ -102,6 +102,8 @@ export class DashboardPanel {
           let data = pick(raw, w.pick);
           if (Array.isArray(data)) data = sortRows(keep(data, w.filter), w.sort);
           if (Array.isArray(data) && w.limit) data = data.slice(0, Math.max(1, Number(w.limit) || 1));
+          // count: how many rows are left (a stat of "jobs running"); none is 0, not "No data".
+          if (w.count) data = Array.isArray(data) ? data.length : data == null ? 0 : 1;
           st.data = data;
           st.error = null;
           st.at = Date.now();
@@ -190,7 +192,7 @@ export class DashboardPanel {
   dot(k, l) { return div().size(8).flex_none().rounded_full().bg(l ? this.fill(k, l) : alpha(k.muted, 0.5)); }
   rowsOf(data) { return Array.isArray(data) ? data : [data]; }
 
-  // stat: one number. value (a path into the picked data, or its first row; default the data itself, or `.value`),
+  // stat: one number. count: true (how many rows the pick and filter left), or value (a path into the picked data, or its first row; default the data itself, or `.value`),
   // unit, format, decimals, scale, thresholds, sub (a template under it), spark: true (the values seen so far as bars;
   // with a range source, that range).
   statValue(w, data) {

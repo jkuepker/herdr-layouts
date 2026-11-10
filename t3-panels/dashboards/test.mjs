@@ -23,6 +23,7 @@ assert.equal(d.show(0.4236, { format: "percent" }), "42%");
 assert.equal(d.show(42, { format: "percent", scale: 1, decimals: 1 }), "42.0%");
 assert.equal(d.show(82, { unit: "GB" }), "82 GB");
 assert.equal(d.show(null), "–");
+assert.equal(d.show(3, { unit: "%" }), "3%");
 assert.equal(d.show(3 * 1024 * 1024, { format: "bytes" }), "3.0 MB");
 assert.equal(d.show(7200, { format: "age" }), "2h");
 assert.equal(d.show(1000, { format: "since" }, 1090), "1m");

@@ -75,7 +75,7 @@ export function show(v, o = {}, now = Date.now() / 1000) {
   }
   const d = o.decimals ?? (Number.isInteger(x) ? 0 : Math.abs(x) < 10 ? 2 : 1);
   const [whole, frac] = x.toFixed(d).split(".");
-  return thousands(whole) + (frac ? `.${frac}` : "") + (o.unit ? ` ${o.unit}` : "");
+  return thousands(whole) + (frac ? `.${frac}` : "") + (o.unit ? `${o.unit === "%" ? "" : " "}${o.unit}` : "");
 }
 
 // "ok" | "warn" | "bad" | null (no thresholds, or not a number, or `when` doesn't match the row).

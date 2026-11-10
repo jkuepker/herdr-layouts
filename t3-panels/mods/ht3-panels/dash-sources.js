@@ -74,7 +74,7 @@ async function fromFile(s) {
 
 // "fleetq": `fleetq status --json`, as the `fleet` mod reads it, with what a widget would otherwise have to work
 // out added: per host `free` (the measured free memory when the box reports it, else fleetq's sum), `used`,
-// `gpu_pct`, `spark`, `up` and `down` (services), `running_n`, `queued_n`, `state` ("online" | "offline"); and at
+// `gpu_pct`, `spark`, `services_n`, `up` and `down` (services), `running_n`, `queued_n`, `state` ("online" | "offline"); and at
 // the top `services` and `jobs`, every host's in one list (a job on several boxes once, with `on`).
 const fleetqPaths = () => ["fleetq", `${home()}/.local/bin/fleetq`];
 async function fromFleetq() {
@@ -99,7 +99,7 @@ async function fromFleetq() {
     }
     return { ...h, free, used: h.capacity_gb != null && free != null ? Math.max(0, h.capacity_gb - free) : null,
       gpu_pct: h.gpu_util != null ? Math.round(h.gpu_util * 100) : null, spark: /spark/i.test(`${h.name} ${h.machine ?? ""}`),
-      up: list.filter((s) => s.status === "up").length, down: list.filter((s) => s.status !== "up" && s.status !== "held").length,
+      services_n: list.length, up: list.filter((s) => s.status === "up").length, down: list.filter((s) => s.status !== "up" && s.status !== "held").length,
       running_n: (h.running ?? []).length, queued_n: (h.queued ?? []).length, state: h.online ? "online" : "offline" };
   });
   return { ...d, hosts, services, jobs: [...jobs.values()], probe_age_s: d.last_probe ? Math.max(0, now - d.last_probe) : null };

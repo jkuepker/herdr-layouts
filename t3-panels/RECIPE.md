@@ -125,9 +125,39 @@ Everything uses T3 Code's sizes (1rem = 16px): 14px text on a 23px line, 8px con
 
   **Values.** `"format"`: `number` (thousands separators), `percent` (0.42 reads 42%; with `"scale": 1`, 42 reads 42%), `bytes`, `age` (seconds), `since` (a Unix time, read as how long ago), `text`; with `"unit"`, `"decimals"`, `"scale"`. `"thresholds"`: `{ "warn": 80, "bad": 95 }` (high is bad), `{ "below": true, "warn": 20, "bad": 10 }` (low is bad), or `{ "ok": ["up"], "warn": ["starting"] }` for states (anything else is red); `"when": { "path", "match" }` limits one to rows that match, and a list of thresholds takes the first that applies (a Spark red under 10 GB free, the others under 2). Green, amber, red.
 
-  **Types.** `stat`: one number; `value`, `sub` (a template under it), `spark: true` (the values seen so far as small bars; with a range source, that range). `table`: `columns: [{ "title", "value", "format", "unit", "thresholds", "w" (px), "align", "dot": true (a status dot before the text) }]`, the first column takes the room left; `click: { "run": "<Herdr command>", "args": { name: template } }` makes a row a button. `list`: `text`, `sub`, `state` (a dot). `bars`: `label`, `value`, `max` (a number or a path; default the largest), `of` (the field the colour follows, when not the value). `line`: series over time from a range source (rows with `points`), up to six, `legend`, `min`, `max`; drawn as a mark per time step, 60 steps across. `status`: a dot and a label per item; `label`, `state` (default `.value`), `sub`. A state without thresholds reads up for 1, true, up, ok, ready, running, online, healthy, success, passing; amber for starting, loading, pending, queued, degraded, unknown; else red.
+  **Types.** `stat`: one number; `value`, or `count: true` for how many rows the pick and filter left, `sub` (a template under it), `spark: true` (the values seen so far as small bars; with a range source, that range). `table`: `columns: [{ "title", "value", "format", "unit", "thresholds", "w" (px), "align", "dot": true (a status dot before the text) }]`, the first column takes the room left; `click: { "run": "<Herdr command>", "args": { name: template } }` makes a row a button. `list`: `text`, `sub`, `state` (a dot). `bars`: `label`, `value`, `max` (a number or a path; default the largest), `of` (the field the colour follows, when not the value). `line`: series over time from a range source (rows with `points`), up to six, `legend`, `min`, `max`; drawn as a mark per time step, 60 steps across. `status`: a dot and a label per item; `label`, `state` (default `.value`), `sub`. A state without thresholds reads up for 1, true, up, ok, ready, running, online, healthy, success, passing; amber for starting, loading, pending, queued, degraded, unknown; else red.
 
   **Sources.** `{ "type": "prometheus", "query" }` answers rows of the labels plus `value`; with `"range": "30m"` and `"step": 30` each row also has `points`; `{ "queries": { name: query, … }, "by": "host" }` asks several and answers one row per value of that label with each query's value under its name (a query may be `{ "query", "range", "step" }` and brings `<name>_points`); `"url"` for another server. `{ "type": "command", "run", "args", "on" (a machine, as a space's), "cwd", "timeout", "parse" }` or `{ "type": "command", "shell": "…" }`; a non-zero exit is an error. `{ "type": "http", "url", "headers", "parse" }`: a GET through curl. `{ "type": "file", "path", "on", "parse" }`. `{ "type": "fleetq" }`: `fleetq status --json` with, per host, `free`, `used`, `gpu_pct`, `spark`, `up`, `down`, `running_n`, `queued_n`, `state`, and at the top `services` and `jobs` as flat lists. `{ "type": "static", "data" }`: the data is in the file. `"parse"`: `auto` (JSON when it parses, else a number, else text), `json`, `lines`, `text`, `number`.
+
+  **A full example** (a file of its own; `t3-panels/dashboards/fleet.json` is the long form of it, `kit.json` shows every widget type with data written in the file, and what a mistake looks like):
+
+  ```json
+  {
+    "title": "Fleet, short",
+    "refresh": 20,
+    "prometheus": "http://192.168.1.126:9090",
+    "widgets": [
+      { "type": "status", "title": "Boxes", "w": 2,
+        "source": { "type": "fleetq" }, "pick": ".hosts[]",
+        "label": ".name", "state": ".state", "sub": "{.free} GB free" },
+      { "type": "table", "title": "Memory and jobs", "w": 4,
+        "source": { "type": "fleetq" }, "pick": ".hosts[]", "sort": ".free",
+        "columns": [
+          { "title": "Box", "value": ".name" },
+          { "title": "Free", "value": ".free", "unit": "GB", "decimals": 0, "w": 64,
+            "thresholds": { "below": true, "warn": 20, "bad": 10, "when": { "path": ".name", "match": "^spark" } } },
+          { "title": "GPU busy", "value": ".gpu_pct", "unit": "%", "w": 64 },
+          { "title": "Down", "value": ".down", "w": 44, "thresholds": { "warn": 1, "bad": 1 } },
+          { "title": "Running", "value": ".running_n", "w": 56 }
+        ] },
+      { "type": "line", "title": "Decode, last 30 min", "w": 2, "refresh": 30,
+        "source": { "type": "prometheus", "query": "sum by (host) (rate(vllm:generation_tokens_total[2m]))", "range": "30m", "step": 30 },
+        "legend": "{.host}", "unit": "tok/s", "decimals": 1 }
+    ]
+  }
+  ```
+
+  **Fleet** (`fleet.json`): the boxes fleetq knows (spark1, spark2, endor, bespin, tatooine's two cards), each with free and used memory (a Spark's free memory amber under 20 GB and red under 10, as the `fleet` mod has it), GPU busy, services up and down, jobs running and queued; then every service, every job, and fleetq's warnings. GPU busy is what fleetq reports, which is tatooine only. It doesn't check earlyoom (the `fleet` mod does, over ssh).
 
 - **Send the draft as a new chat.** `cmd-alt-enter` (T3's key for it), the slash row `/send-new`, or the palette's "Send draft as a new chat": what is typed is not sent here. It becomes the first message of a new chat with this chat's agent in this chat's folder, a tab beside it, and you go there. `cmd-alt-shift-enter`, `/send-background` or the palette's "…in the background" does the same and stays here: the new tab is in front for under half a second (a chat learns which pane is its own by being drawn in the shown tab), then this tab is shown again and a toast says "Started in the background". The message box is emptied. Scripts: `send:new`, `send:background` in the shown chat (`chat.js` `sendNew`, `agent-acp.js` `chatLike` with a `prompt`). The row that was `/new` for "New chat on this branch" is `/branch` now; `/new` is the New chat dialog as before.
 
