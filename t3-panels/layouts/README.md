@@ -54,3 +54,13 @@ The ids `ht3-side`, `ht3-center`, `ht3-bottom`, `ht3-a`, `ht3-b` and the stacks 
 ## Panes have no frame, only a split line
 
 A pane has no `border` and no `focus` frame, and no `radius`: T3 Code's chat has none. Herdr's pane look has no divider of its own (`divider` is for `row` and `column` nodes only, and a `divider` key in `pane` is ignored), so the line between two panes is the 1px `gap` between them with the `main` block's `background` (`"border"`, the theme's border color) showing through. The pane fill (`"background"`) covers the rest of the block. The line still drags: Herdr takes a drag on a band of `max(6px, the line's width)` centered on it, whatever the gap (Herdr 0.1.14), so the gap stays at 1.
+
+## What the chat features need from the layout: nothing
+
+Copy rows, the `/` `$` `@` menu, attachments, thread names, earlier chats, fork, checkpoints, queued messages and the Project popover's Commit, Push and Create PR (RECIPE.md) are all drawn inside the mod's own panes and popups. The layout file needs no new block, id or key for them, and the fragment above is unchanged. What they do use outside the layout:
+
+- Popups the mod opens itself (`openOverlay`, kind `popup`): the message menu (Copy, Fork from here), the Inbox card menu (Rename thread, Settle), the Revert question, and the Project popover, now up to 580 high. The New chat dialog's size is the mod's `mod.json` (`512 × 660`).
+- Files under `~/.config/herdr-app/data/ht3-panels/chats/<chat id>/`: `state.json` (a fork is a new folder with one), and `attachments/` (pasted pictures and thumbnails).
+- Shared state: `ht3-panels.named` (thread names by chat id), `ht3-panels.turn` (the turn the Diff surface shows), `ht3-panels.reverted` (the last revert's outcome).
+- In a chat's git repository: refs under `refs/herdr/checkpoints/<chat id>/` (see RECIPE.md, Checkpoints). Nothing else in the repository is written until you press Commit, Push or Revert.
+- Settings in `~/.config/herdr-app/data/ht3-settings.json`: `followUp` (`"steer"`) and `checkpoints` (`false`).
