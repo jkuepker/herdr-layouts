@@ -81,6 +81,8 @@ Looked for and not in T3 Code (so not ported): editing a sent message and resend
 
 - Next set 2. Copy a thread as Markdown, and its path and branch, from the card menu; `/copy` in the chat. Left: no file export; pictures are named, not embedded; a terminal agent's card has no Copy group; the right-click itself was driven by command.
 
+- Next set 3. Chats in the command palette: every open chat as "Chat: <name>", Enter goes to it. Left: closed chats are under Earlier chats… only; a chat in a space that was never shown since Herdr started isn't placed yet and isn't listed.
+
 ## Candidates
 
 Each entry: what it does / T3 location / mod API support / value for multi-machine agent users / effort.

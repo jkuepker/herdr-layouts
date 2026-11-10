@@ -1,6 +1,7 @@
 // The Herdr T3 layout's command palette: Herdr's own (frame/palette, which a mod can't add entries to: it lists
 // the app's commands only and is rewritten on every start), with the T3 mods' actions as a group of their own.
 // Bound to cmd-shift-p in the layout's key section (keys.json here); `app.palette` still opens Herdr's.
+// Under it a Chats group: every open chat by its name, to go to it.
 // What Herdr's says of itself:
 // The frame's command palette: everything you can do, by name, with its key.
 // Places (spaces, tabs) stay in the picker. Fuzzy: your letters in
@@ -10,7 +11,7 @@
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { commands, layouts, keys, run, theme, props, closeOverlay, openOverlay, shared, nextCommand, window as win } from "herdr";
+import { commands, layouts, keys, run, theme, props, closeOverlay, openOverlay, shared, spaces, nextCommand, window as win } from "herdr";
 
 // The list keeps one height while you move: rows and group titles have fixed
 // heights, and the window shows as many as fit in LIST_H.
@@ -20,7 +21,7 @@ const SHOWN = 10;
 const ROW_H = 32;
 const HEAD_H = 26;
 const LIST_H = SHOWN * ROW_H;
-const GROUPS = ["Recent", "T3", "Tab", "Pane", "Space", "Layout", "Terminal", "Agent", "Window", "App"];
+const GROUPS = ["Recent", "T3", "Chats", "Tab", "Pane", "Space", "Layout", "Terminal", "Agent", "Window", "App"];
 
 // The palette's names for commands: [command, args, group, title, keywords].
 const NAMED = [
@@ -100,6 +101,14 @@ function entries() {
   for (const l of layouts()) {
     const t = { main: "Herdr", terminals: "Terminals", win98: "Herdr 98" }[l] ?? l.charAt(0).toUpperCase() + l.slice(1);
     list.push({ name: "layout.switch", args: { name: l }, group: "Layout", title: `Layout: ${t}`, words: `look ${l}` });
+  }
+  // The open chats (T3's threads in its palette), by their names in the lists: Enter goes to the chat's tab.
+  // ht3-panels says where each is (shared "ht3-panels.places": chat -> pane and tab) and what it is called.
+  const places = shared("ht3-panels.places") ?? {}, titles = shared("ht3-panels.titles") ?? {}, programs = shared("ht3-panels.programs") ?? {};
+  for (const at of Object.values(places)) {
+    const space = spaces().find((s) => s.tabs.some((c) => c.id === at.tab));
+    if (!space || !titles[at.tab]) continue;
+    list.push({ name: "pane.focus", args: { pane: at.pane }, group: "Chats", title: `Chat: ${titles[at.tab]}`, words: `thread ${programs[at.tab]?.name ?? ""} ${space.name ?? ""} ${programs[at.tab]?.branch ?? ""}`, note: [programs[at.tab]?.name, space.name].filter(Boolean).join(" · ") });
   }
   // Anything new in the app shows up too, until it gets a better name here.
   const named = new Set(NAMED.map(([n]) => n));
@@ -284,7 +293,7 @@ export default class Palette extends View {
           .hover((s) => s.bg(t.hover))
           .on_click(() => this.go(r.e))
           .child(div().flex_1().min_w(0).child(this.title(t, r.e.title, r.hits, on)))
-          .when(Boolean(this.query), (el) => el.child(div().text_size(11.5).text_color(t.dim).child(r.e.group)))
+          .when(Boolean(r.e.note) || Boolean(this.query), (el) => el.child(div().flex_none().max_w(220).truncate().text_size(11.5).text_color(t.dim).child(r.e.note ?? r.e.group)))
           .when(Boolean(k), (el) => el.child(key(k))),
       );
     });
