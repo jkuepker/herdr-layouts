@@ -1,0 +1,18 @@
+t3-panels
+
+mods/ht3-panels/acp.js, session.js and transcript.js are the acp-chat mod's (this repo), unchanged.
+
+mods/ht3-panels/core/ (chat-log.js, chat-reader.js, bg-jobs.js, asks.js, send.js) is copied unchanged from
+Shepherdr (core/), Copyright (c) 2026 Elias Stravik, MIT: see mods/ht3-panels/core/LICENSE.shepherdr.
+
+mods/ht3-panels/editor.js takes its folder listing, git marks and folder watch from the `files` mod the Herdr app
+ships (Apache License 2.0).
+
+themes/t3code-dark.json and themes/t3code-light.json are herdr-t3's extras/themes/t3-code-*.json
+(github.com/JinJieBeWater/herdr-t3, Apache License 2.0), checked against T3 Code's apps/web/src/index.css; the
+light one adds `dim`.
+
+mods/ht3-panels/icons/ come from Lucide (https://lucide.dev, ISC), except stop.svg, drawn after T3 Code's stop glyph.
+
+The look follows T3 Code (github.com/pingdotgg/t3code, MIT): sizes, radii, spacing and colors are read from its
+apps/web/src; no code is copied from it.

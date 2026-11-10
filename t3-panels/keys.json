@@ -1,0 +1,9 @@
+{
+  "layout:herdr-t3": {
+    "cmd-shift-o": "mod.open:ht3-panels",
+    "cmd-shift-e": "layout.toggle:ht3-side"
+  },
+  "mod:ht3-panels": {
+    "cmd-s": "ht3-panels.save"
+  }
+}
