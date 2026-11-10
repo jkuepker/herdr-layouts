@@ -222,4 +222,4 @@ export const widgets = {
   },
 };
 // Types drawn even with no data: they have no source, or draw their own "nothing yet".
-export const DIRECT = new Set(["text", "link", "terminal", "chat"]);
+export const DIRECT = new Set(["text", "link", "terminal", "chat", "xo-map"]);

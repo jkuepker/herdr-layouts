@@ -20,6 +20,7 @@ import { editor } from "./dash-editor.js";
 import "./dash-types.js";
 import { widgets as moreWidgets, DIRECT } from "./dash-widgets.js";
 import { TYPES } from "./dash-data.js";
+import { xomap } from "./dash-xomap.js";
 
 const TICK_MS = 5000, SHARE_MS = 4000; // widgets asking for the same source within a tick share one answer
 const KEEP = 40; // values a stat keeps for its sparkline
@@ -345,4 +346,4 @@ export class DashboardPanel {
     }));
   }
 }
-Object.assign(DashboardPanel.prototype, editor, moreWidgets);
+Object.assign(DashboardPanel.prototype, editor, moreWidgets, xomap);

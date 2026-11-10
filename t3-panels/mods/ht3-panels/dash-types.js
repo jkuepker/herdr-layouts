@@ -47,3 +47,9 @@ registerWidget({ type: "terminal", about: "A button that runs a command in a sid
 registerWidget({ type: "chat", about: "Open chats: status, name, agent and last message; a click goes there",
   make: { type: "chat", title: "Chats", w: 2 } },
 [{ key: "chat", label: "Chat", kind: "text", hint: "a chat's id for that one; empty: every open chat" }, { key: "limit", label: "At most", kind: "number", min: 1 }], { source: false });
+
+registerWidget({ type: "xo-map", about: "xo's plan as xo-map draws it: the fleet, or one project's components",
+  make: { type: "xo-map", title: "xo map", w: 4, view: "fleet", layout: "compact" } },
+[{ key: "view", label: "View", kind: "choice", options: ["fleet", "project"], hint: "the fleet, or the project picked below" },
+  { key: "project", label: "Project", kind: "pick", from: "xo-projects", none: "xo's projects are listed here once the widget has read them", hint: "used by the project view" },
+  { key: "layout", label: "Layout", kind: "choice", options: ["compact", "full"], hint: "full: a project's cards list their tasks and live workers" }], { source: false });

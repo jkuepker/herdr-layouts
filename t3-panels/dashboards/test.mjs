@@ -79,7 +79,7 @@ assert.throws(() => d.readDashboard("{}", "empty"), /widgets/);
 // ---- edit mode's save path (dash-edit.js): a change is an edit(), then checked() gives the text to write ----
 const e = await import(join(here, "../mods/ht3-panels/dash-edit.js"));
 await import(join(here, "../mods/ht3-panels/dash-types.js")); // registers gauge, text, log, heatmap, link, terminal, chat, xo-map
-assert.ok(["gauge", "text", "log", "heatmap", "link", "terminal", "chat"].every((x) => e.WIDGETS.some((w) => w.type === x) && d.TYPES.includes(x)));
+assert.ok(["gauge", "text", "log", "heatmap", "link", "terminal", "chat", "xo-map"].every((x) => e.WIDGETS.some((w) => w.type === x) && d.TYPES.includes(x)));
 // A text may go without a source ("none"); a link has none at all, and its form never adds one.
 assert.equal(e.sourceKindOf({ type: "text", text: "x" }), "none");
 assert.equal(e.applyForm({ type: "text", text: "x", source: { type: "static", data: 1 } }, "none", { text: "y" }).widget.source, undefined);
@@ -132,6 +132,24 @@ assert.equal(JSON.parse(e.checked(raw, "t")).widgets.length, raw.widgets.length)
 const odd = { widgets: [{ type: "pie" }] };
 assert.ok(e.checked(e.edit(odd, { add: "stat" }), "x", odd));
 assert.throws(() => e.checked({ widgets: [{ type: "pie" }, { type: "donut" }] }, "x", odd), /donut/);
+
+// ---- the xo-map widget's copied layout and data steps (xomap-graph.js, xomap-data.js) ----
+const xg = await import(join(here, "../mods/ht3-panels/xomap-graph.js")), xd = await import(join(here, "../mods/ht3-panels/xomap-data.js"));
+const plan = { projects: [{ project: "p", has_plan: true, components: [
+  { id: "a", title: "A", status: "done", tasks: [{ id: "t", title: "T", state: "done" }], live: [] },
+  { id: "b", title: "B", status: "stuck", needs: ["a"], live: [{ task_key: "p/fix", via: "explicit" }] },
+  { id: "c", title: "C", status: "planned", needs: ["b"], links: ["a"] }] }, { project: "q", has_plan: false }], edges: [], unplanned: ["p/loose"] };
+const live = xd.joinLive(xd.normalize(plan), { rows: [{ key: "p/fix", agent: "blocked", harness: "pi", project: "p", slug: "fix" }], bearings: [{ key: "p/fix", kind: "needs_you" }] });
+assert.deepEqual([live.projects[0].live, live.projects[0].needsYou, live.projects[0].unplanned.length], [2, 1, 1]);
+assert.deepEqual(xd.counts(live.projects[0]), { done: 1, working: 0, planned: 1, stuck: 1 });
+assert.equal(live.projects[0].components[1].workers[0].agent, "blocked");
+const pl = xg.projectLayout(live.projects[0], live.edges);
+assert.deepEqual(["a", "b", "c"].map((id) => pl.pos[id].col), [0, 1, 2]);
+assert.equal(pl.edges.length, 3);
+assert.equal(xd.edgeLook(pl.edges.find((x) => x.from === "b" && x.to === "c"), Object.fromEntries(live.projects[0].components.map((c) => [c.id, c]))), "red");
+const fl = xg.fleetLayout(live.projects, 1000);
+assert.deepEqual(fl.regions.map((r) => [r.project, r.empty, r.minis.length]), [["p", false, 3], ["q", true, 0]]);
+assert.throws(() => xd.normalize({}), /no projects list/);
 
 // Every shipped dashboard reads, names known widget types, and its paths parse.
 let files = 0;
