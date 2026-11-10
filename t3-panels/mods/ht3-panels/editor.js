@@ -10,7 +10,7 @@
 
 import { div } from "gpui-kit";
 import { v_flex, h_flex, Editor, EditorState, InputState, Input } from "gpui-base";
-import { spaces, panes, focused, exec, readTextFile, writeTextFile, watchFolder, theme } from "herdr";
+import { spaces, panes, focused, exec, readTextFile, writeTextFile, watchFolder, theme, pickFolder, shared, setShared } from "herdr";
 import { tokens, alpha, icon, button, iconButton, shortPath } from "./look.js";
 
 const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", cjs: "js", toml: "yaml", jsonc: "json", svelte: "html", vue: "html", yml: "yaml", htm: "html", markdown: "md", zsh: "sh", bash: "sh" };
@@ -73,8 +73,30 @@ export class FilePanel {
 
   // Keeps to the folder it shows until a terminal somewhere else is focused, or the space
   // changes: focusing this panel or a chat pane must not swap the tree under an open file.
+  // A folder picked here (Open folder, Up) holds per space until "Follow terminal"; it is kept in
+  // shared state "ht3-files.pinned" so a reload keeps it.
+  pinned(space) { return (shared("ht3-files.pinned") ?? {})[space ?? ""] ?? null; }
+  pin(cx, root) {
+    const p = place(), all = { ...(shared("ht3-files.pinned") ?? {}) };
+    if (root) all[p.space ?? ""] = { root, on: p.on }; else delete all[p.space ?? ""];
+    setShared("ht3-files.pinned", all);
+    this.seen = null;
+    if (root) { this.seen = `pin|${p.on ?? ""}|${root}`; this.enter(cx, root, p); } else { this.ctx = null; this.follow(cx); }
+    cx.notify();
+  }
+  async pickRoot(cx) {
+    const dir = await pickFolder({ prompt: "Folder to show in Files" });
+    if (dir) this.pin(cx, dir.replace(/\/+$/, "") || "/");
+  }
+
   follow(cx) {
     const p = place();
+    const held = this.pinned(p.space);
+    if (held) {
+      const seen = `pin|${held.on ?? ""}|${held.root}`;
+      if (seen !== this.seen) { this.seen = seen; this.enter(cx, held.root, { ...p, on: held.on }); }
+      return;
+    }
     const cwd = p.cwd ?? (this.ctx && this.ctx.space === p.space ? null : p.fallback);
     if (!cwd) return;
     const seen = `${p.on ?? ""}|${cwd}`;
@@ -443,7 +465,12 @@ export class FilePanel {
         .child(h_flex().flex_1().min_w(0).h(28).px(8).gap(6).items_center().rounded(8).text_size(12)
           .child(icon("search").size(14).flex_none().text_color(k.muted))
           .child(div().flex_1().min_w(0).child(Input.new(this.search))))
-        .child(iconButton(k, "files-collapse", "chevrons-down-up", (cx) => { c.folders.clear(); for (const p of [...c.entries.keys()]) if (p) c.entries.delete(p); cx.notify(); }, { tip: "Collapse all folders" })))
+        .child(iconButton(k, "files-collapse", "chevrons-down-up", (cx) => { c.folders.clear(); for (const p of [...c.entries.keys()]) if (p) c.entries.delete(p); cx.notify(); }, { tip: "Collapse all folders" }))
+        .when(!c.on, (el) => el.child(iconButton(k, "files-open", "folder-open", (cx) => { cx.spawn(async (cx) => this.pickRoot(cx)); }, { tip: "Open folder…" }))))
+      .child(h_flex().h(26).flex_none().px(10).gap(4).items_center().text_size(11).text_color(k.muted)
+        .child(iconButton(k, "files-up", "arrow-up", (cx) => this.pin(cx, c.root.replace(/\/[^/]*$/, "") || "/"), { size: "micro", tip: "Up one folder" }))
+        .child(div().flex_1().min_w(0).truncate().child(c.on ? `${c.on}:${c.root}` : shortPath(c.root)))
+        .when(!!this.pinned(c.space), (el) => el.child(iconButton(k, "files-follow", "square-terminal", (cx) => this.pin(cx, null), { size: "micro", tip: "Back to the terminal's folder" }))))
       .child(body);
   }
 }

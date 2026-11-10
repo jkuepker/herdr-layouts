@@ -12,7 +12,7 @@
 2. In `work-body`, after `main`, the right column with the file panel (hidden until toggled):
 
 ```json
-{ "id": "ht3-side", "type": "column", "size": { "px": 540 }, "min": 360, "max": 900, "hidden": true,
+{ "id": "ht3-side", "type": "column", "size": { "px": 540 }, "min": 360, "max": 900, "hidden": true, "border": { "width": 1, "color": "border" },
   "background": "background", "radius": 8,
   "children": [
     { "id": "ht3-files", "type": "block", "content": { "mod": "ht3-panels", "props": { "panel": "editor" } } } ] }
