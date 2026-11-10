@@ -55,6 +55,8 @@ Then: QA.md rows, light-theme shots, end state (Pi tab in 3-deborah-network, spa
 
 - Round 4, 6. Project scripts: change one in place (pen, Save, Cancel) and move it up or down.
 
+- Round 4, 1. Prompt stash: park and recall drafts per project (the stash button in the message box, `/stash`). Left: text only, attached files and `@` chips are not parked; no search; driven by command.
+
 ## Candidates
 
 Each entry: what it does / T3 location / mod API support / value for multi-machine agent users / effort.

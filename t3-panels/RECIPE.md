@@ -93,6 +93,8 @@ Everything uses T3 Code's sizes (1rem = 16px): 14px text on a 23px line, 8px con
 
 - **A fork is named after its source**: "<source's name> (fork)" in the header, the lists and Earlier chats (shared `ht3-panels.named`, set when the fork is made; a fork of a fork doesn't stack the word). `/rename` changes it like any name.
 
+- **Prompt stash.** The message box has a stash button beside `+` (with the number of parked drafts): its menu has **Stash this draft**, which parks the text in the box and empties it, and the parked drafts, newest first; a click on one brings it back into the box (a draft that was in the box changes places with it), its × deletes it. `/stash` with a draft before it parks it; alone it opens the menu. Drafts are kept per project (shared `ht3-panels.stash`, keyed as project scripts are: the repository's main checkout, else the folder; at most 20), so any chat of the project finds them, after a restart too. Scripts: `stash`, `stash:menu`, `unstash:<n>`, `stash:drop:<n>`.
+
 ## Built from
 
 - **One mod, `ht3-panels`**, with many faces picked in `main.js` by how a copy is opened (`mod.json`: `{"place": "none", "overlay": {"width": 512, "height": 660}}`):

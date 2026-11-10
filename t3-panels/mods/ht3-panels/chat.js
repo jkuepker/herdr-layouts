@@ -20,6 +20,7 @@ import { checkpointsOn, followUp } from "./settings.js";
 import { addNotice } from "./transcript.js";
 import { limitModels, rememberModels } from "./settings.js";
 import { agentOf } from "./agent-acp.js";
+import { repoOf } from "./launcher.js";
 
 const LANE = 736; // --chat-content-max-width: 46rem
 const DRAW_EVERY_MS = 80;
@@ -82,6 +83,7 @@ const LOCAL_COMMANDS = [
   { name: "new", description: "Start a new chat", local: true },
   { name: "rename", description: "Rename this thread", local: true, args: true },
   { name: "fork", description: "Continue this thread in a new chat", local: true },
+  { name: "stash", description: "Park this draft, or bring one back", local: true },
 ];
 
 export function openLauncher() {
@@ -110,6 +112,11 @@ function keep(id, patch) {
   if (Object.keys(next).length) all[id] = next; else delete all[id];
   if (JSON.stringify(all) !== JSON.stringify(shared(KEPT) ?? {})) setShared(KEPT, all);
 }
+
+// The prompt stash (T3's ComposerStashMenu): drafts parked to come back to, per project.
+// shared("ht3-panels.stash"): { "<machine or empty>:<project folder>": [{ text, at }] }, newest first, at most 20.
+const STASH = `${MOD}.stash`;
+const since = (ms) => { const m = Math.max(0, Math.round((Date.now() - ms) / 60000)); return m < 1 ? "just now" : m < 60 ? `${m}m ago` : m < 1440 ? `${Math.round(m / 60)}h ago` : `${Math.round(m / 1440)}d ago`; };
 
 // A project's badge, as T3's sidebar and header: two letters of its name ("fleetq" FL, "herdr-layouts" HL).
 const initials = (name) => {
@@ -393,6 +400,8 @@ export class ChatPanel {
       if (item.name === "side") run(`${MOD}.add:chat`);
       if (item.name === "new") openLauncher();
       if (item.name === "fork") this.fork(cx);
+      // With a draft before "/stash" it is parked; alone, the parked drafts open.
+      if (item.name === "stash") { if (before.trim()) this.stash(cx); else this.picker = "__stash"; }
     } else {
       this.input.set_value(`${before}/${item.name} `);
       this.hasText = true;
@@ -494,6 +503,11 @@ export class ChatPanel {
     // allow-always: the drawer's "Always allow this session"; ask-again turns it off.
     if (c === "allow-always") this.allowAlways(cx);
     if (c === "ask-again") this.allow(false);
+    // stash parks the draft, stash:menu opens or closes the parked drafts, unstash:<n> brings the nth back, stash:drop:<n> deletes it.
+    if (c === "stash") this.stash(cx);
+    if (c === "stash:menu") this.picker = this.picker === "__stash" ? null : "__stash";
+    if (c.startsWith("unstash:")) this.unstash(cx, Number(c.slice(8)));
+    if (c.startsWith("stash:drop:")) this.dropStash(cx, Number(c.slice(11)));
     // plan: the composer's Plan toggle; implement: the last plan card's "Implement this plan".
     if (c === "plan") this.togglePlan(cx);
     if (c === "implement") this.implementPlan(cx);
@@ -955,6 +969,77 @@ export class ChatPanel {
     this.send(cx);
   }
 
+  // The project a chat's drafts are parked under: its folder's repository (the main checkout, so worktrees share),
+  // else the folder. Asked once; until the answer is there, the folder itself.
+  stashKey() {
+    const v = this.view, cwd = v?.cwd;
+    if (!cwd) return null;
+    if (this.projectAt?.cwd !== cwd) {
+      this.projectAt = { cwd, root: null };
+      const at = this.projectAt;
+      repoOf(cwd, v.machine ?? null).then((root) => { at.root = root ?? cwd; }, () => { at.root = cwd; });
+    }
+    return `${v.machine ?? ""}:${this.projectAt.root ?? cwd}`;
+  }
+  stashed() {
+    const key = this.stashKey(), list = key ? (shared(STASH) ?? {})[key] : null;
+    return Array.isArray(list) ? list : [];
+  }
+  putStash(list) {
+    const key = this.stashKey();
+    if (!key) return;
+    const all = { ...(shared(STASH) ?? {}) };
+    if (list.length) all[key] = list.slice(0, 20); else delete all[key];
+    setShared(STASH, all);
+  }
+  // Parks what is in the message box (its text; files attached to it stay where they are) and empties the box.
+  stash(cx) {
+    const text = this.input.value().replace(/\/stash\s*$/, "").trim();
+    if (!text) return;
+    this.putStash([{ text, at: Date.now() }, ...this.stashed().filter((d) => d.text !== text)]);
+    this.input.set_value("");
+    this.hasText = false;
+    this.trig = null;
+    cx.notify();
+  }
+  // Brings the nth parked draft back into the box and takes it off the stash; a draft in the box changes places with it.
+  unstash(cx, i) {
+    const list = this.stashed(), d = list[i];
+    if (!d) return;
+    const now = this.input.value().trim();
+    this.putStash([...(now ? [{ text: now, at: Date.now() }] : []), ...list.filter((_d, n) => n !== i)]);
+    this.input.set_value(d.text);
+    this.hasText = true;
+    this.picker = null;
+    this.input.focus();
+    cx.notify();
+  }
+  dropStash(cx, i) {
+    this.putStash(this.stashed().filter((_d, n) => n !== i));
+    cx.notify();
+  }
+
+  // The stash's menu, over the left end of the message box where its button is.
+  stashPanel(k) {
+    const list = this.stashed(), can = !!this.input.value().trim();
+    const row = (id, body, onClick, enabled = true) => h_flex().id(id).min_h(28).px(8).gap(8).flex_none().items_center().rounded(4).text_size(14)
+      .when(enabled, (el) => el.cursor_pointer().role("button").hover((st) => st.bg(k.accent)).on_click((_e, cx) => onClick(cx))).when(!enabled, (el) => el.opacity(0.5)).children(body);
+    return h_flex().w_full().flex_none().justify_center().px(16).pb(6)
+      .child(h_flex().w_full().max_w(LANE).justify_start()
+        .child(v_flex().id("stash-menu").w(360).max_h(300).p(4).rounded(8).border(1).border_color(k.border).bg(k.popover).shadow_lg().overflow_y_scrollbar()
+          .child(row("stash-put", [icon("archive").size(14).flex_none().text_color(k.muted), div().flex_1().child("Stash this draft"),
+            div().flex_none().text_size(12).text_color(k.muted).child(can ? "/stash" : "nothing typed")], (cx) => { this.stash(cx); this.picker = null; }, can))
+          .when(list.length > 0, (el) => el.child(div().mx(4).my(4).h(1).flex_none().bg(k.border)))
+          .children(list.map((d, i) => row(`stash-${i}`, [
+            v_flex().flex_1().min_w(0).py(4)
+              .child(div().truncate().child(d.text.split("\n")[0]))
+              .child(div().text_size(11).text_color(k.muted).child(`${since(d.at)}${d.text.includes("\n") ? ` · ${d.text.split("\n").length} lines` : ""}`)),
+            h_flex().id(`stash-x-${i}`).size(22).flex_none().items_center().justify_center().rounded(6).text_color(k.muted).cursor_pointer().role("button").accessibility_label("Delete this draft")
+              .hover((st) => st.bg(k.accent).text_color(k.foreground)).on_mouse_down("left", (_e, cx) => cx.stop_propagation()).on_click((_e, cx) => { cx.stop_propagation(); this.dropStash(cx, i); }).child(icon("x").size(12)),
+          ], (cx) => this.unstash(cx, i))))
+          .when(!list.length, (el) => el.child(div().px(8).py(6).text_size(12).line_height("16px").text_color(k.muted).child("No drafts parked for this project. A parked draft waits here, for any chat of the project.")))));
+  }
+
   allow(on) {
     this.autoAllow = on;
     keep(this.chatId, { allow: on });
@@ -1121,6 +1206,7 @@ export class ChatPanel {
 
   // The choices of one composer control, as T3's menus look: 4 in, radius 8, 28px rows.
   pickerPanel(k, v) {
+    if (this.picker === "__stash") return this.stashPanel(k);
     const opt = v.options.find((o) => o.id === this.picker);
     if (!opt) return div();
     const f = this.filter.value().toLowerCase();
@@ -1210,6 +1296,7 @@ export class ChatPanel {
       .when(queue.length > 3, (el) => el.child(div().text_size(11).text_color(k.muted).child(`and ${queue.length - 3} more`)));
 
     const plan = this.planMode();
+    const stashKey = this.stashKey(), nStash = this.stashed().length;
     const controls = v.options.map((o) => {
       const cur = o.choices.find((c) => c.value === o.current);
       // A model named by its path ("provider/Model") shows as the model alone, as T3's "Qwen3.8 (tatooine-r9700)":
@@ -1263,6 +1350,12 @@ export class ChatPanel {
           .bg(alpha(k.accent, 0.6)).text_size(12).child(fileIcon(tok.token.label ?? tok.token.id, k.dark, 12)).child(tok.token.label ?? tok.token.id))))
       .child(h_flex().px(8).pb(8).gap(2).items_center()
         .when(!!clip, (el) => el.child(clip))
+        // chat/ComposerStashMenu.tsx: the parked drafts of this project, with how many there are.
+        .when(!!stashKey, (el) => el.child(h_flex().id("stash").h(28).px(6).gap(4).flex_none().items_center().rounded(8).text_size(12).cursor_pointer().role("button")
+          .bg(this.picker === "__stash" ? k.accent : "#00000000").text_color(nStash ? alpha(k.foreground, 0.8) : k.muted)
+          .accessibility_label("Prompt stash").tooltip(nStash ? `${nStash} parked draft${nStash === 1 ? "" : "s"} for this project` : "Park this draft to come back to it (/stash)")
+          .hover((st) => st.bg(k.accent).text_color(k.foreground)).on_click((_e, cx) => { this.picker = this.picker === "__stash" ? null : "__stash"; cx.notify(); })
+          .child(icon("archive").size(14).flex_none()).when(nStash > 0, (e) => e.child(String(nStash)))))
         .when(!!plan, (el) => el.child(h_flex().id("plan-toggle").h(28).px(8).gap(6).flex_none().items_center().rounded(8).text_size(14).font_medium()
           .bg(plan.on ? alpha(k.primary, 0.14) : "#00000000").text_color(plan.on ? k.primary : alpha(k.foreground, 0.8)).cursor_pointer().role("button")
           .accessibility_label(plan.on ? "Plan mode is on" : "Plan mode").tooltip(plan.on ? "Plan mode is on: the agent plans and changes nothing. Click to leave it." : "Plan first: the agent proposes a plan and changes nothing")
