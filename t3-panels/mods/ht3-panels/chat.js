@@ -449,6 +449,8 @@ export class ChatPanel {
     // menu-key:<up|down|enter|escape>.
     if (c.startsWith("type:")) { this.input.set_value(c.slice(5)); this.hasText = !!c.slice(5).trim(); this.typed(cx); }
     if (c === "send") this.send(cx);
+    // hover:<item id>: as the pointer over that message (its copy icon shows); hover: alone, off.
+    if (c.startsWith("hover:")) this.over = c.slice(6) || null;
     // queue:<steer|edit|drop>:<n>: a queued message's buttons (n from 0).
     if (c.startsWith("queue:")) { const [, what, n] = c.split(":"); this.queued(cx, what, Number(n) || 0); }
     // turn-diff:<last|item id> and revert:<last|item id>: "View diff" and "Revert" of a turn that changed files.
@@ -613,8 +615,10 @@ export class ChatPanel {
       .when(!this.headed(), (el) => el.child(this.header(k, v)))
       .child(this.timeline(k, v))
       .when(this.picker != null, (el) => el.child(this.pickerPanel(k, v)))
-      .when(this.picker == null && !!this.trig, (el) => el.child(this.triggerPanel(k, v)))
-      .child(this.composer(k, v));
+      // The "/", "$", "@" menu floats over the end of the lane (it is drawn after it), its foot on the message box's top.
+      .child(div().relative().w_full().flex_none()
+        .child(this.composer(k, v))
+        .when(this.picker == null && !!this.trig, (el) => el.child(div().absolute().left(0).right(0).bottom("100%").child(this.triggerPanel(k, v)))));
   }
 
   centered(k, text) {
@@ -733,6 +737,9 @@ export class ChatPanel {
       } else out.push(m);
     }
     closeTurn();
+    // The last message's copy icon stays in sight, dimmed by nothing: it is the one most often wanted.
+    const lastCopy = [...out].reverse().find((r) => r.kind === "copy");
+    if (lastCopy) lastCopy.always = true;
     return out;
   }
 
@@ -775,7 +782,14 @@ export class ChatPanel {
       .children(shown.map((m, i) => {
         const el = div().id(`row-${m.id}`).w_full().child(this.row(k, m, i === 0 && n === rows.length, i === shown.length - 1));
         const text = copies(m);
-        return (text ? el.on_mouse_down("right", (e) => this.copyMenu(e.position, copies(m), ["seg", "user", "copy", "codehead"].includes(m.kind) ? String(m.id).split(":")[0] : null)) : el)
+        // A message's rows (its text, its code blocks, its copy row) are one thing to the pointer: over any of them, its copy icon shows.
+        const of = ["seg", "user", "copy", "codehead"].includes(m.kind) ? String(m.id).split(":")[0] : null;
+        return (text ? el.on_mouse_down("right", (e) => this.copyMenu(e.position, copies(m), of)) : el)
+          .when(of != null, (e) => e.on_hover((over, cx) => {
+            if (over ? this.over === of : this.over !== of) return;
+            this.over = over ? of : null;
+            cx.notify();
+          }))
           .when(CLICKS.includes(m.kind), (e) => e.on_click((_e, cx) => click(m, cx)));
       }));
     return v_flex().id("ht3-chat-lane").relative().flex_1().min_h(0).overflow_hidden()
@@ -817,9 +831,11 @@ export class ChatPanel {
   }
 
   // The mark of a row that copies: the icon, a check for a moment once it did.
-  copyMark(k, id, label = null) {
+  // `shown`: false hides it until its message is under the pointer (chat/MessageCopyButton.tsx: opacity-0, group-hover:opacity-100).
+  copyMark(k, id, label = null, shown = true) {
     const done = this.copied === id;
     return h_flex().h(20).px(4).gap(4).flex_none().items_center().rounded(4).cursor_pointer().text_size(12).text_color(done ? k.successText : alpha(k.muted, 0.8))
+      .when(!shown && !done, (el) => el.opacity(0))
       .hover((s) => s.bg(k.accent).text_color(done ? k.successText : k.foreground))
       .child(icon(done ? "check" : "copy").size(12).flex_none()).when(label != null || done, (el) => el.child(done ? "Copied" : label));
   }
@@ -883,7 +899,7 @@ export class ChatPanel {
       }
       case "copy":
         // chat/MessageCopyButton.tsx, under the message: its right edge for yours, its left for a reply.
-        return lane(h_flex().w_full().px(m.right ? 0 : 2).when(!!m.right, (el) => el.justify_end()).child(this.copyMark(k, m.id)), 12);
+        return lane(h_flex().w_full().px(m.right ? 0 : 2).when(!!m.right, (el) => el.justify_end()).child(this.copyMark(k, m.id, null, m.always || this.over === String(m.id).split(":")[0])), 12);
       case "thought": {
         const open = this.expanded[m.id];
         // T3: the thought itself on one muted line; it opens to the whole of it.
