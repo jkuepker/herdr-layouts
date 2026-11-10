@@ -475,6 +475,9 @@ export class ChatPanel {
     // allow-always: the drawer's "Always allow this session"; ask-again turns it off.
     if (c === "allow-always") this.allowAlways(cx);
     if (c === "ask-again") this.autoAllow = false;
+    // plan: the composer's Plan toggle; implement: the last plan card's "Implement this plan".
+    if (c === "plan") this.togglePlan(cx);
+    if (c === "implement") this.implementPlan(cx);
     if (c.startsWith("choose:")) { const at = c.indexOf("=", 7); if (at > 0) { this.source?.setOption(c.slice(7, at), c.slice(at + 1)); this.picker = null; } }
     if (c.startsWith("fold:")) this.expanded[c.slice(5)] = !this.expanded[c.slice(5)];
     // For scripts, what the Copy buttons, a right-click and Cmd+V do: copy:last (the last reply),
@@ -892,6 +895,39 @@ export class ChatPanel {
     openOverlay({ mod: MOD, kind: "popup", at: { x: at.x, y: at.y }, width: 180, height: fork ? 64 : 36, props: { menu: "copy", text: String(text ?? "").slice(0, 400000), fork } });
   }
 
+  // The agent's plan mode, when it offers one: its mode control and the choice that plans (Claude Code's "plan",
+  // Codex's "Plan"...). T3's composer has this as a one-click toggle beside the mode picker.
+  planMode() {
+    const o = this.source?.kind === "acp" ? this.view?.options.find((x) => (x.category ?? x.id) === "mode" && !x.readonly) : null;
+    const plan = o?.choices.find((c) => /^plan\b/i.test(String(c.value)) || /^plan\b/i.test(String(c.name ?? "")));
+    return plan ? { o, plan, on: o.current === plan.value } : null;
+  }
+
+  // On: the mode it had is remembered. Off: back to that one, else the agent's first other mode.
+  togglePlan(cx) {
+    const p = this.planMode();
+    if (!p) return;
+    if (p.on) {
+      const back = p.o.choices.find((c) => c.value === this.modeBefore && c.value !== p.plan.value) ?? p.o.choices.find((c) => c.value !== p.plan.value);
+      if (back) this.source.setOption(p.o.id, back.value);
+    } else {
+      this.modeBefore = p.o.current;
+      this.source.setOption(p.o.id, p.plan.value);
+    }
+    cx.notify();
+  }
+
+  // A plan card's "Implement this plan": out of plan mode, then the message. Both go down the one connection
+  // in that order, so the agent has left plan mode when it reads the message.
+  implementPlan(cx) {
+    const p = this.planMode();
+    if (!p || this.view?.status !== "ready") return;
+    if (p.on) this.togglePlan(cx);
+    this.input.set_value("Implement this plan.");
+    this.hasText = true;
+    this.send(cx);
+  }
+
   // "Always allow this session": this approval and every later one of this chat's agent, until the pane
   // reloads or "Ask again" is pressed. The agent's own "always" option, when it has one, is a button of its own.
   allowAlways(cx) {
@@ -986,7 +1022,10 @@ export class ChatPanel {
               .border_color(e.status === "completed" ? k.primary : k.input).bg(e.status === "completed" ? k.primary : "#00000000")
               .text_color(k.primaryText).when(e.status === "completed", (el) => el.child(icon("check").size(12))))
             .child(div().flex_1().min_w(0).text_color(e.status === "completed" ? k.muted : e.status === "in_progress" ? k.foreground : alpha(k.foreground, 0.8))
-              .when(e.status === "in_progress", (el) => el.font_medium()).child(e.content))))), 16);
+              .when(e.status === "in_progress", (el) => el.font_medium()).child(e.content)))))
+          // The newest plan, made in plan mode, with the agent waiting: one click leaves plan mode and says go.
+          .when(this.planMode()?.on === true && this.view?.status === "ready" && this.source.state?.transcript.items.findLast((i) => i.kind === "plan")?.entries === m.entries, (el) => el
+            .child(h_flex().justify_end().child(button(k, "plan-implement", "Implement this plan", (cx) => this.implementPlan(cx), { variant: "default", size: "sm", glyph: "hammer" })))), 16);
       case "notice":
         if (m.level === "info") return lane(divider(k, m.text), 0);
         return lane(v_flex()
@@ -1138,6 +1177,7 @@ export class ChatPanel {
         .child(qBtn(`q-drop-${i}`, "x", "Remove from the queue", (cx) => this.queued(cx, "drop", i)))))
       .when(queue.length > 3, (el) => el.child(div().text_size(11).text_color(k.muted).child(`and ${queue.length - 3} more`)));
 
+    const plan = this.planMode();
     const controls = v.options.map((o) => {
       const cur = o.choices.find((c) => c.value === o.current);
       // A model named by its path ("provider/Model") shows as the model alone, as T3's "Qwen3.8 (tatooine-r9700)":
@@ -1191,6 +1231,11 @@ export class ChatPanel {
           .bg(alpha(k.accent, 0.6)).text_size(12).child(fileIcon(tok.token.label ?? tok.token.id, k.dark, 12)).child(tok.token.label ?? tok.token.id))))
       .child(h_flex().px(8).pb(8).gap(2).items_center()
         .when(!!clip, (el) => el.child(clip))
+        .when(!!plan, (el) => el.child(h_flex().id("plan-toggle").h(28).px(8).gap(6).flex_none().items_center().rounded(8).text_size(14).font_medium()
+          .bg(plan.on ? alpha(k.primary, 0.14) : "#00000000").text_color(plan.on ? k.primary : alpha(k.foreground, 0.8)).cursor_pointer().role("button")
+          .accessibility_label(plan.on ? "Plan mode is on" : "Plan mode").tooltip(plan.on ? "Plan mode is on: the agent plans and changes nothing. Click to leave it." : "Plan first: the agent proposes a plan and changes nothing")
+          .hover((st) => st.bg(plan.on ? alpha(k.primary, 0.2) : k.accent)).on_click((_e, cx) => this.togglePlan(cx))
+          .child(icon("list-todo").size(16).flex_none()).child("Plan")))
         .child(div().flex_1())
         .children(controls)
         .child(div().w(6).flex_none())

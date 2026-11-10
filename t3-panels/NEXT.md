@@ -30,6 +30,8 @@ Ranked from a survey of /opt/code/t3code/apps/web/src and apps/server/src agains
 
 - Notifications for chat tabs: a toast (click shows the chat) and an optional sound when a hidden chat finishes or needs an approval; two switches in Settings → Chats. Left: the toast's click was run as its command (`pane.focus`), not clicked; the sound was triggered but not listened to; a chat in a space that was never shown since the app started has no running agent, so it has nothing to tell.
 
+- Plan mode: a Plan toggle in the message box when the agent has a plan mode, and "Implement this plan" on the newest plan card. Left: tried with the scripted agent only (no real Claude Code or Codex plan turn); driven by command; the plan card is ACP's checklist, not a plan written as text in the reply; a terminal agent's chat has no toggle.
+
 ## Candidates
 
 Each entry: what it does / T3 location / mod API support / value for multi-machine agent users / effort.

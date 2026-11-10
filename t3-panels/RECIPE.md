@@ -81,6 +81,8 @@ Everything uses T3 Code's sizes (1rem = 16px): 14px text on a 23px line, 8px con
 
 - **A chat you aren't looking at tells you.** When a chat's turn ends, or its agent asks for an approval, while its tab isn't the shown one in the front window, Herdr's toast says "<Agent> finished" or "<Agent> needs you" with the thread's title (or what it asks for) and its space; a click on the toast runs `pane.focus` on the chat's pane. Herdr does this itself for terminal agents only. Settings → Chats has **Notify** (on; `"notifications": false` in the settings file) and **Sound** (off; `"sounds": true` plays Herdr's `done` / `blocked` sound). Once per ended turn and once per approval (`report.js` `tell`).
 
+- **Plan mode in one click.** When the agent offers a mode that plans (a choice of its mode control whose id or name starts with "plan", as Claude Code's), the message box has a **Plan** toggle beside `+`: on (tinted) puts the agent in that mode, off puts back the mode it had. An agent with no such mode has no toggle. The newest plan card gets **Implement this plan** while plan mode is on and the agent waits: it leaves plan mode and sends "Implement this plan." Scripts: `plan`, `implement` in the shown chat (`chat.js` `planMode`, `togglePlan`, `implementPlan`).
+
 ## Built from
 
 - **One mod, `ht3-panels`**, with many faces picked in `main.js` by how a copy is opened (`mod.json`: `{"place": "none", "overlay": {"width": 512, "height": 520}}`):
