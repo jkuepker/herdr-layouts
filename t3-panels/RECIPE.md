@@ -103,6 +103,8 @@ Everything uses T3 Code's sizes (1rem = 16px): 14px text on a 23px line, 8px con
 
 - **Mark unread.** A chat card's menu has **Mark unread**: the chat is "done" again (its dot, Done on its card, the count of the hidden sidebar), as after a turn you didn't see. It becomes read when you next come to it; marked while you are looking at it, it stays unread until you have looked away and come back. A chat that is working or waiting for you isn't changed (shared `ht3-panels.unread[tab]`, taken by the chat: `report.js` `marked`). In the open menu: `key:u`.
 
+- **Pin from the card menu.** A card's right-click menu in the Inbox has **Pin** (Unpin when it is pinned), for chats and terminal agents alike: it adds the card's address to the lists' one set of pins (shared `agents.pins`), so the card shows its pin in the Inbox and stands under Pinned in the Agents list. The Agents list used to drop the pin of anything that is no live terminal within a second; it now keeps the pin of a chat tab while that tab is listed (`ht3-agents/main.js` `prune`). In the open menu: `key:i`.
+
 ## Built from
 
 - **One mod, `ht3-panels`**, with many faces picked in `main.js` by how a copy is opened (`mod.json`: `{"place": "none", "overlay": {"width": 512, "height": 660}}`):

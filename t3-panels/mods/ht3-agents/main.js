@@ -85,10 +85,11 @@ export default class Agents extends View {
 
   // Drops pins and fold choices of agents that ended. Only for machines the list has heard from:
   // right after a start, or while a machine connects, its agents aren't listed yet.
-  prune(all) {
+  // `cards`: the chat tabs in the list (addresses pane:<id>), which are no terminals: while one is there its pin stays.
+  prune(all, cards = []) {
     const machine = (addr) => (addr.includes("/") ? addr.split("/")[0] : "");
     const heard = new Set(all.map((k) => machine(k.address)));
-    const live = new Set(all.filter((k) => k.state === "live").map((k) => k.address));
+    const live = new Set([...all.filter((k) => k.state === "live").map((k) => k.address), ...cards.filter((a) => String(a.address).startsWith("pane:")).map((a) => a.address)]);
     const kept = this.pins.filter((p) => !heard.has(machine(p)) || live.has(p));
     if (kept.length !== this.pins.length) setShared("agents.pins", kept);
     // Group headers (sp-…, sec-…, pinned) fold under the same store; only agents' entries end.
@@ -210,7 +211,7 @@ export default class Agents extends View {
     const urgency = new Map(list.map((a) => [a.address, RANK[treeStatus(ownStatus(this.word(a), a.address, all), kidsOf.get(a.address))] ?? 0]));
     const rankOf = (a) => urgency.get(a.address);
     if (byPriority) list = [...list].sort((x, y) => rankOf(y) - rankOf(x) || this.since(y) - this.since(x) || y.seq - x.seq);
-    this.prune(all);
+    this.prune(all, list);
     const pinned = this.pins.map((p) => list.find((a) => a.address === p)).filter(Boolean);
     const rest = list.filter((a) => !this.pins.includes(a.address));
     list = [...pinned, ...rest];

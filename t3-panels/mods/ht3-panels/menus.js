@@ -174,6 +174,13 @@ export class ThreadMenu {
     if (this.naming) return;
     if (key === "r") { this.naming = true; this.field.focus(); cx.notify(); }
     if (key === "s") { run(`ht3-inbox.settle-card:${this.p.address}`); closeOverlay(this.overlay); }
+    // Pin (T3's thread menu): the lists keep one set of pins by address (shared "agents.pins"); a pinned card
+    // stands in the Inbox's Pinned section and on top of the Agents list.
+    if (key === "i" && this.p.address) {
+      const pins = shared("agents.pins") ?? [], a = this.p.address;
+      setShared("agents.pins", pins.includes(a) ? pins.filter((x) => x !== a) : [...pins, a]);
+      closeOverlay(this.overlay);
+    }
     // Mark unread: the chat takes the mark and says "done" again (report.js `marked`).
     if (key === "u" && this.p.chat && this.p.tab) { setShared(`${MOD}.unread`, { ...(shared(`${MOD}.unread`) ?? {}), [this.p.tab]: Date.now() }); closeOverlay(this.overlay); }
     // A chat's Copy group (T3's thread menu: Copy > Path, Branch; the whole thread as Markdown is ours).
@@ -202,6 +209,7 @@ export class ThreadMenu {
       .when(!this.naming, (el) => el
         .child(row("thread-rename", "pen-line", "Rename thread", "r"))
         .child(row("thread-settle", "check", this.p.settled ? "Bring back" : "Settle", "s"))
+        .when(!!this.p.address, (e) => e.child(row("thread-pin", (shared("agents.pins") ?? []).includes(this.p.address) ? "pin-off" : "pin", (shared("agents.pins") ?? []).includes(this.p.address) ? "Unpin" : "Pin", "i")))
         .when(!!this.p.chat, (e) => e.child(row("thread-unread", "circle-dot", "Mark unread", "u")))
         .when(!!this.p.chat, (e) => {
           const at = shared(`${MOD}.programs`)?.[this.p.tab] ?? {};

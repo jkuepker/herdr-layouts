@@ -59,6 +59,11 @@ Then: QA.md rows, light-theme shots, end state (Pi tab in 3-deborah-network, spa
 
 - Round 4, 2. Usage: a dialog with this chat's context over time, per-chat and per-agent totals. Left: a dialog, not a side-panel surface (a surface needs a new block in the layout file); samples start with this build, older chats have one point or none; Pi sends no turn tokens, so its rows say "–"; the Claude Code log sum was run on a real log by hand, but no Claude Code chat exists here to show it in the dialog; no rate-limit banner; remote chats' Claude logs aren't read.
 
+## Round 5 queue (in work; one commit per item, ticked under Done when it lands)
+
+Next set items, in this order: 5. Pin from the chat card menu. 6. Diff hunks as context: click a hunk, write a comment, it goes into the composer as a quoted block. 7. Keys for chats: next / previous chat and jump to the nth chat in Inbox order; bindings only in `keys.json` `layout:herdr-t3`, with a backup, no clash with existing keys. 8. New chat on this branch, and the branch in the chat header.
+Rules: commits carry `Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>`, no push; git work only in the scratch repo; fake agent or Pi on tatooine; don't ask, note choices. At the end: revert the uncommitted `notes.txt` in the scratch repo; QA.md rows and light-theme shots; end state (Pi tab in 3-deborah-network, spaces/agents sidebar, side panel hidden, dark); report each commit hash, what works, what's left, what needs a real hand.
+
 ## Next set
 
 A second survey of /opt/code/t3code (apps/web/src unless marked; contracts = packages/contracts/src) for what the lists above don't have. Ranked by value against effort; the first four are built in this round.
@@ -84,6 +89,8 @@ Looked for and not in T3 Code (so not ported): editing a sent message and resend
 - Next set 3. Chats in the command palette: every open chat as "Chat: <name>", Enter goes to it. Left: closed chats are under Earlier chats… only; a chat in a space that was never shown since Herdr started isn't placed yet and isn't listed.
 
 - Next set 4. Mark unread, in the chat card's menu. Left: "stays unread while you look at it until you leave and return" was not seen working, because Herdr's window was never in front during the tests (the mark itself, on a shown and on a hidden chat, was); terminal agents' cards have no such row.
+
+- Next set 5. Pin and Unpin in the card menu; the Agents list no longer drops a chat's pin. Left: a chat's pin is by pane, so closing the tab and reopening the chat from Earlier chats loses it; no key (`thread.pin` in T3); the right-click was driven by command.
 
 ## Candidates
 

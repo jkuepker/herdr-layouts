@@ -35,7 +35,7 @@ function threadMenu(a, title, at, settled) {
   const chat = a.mod === "ht3-panels" ? Object.entries(places).find(([, x]) => x.pane === a.pane)?.[0] ?? null : null;
   // A chat's menu also has its Copy group: as Markdown, and its path and branch when the chat told them.
   const told = chat ? shared("ht3-panels.programs")?.[a.tab] ?? {} : null;
-  const height = 64 + (chat ? 9 + 28 * (2 + (told.cwd ? 1 : 0) + (told.branch ? 1 : 0)) : 0);
+  const height = 92 + (chat ? 9 + 28 * (2 + (told.cwd ? 1 : 0) + (told.branch ? 1 : 0)) : 0);
   openOverlay({ mod: "ht3-panels", kind: "popup", at: { x: at.x, y: at.y }, width: 200, height, props: { menu: "thread", address: a.address, tab: a.tab, title, chat, settled } });
 }
 
