@@ -233,7 +233,8 @@ export class DashboardPanel {
           .on_click(() => { const args = {}; for (const [key, spec] of Object.entries(w.click.args ?? {})) args[key] = field(r, spec); run(String(w.click.run), args); });
         return el.children(cols.map((c, i) => {
           const v = field(r, c.value), l = c.dot ? level(v, c.thresholds, r) ?? stateLevel(v) : level(v, c.thresholds, r);
-          const text = show(v, c), color = text === "–" ? k.dim : c.dot ? k.foreground : this.tone(k, l) ?? (i === 0 ? k.foreground : alpha(k.foreground, 0.85));
+          // A dot for a 1 or a 0 (Prometheus's `up`) says the word, not the digit.
+          const text = c.dot && (v === 1 || v === 0 || v === true || v === false) && !c.format ? (Number(v) ? "up" : "down") : show(v, c), color = text === "–" ? k.dim : c.dot ? k.foreground : this.tone(k, l) ?? (i === 0 ? k.foreground : alpha(k.foreground, 0.85));
           return c.dot
             ? cell(c, i, h_flex().gap(6).items_center().when(i > 0 && c.align !== "left", (e) => e.justify_end()).child(this.dot(k, v == null ? null : l)).child(div().min_w(0).truncate().text_color(color).child(text)))
             : cell(c, i, div().truncate().text_color(color).when(i === 0, (e) => e.font_medium()).child(text));
@@ -282,7 +283,8 @@ export class DashboardPanel {
     // Each series in `n` columns: the last value that falls in the column.
     const cols = series.map((s) => { const out = new Array(n).fill(null); for (const [t, v] of s.points) if (v != null) out[Math.min(n - 1, Math.floor(((t - t0) / (t1 - t0 || 1)) * n))] = v; return out; });
     const all = cols.flat().filter((v) => v != null);
-    const low = num(w.min) ?? Math.min(0, ...all), top = num(w.max) ?? Math.max(...all, low + 1e-9);
+    // A flat line at zero still gets a scale (0 to 1), not 0 to 0.
+    const low = num(w.min) ?? Math.min(0, ...all), most = Math.max(...all, low), top = num(w.max) ?? (most > low ? most : low + 1);
     const y = (v) => Math.round((CHART_H - 2) * (1 - Math.max(0, Math.min(1, (v - low) / (top - low || 1)))));
     return v_flex().gap(6)
       .child(h_flex().gap(6).items_stretch()

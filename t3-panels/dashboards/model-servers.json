@@ -1,0 +1,76 @@
+{
+  "title": "Model servers",
+  "refresh": 20,
+  "prometheus": "http://192.168.1.126:9090",
+  "widgets": [
+    { "type": "status", "title": "Servers", "w": 2,
+      "source": { "type": "prometheus", "query": "up{engine!=\"\"}" },
+      "label": ".host", "sub": ".engine", "state": ".value", "empty": "Prometheus has no model server targets" },
+    { "type": "stat", "title": "Requests running", "w": 1,
+      "source": { "type": "prometheus", "query": "sum(vllm:num_requests_running)" }, "spark": true },
+    { "type": "stat", "title": "Requests waiting", "w": 1,
+      "source": { "type": "prometheus", "query": "sum(vllm:num_requests_waiting)" }, "spark": true,
+      "thresholds": { "warn": 1, "bad": 5 } },
+    { "type": "table", "title": "Per server", "w": 4,
+      "source": { "type": "prometheus", "by": "host", "queries": {
+        "running": "sum by (host, engine, model_name) (vllm:num_requests_running)",
+        "up": "max by (host, engine) (up{engine!=\"\"})",
+        "waiting": "sum by (host) (vllm:num_requests_waiting)",
+        "decode": "sum by (host) (rate(vllm:generation_tokens_total[2m]))",
+        "prompt": "sum by (host) (rate(vllm:prompt_tokens_total[2m]))",
+        "kv": "max by (host) (vllm:kv_cache_usage_perc)",
+        "errors": "sum by (host) (increase(vllm:request_success_total{finished_reason=~\"error|abort\"}[30m]))",
+        "done": "sum by (host) (increase(vllm:request_success_total[30m]))"
+      } },
+      "sort": ".host",
+      "columns": [
+        { "title": "Server", "value": "{.host} · {.engine}" },
+        { "title": "Up", "value": ".up", "w": 40, "dot": true, "align": "left" },
+        { "title": "Model", "value": ".model_name", "w": 84, "align": "left" },
+        { "title": "Running", "value": ".running", "w": 56 },
+        { "title": "Waiting", "value": ".waiting", "w": 54, "thresholds": { "warn": 1, "bad": 5 } },
+        { "title": "Decode tok/s", "value": ".decode", "decimals": 1, "w": 84 },
+        { "title": "Prompt tok/s", "value": ".prompt", "decimals": 1, "w": 84 },
+        { "title": "KV cache", "value": ".kv", "format": "percent", "w": 64, "thresholds": { "warn": 0.8, "bad": 0.95 } },
+        { "title": "Done 30m", "value": ".done", "decimals": 0, "w": 68 },
+        { "title": "Errors 30m", "value": ".errors", "decimals": 0, "w": 74, "thresholds": { "warn": 1, "bad": 5 } }
+      ] },
+    { "type": "line", "title": "Decode, last 30 min", "w": 2, "refresh": 30,
+      "source": { "type": "prometheus", "query": "sum by (host) (rate(vllm:generation_tokens_total[2m]))", "range": "30m", "step": 30 },
+      "legend": "{.host}", "unit": "tok/s", "decimals": 1 },
+    { "type": "line", "title": "Prompt, last 30 min", "w": 2, "refresh": 30,
+      "source": { "type": "prometheus", "query": "sum by (host) (rate(vllm:prompt_tokens_total[2m]))", "range": "30m", "step": 30 },
+      "legend": "{.host}", "unit": "tok/s", "decimals": 1 },
+    { "type": "bars", "title": "KV cache in use", "w": 2,
+      "source": { "type": "prometheus", "query": "max by (host) (vllm:kv_cache_usage_perc) * 100" },
+      "label": ".host", "value": ".value", "max": 100, "showMax": false, "unit": "%", "decimals": 0,
+      "thresholds": { "warn": 80, "bad": 95 } },
+    { "type": "status", "title": "Endpoints, as mc-exporter on endor sees them", "w": 2,
+      "source": { "type": "prometheus", "query": "mc_endpoint_up" },
+      "label": ".role", "sub": ".url", "state": ".value", "empty": "mc-exporter reports no endpoints" },
+    { "type": "table", "title": "omlx on endor", "w": 2,
+      "source": { "type": "prometheus", "by": "instance", "queries": {
+        "requests": "sum by (instance) (increase(mc_omlx_requests_total[30m]))",
+        "decode": "sum by (instance) (rate(mc_omlx_generated_tokens_total[2m]) / rate(mc_omlx_generation_seconds_total[2m]))",
+        "prompt": "sum by (instance) (rate(mc_omlx_prompt_tokens_total[2m]))",
+        "errors": "sum by (instance) (increase(mc_omlx_http_errors_total[30m]))"
+      } },
+      "empty": "mc-exporter has no omlx series now: omlx isn't serving, or isn't scraped",
+      "columns": [
+        { "title": "Exporter", "value": ".instance" },
+        { "title": "Requests 30m", "value": ".requests", "decimals": 0, "w": 88 },
+        { "title": "Decode tok/s", "value": ".decode", "decimals": 1, "w": 84 },
+        { "title": "Prompt tok/s", "value": ".prompt", "decimals": 1, "w": 84 },
+        { "title": "Errors 30m", "value": ".errors", "decimals": 0, "w": 74, "thresholds": { "warn": 1, "bad": 5 } }
+      ] },
+    { "type": "table", "title": "Models served, as mc-exporter sees them", "w": 2,
+      "source": { "type": "prometheus", "query": "mc_served_model_info" },
+      "empty": "mc-exporter reports no served models",
+      "columns": [
+        { "title": "Model", "value": ".model_id" },
+        { "title": "Roles", "value": ".role", "w": 150, "align": "left" },
+        { "title": "Engine", "value": ".engine", "w": 60, "align": "left" },
+        { "title": "At", "value": ".url", "w": 170, "align": "left" }
+      ] }
+  ]
+}
