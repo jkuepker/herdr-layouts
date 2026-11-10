@@ -71,6 +71,9 @@ function segments(text) {
   return out;
 }
 
+// How many rows the chat builds at first, and how many more each time you near the first of them.
+const TAIL = 60;
+
 const SAVE_EVERY_MS = 1000;
 const MAX_STATE_BYTES = 800 * 1024; // readTextFile reads at most 1 MiB
 const DETAIL_MAX = 4000;
@@ -164,13 +167,17 @@ export default class AcpChat extends View {
       if (!e?.shift) this.send(cx);
     });
     // For scripts (`herdr-app do acp-chat.<command>`), what the Copy rows and Cmd+V do: copy:last (the
-    // last reply), copy:code (its last code block), paste (the clipboard's text into the message box).
+    // last reply), copy:code (its last code block), paste (the clipboard's text into the message box),
+    // say:<text> (sends it), scroll:<px> (up; negative down) and scroll:end.
     if (typeof herdr.nextCommand === "function") cx.spawn(async (cx) => {
       for (;;) {
         const c = await herdr.nextCommand();
         const last = [...(this.state?.transcript?.items ?? [])].reverse().find((m) => m.kind === "agent");
         if (c === "copy:last" && last) this.copy(cx, `${last.id}:cp`, last.text);
         if (c === "copy:code" && last) { const g = segments(last.text).filter((x) => x.code).pop(); if (g) this.copy(cx, `${last.id}:cp`, g.text); }
+        if (c.startsWith("say:")) { this.input.set_value(c.slice(4)); this.send(cx); }
+        if (c === "scroll:end") { this.follow = true; this.off = 0; }
+        else if (c.startsWith("scroll:")) this.wheel(Number(c.slice(7)) || 0, 1e9, cx);
         if (c === "paste") { const text = cx.read_from_clipboard(); if (text) this.input.replace(text); }
         cx.notify();
       }
@@ -178,7 +185,6 @@ export default class AcpChat extends View {
     this.custom = InputState.new({ placeholder: "or a command, e.g. my-agent --acp" });
     this.filter = InputState.new({ placeholder: "Filter…" });
     this.filter.on("change", (_e, cx) => cx.notify());
-    this.scroll = VirtualListScrollHandle.new();
 
     if (this.overlay) {
       this.phase = "loading";
@@ -285,10 +291,8 @@ export default class AcpChat extends View {
       return; // caught mid-rename; the next change brings a whole file
     }
     if (this.state && next.seq === this.state.seq) return;
-    const grew = next.transcript.items.length !== (this.state?.transcript.items.length ?? 0) || next.seq !== this.state?.seq;
     this.state = next;
     if (["exited", "stopped"].includes(next.status)) this.alive = false;
-    if (grew && this.follow) this.scroll.scroll_to_bottom();
     cx.notify();
   }
 
@@ -405,7 +409,6 @@ export default class AcpChat extends View {
     if (["exited", "stopped"].includes(this.state.status)) this.alive = false;
     const save = () => fs.writeFile(`${this.dir}/state.json`, this.session.snapshot(MAX_STATE_BYTES)).catch(() => {});
     const draw = () => {
-      if (this.follow) this.scroll.scroll_to_bottom();
       cx.notify();
     };
     if (urgent) {
@@ -601,30 +604,65 @@ export default class AcpChat extends View {
         if (!m.pending) items.push({ id: `${m.id}:cp`, kind: "copy", text: m.text, label: "Copy" });
       } else items.push(m);
     }
-    return v_flex().relative().flex_1().min_h(0)
-      .on_scroll_wheel((e, cx) => {
-        if (e.delta.y > 0 && this.follow) { this.follow = false; cx.notify(); }
+    // The chat keeps to its end by itself: gpui-kit's measured `list` can't be scrolled from code (its
+    // scroll handle is a virtual list's), so a long chat in one stayed at its first message. The rows
+    // are a plain column pinned to the pane's bottom edge instead, and scrolling up moves that column
+    // down by `off` pixels. Only the last `tail` rows are built; more as you near the first of them.
+    // Rows being plain elements, each has its own click and right-click.
+    const zoom = Number(settings()?.zoom) || 1;
+    const n = Math.min(items.length, this.tail ?? TAIL), shown = items.slice(items.length - n);
+    const off = this.follow ? 0 : (this.off ?? 0);
+    // Shorter than the pane: from the top.
+    const short = n === items.length && (this.laneH != null && this.viewH != null ? this.laneH <= this.viewH : items.length <= 6);
+    const copies = (m) => (m.kind === "seg" ? m.whole : m.kind === "tool" ? m.detail : ["user", "thought", "copy"].includes(m.kind) ? m.text : null);
+    const lane = v_flex().absolute().left(0).right(0)
+      .on_size_change((size, cx) => {
+        const h = size.height / zoom;
+        if (Math.abs(h - (this.laneH ?? 0)) < 1) return;
+        // What arrives while you read further up must not move what you read.
+        if (!this.follow && this.laneH != null && !this.grew) this.off = Math.max(0, (this.off ?? 0) + h - this.laneH);
+        this.grew = false;
+        this.laneH = h;
+        cx.notify();
       })
-      .child(list("acp-msgs", items.length, (i) => items[i].id, (i) => this.item(t, items[i], i === 0 ? tr.dropped : 0, mono))
-        .track_scroll(this.scroll)
-        .on_item_click((id, cx) => {
-          const m = items.find((x) => x.id === id);
-          if (m?.kind === "copy") return this.copy(cx, id, m.text);
-          this.expanded[id] = !this.expanded[id];
-          cx.notify();
-        })
-        .on_item_secondary_click((id, _e, cx) => {
-          const m = items.find((x) => x.id === id);
-          const text = !m ? null : m.kind === "seg" ? m.whole : m.kind === "tool" ? m.detail : ["user", "thought", "copy"].includes(m.kind) ? m.text : null;
-          if (text) this.copy(cx, m.kind === "copy" ? id : `${String(id).split(":")[0]}:cp`, text);
-        }))
-      .child(Scrollbar.vertical("acp-msgs").absolute().inset_0())
+      .children(shown.map((m, i) => {
+        const el = div().id(`row-${m.id}`).w_full().child(this.item(t, m, i === 0 && n === items.length ? tr.dropped : 0, mono));
+        const text = copies(m);
+        return (text ? el.on_mouse_down("right", (_e, cx) => this.copy(cx, m.kind === "copy" ? m.id : `${String(m.id).split(":")[0]}:cp`, copies(m))) : el)
+          .when(m.kind === "copy" || m.kind === "tool" || m.kind === "thought", (e) => e.on_click((_e, cx) => {
+            if (m.kind === "copy") return this.copy(cx, m.id, m.text);
+            this.expanded[m.id] = !this.expanded[m.id];
+            cx.notify();
+          }));
+      }));
+    return v_flex().id("acp-lane").relative().flex_1().min_h(0).overflow_hidden()
+      .on_size_change((size, cx) => {
+        const h = size.height / zoom;
+        if (Math.abs(h - (this.viewH ?? 0)) < 1) return;
+        this.viewH = h;
+        cx.notify();
+      })
+      .on_scroll_wheel((e, cx) => this.wheel(e.delta.y, items.length, cx))
+      .child(short ? lane.top(0) : lane.bottom(-off))
       .when(!this.follow, (el) => el.child(div().absolute().bottom(8).right(16)
         .child(this.button(t, "latest", "↓ Latest", (cx) => {
           this.follow = true;
-          this.scroll.scroll_to_bottom();
+          this.off = 0;
           cx.notify();
         }))));
+  }
+
+  // The wheel (or `scroll:<px>`): up by `dy` pixels, down when negative; at the end it follows again.
+  wheel(dy, total, cx) {
+    const max = Math.max(0, (this.laneH ?? 0) - (this.viewH ?? 0));
+    let off = (this.follow ? 0 : this.off ?? 0) + dy;
+    // Near the first row built: build more, and the column's growth is not new output.
+    if (off > max - 400 && (this.tail ?? TAIL) < total) { this.tail = (this.tail ?? TAIL) + TAIL; this.grew = true; }
+    off = Math.max(0, Math.min(off, max));
+    if (off === (this.off ?? 0) && this.follow === (off <= 0) && !this.grew) return;
+    this.off = off;
+    this.follow = off <= 0;
+    cx.notify();
   }
 
   item(t, m, dropped, mono) {

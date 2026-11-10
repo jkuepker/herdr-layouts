@@ -34,6 +34,8 @@ The pane uses the theme's colours throughout (`surface` behind, `chrome` for the
 
 - **Copy**: a reply's text can be selected. A "Copy" row under each message copies all of it and a "Copy code" row over each code block copies that block (a handler can't sit inside a list row, so they are rows); a right-click on a message copies it too. For scripts: `acp-chat.copy:last`, `acp-chat.copy:code`, `acp-chat.paste`. A missing program says "Couldn't start <program>: not found".
 
+- **The chat follows its end**: gpui-kit's measured `list` can't be scrolled from code, so a long chat stayed at its first message. The rows are a plain column pinned to the pane's bottom edge; scrolling up moves it down by pixels, the last 60 rows are built and 60 more as you near the first, and "↓ Latest" or scrolling back down follows again. There is no scrollbar. For scripts: `acp-chat.say:<text>`, `acp-chat.scroll:<px>`, `acp-chat.scroll:end`.
+
 ## Built from
 
 - **Mod** `acp-chat` with two faces. As an overlay (`mod.json`: `{"place": "none", "overlay": {"width": 560, "height": 470}}`; `keys.json` binds `cmd-shift-j` / `ctrl-shift-j` to `mod.open:acp-chat`; **New** calls `openOverlay`) it is the dialog, and **Open chat** runs `pane.split {"direction": "right", "mod": "acp-chat", "props": {"chat": <new id>, "agent": <argv>, "cwd": <folder>}}` and closes itself. As a pane it is the chat: `chat` names it, `agent` (an id from the list or an argv array) starts it the first time, `cwd` is its folder, `machine` the Herdr machine it runs on (null: this computer), and `prompt`, when set, is a new chat's first message, sent once the agent is ready. A pane opened without `chat` shows the setup in place and keeps one chat in its `localStorage`.
