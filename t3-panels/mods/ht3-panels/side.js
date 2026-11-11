@@ -35,6 +35,8 @@ export const SURFACES = [
   { kind: "chat", label: "Side chat", glyph: "messages-square", key: "s" },
   // Not in T3 Code: this layout's own surface (dashboard.js).
   { kind: "dashboard", label: "Dashboard", glyph: "layout-dashboard", key: "g" },
+  // Also this layout's own: the project's test, typecheck, lint and build commands and their problems (checks.js).
+  { kind: "checks", label: "Checks", glyph: "list-checks", key: "c" },
 ];
 export const surface = (kind) => SURFACES.find((s) => s.kind === kind);
 

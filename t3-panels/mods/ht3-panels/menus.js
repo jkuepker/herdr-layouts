@@ -14,9 +14,10 @@ import { MOD, tokens, icon, button, iconButton, badge, shortPath } from "./look.
 import { revertTo } from "./checkpoint.js";
 import { editorOn } from "./settings.js";
 import { SURFACES, send, placeOf, activeSpace, surfaceOff, surfacesHere } from "./side.js";
-import { projectOf, scriptsOf, runScript } from "./scripts.js";
+import { projectOf, scriptsOf, runScript, detectProject } from "./scripts.js";
+import { devCommand } from "./detect.js";
 import { write, wroteLine, Cancelled } from "./gitwrite.js";
-import { discover } from "./servers.js";
+import { discover, startDevServer } from "./servers.js";
 import { readBranches, switchRow, pullFastForward, pickerRows, rowBlocked } from "./branches.js";
 
 export class AddMenu {
@@ -333,6 +334,7 @@ export class ProjectMenu {
     this.writeError = null; // { kind, text }: why nothing was written
     // The servers started from the folder (servers.js): counted once, for the Servers row.
     this.servers = null;
+    this.detected = null; // { checks, dev, scripts } from the folder's package.json, Makefile, …
     if (this.folder) cx.spawn(async (cx) => { this.servers = await discover({ cwd: this.folder, on: this.on }).catch(() => null); cx.notify(); });
     cx.spawn(async (cx) => {
       if (!this.on) {
@@ -343,6 +345,8 @@ export class ProjectMenu {
       cx.notify();
       this.project = await projectOf(space).catch(() => null);
       cx.notify();
+      // What the folder says it has (detect.js): the Run dev row's command.
+      if (this.folder) { this.detected = await detectProject(this.folder, this.on).catch(() => null); cx.notify(); }
       if (this.folder) {
         const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd: this.folder, on: this.on }).catch(() => null);
         this.root = top?.code === 0 ? top.stdout.trim() : null;
@@ -372,6 +376,16 @@ export class ProjectMenu {
     const d = await exec("sh", ["-c", count], { cwd: this.root, on: this.on, timeout: 15000 }).catch(() => null);
     const [add, del] = (d?.stdout ?? "").trim().split(" ").map(Number);
     if (d?.code === 0 && Number.isFinite(add) && Number.isFinite(del)) this.changes = { add, del };
+  }
+
+  // Run dev: the project's dev command (a script named Dev, else package.json's dev or start, a Makefile or justfile's dev)
+  // as a server (servers.js startDevServer). null while the folder is still being read, or says none.
+  devNow() { return this.detected ? devCommand(scriptsOf(this.project?.key), this.detected.dev) : null; }
+  runDev() {
+    const dev = this.devNow();
+    if (!dev || !this.project) return;
+    closeOverlay(this.overlay);
+    startDevServer(this.project, dev);
   }
 
   script(s) {
@@ -469,6 +483,8 @@ export class ProjectMenu {
     if (c.startsWith("key:") && this.pick === "branch") return this.branchKey(c.slice(4), cx);
     if (c === "git:pr") { this.step = this.step === "pr" ? null : "pr"; return cx.notify(); }
     // scripts opens the project's scripts, script:<n> runs the nth (from 0).
+    // dev runs the dev command as a server (the Run dev row).
+    if (c === "dev") return this.runDev();
     if (c === "scripts") { this.pick = this.pick === "scripts" ? null : "scripts"; return cx.notify(); }
     if (c.startsWith("script:")) return this.script(scriptsOf(this.project?.key)[Number(c.slice(7))]);
     // wt:remove asks (the Remove worktree row), wt:yes removes it, wt:no takes the question away.
@@ -828,6 +844,14 @@ export class ProjectMenu {
       .when(!!this.error && this.pick !== "branch", (el) => el.child(div().px(8).py(6).text_size(12).line_height("16px").text_color(k.destructiveText).child(this.error)))
       .child(div().flex_1())
       .child(div().mx(4).my(4).h(1).flex_none().bg(k.border))
+      // Run dev (servers.js startDevServer) and the Checks surface (checks.js).
+      .when(!!this.project, (el) => {
+        const dev = this.devNow();
+        const r = row("proj-dev", "play", "Run dev", { detail: this.detected == null ? null : dev ? dev.command : "no dev script found: name a script Dev in Settings", onClick: dev ? () => this.runDev() : null });
+        return el.child(dev ? r : r.opacity(0.5));
+      })
+      .when(!!this.folder, (el) => el.child(row("proj-checks", "list-checks", "Checks", { detail: this.detected == null ? null : this.detected.checks.length ? `${this.detected.checks.length} found` : "tests, types, lint, build",
+        onClick: () => { closeOverlay(this.overlay); run(`${MOD}.checks`); } })))
       // The servers started from this folder (servers.js): the row opens their dialog.
       .when(!!this.folder, (el) => el.child(row("proj-servers", "server", "Servers", { detail: this.servers == null ? null : this.servers.length ? this.servers.map((s) => `:${s.port}`).join(" ") : "none running",
         onClick: () => { closeOverlay(this.overlay); run(`${MOD}.servers`); } })))

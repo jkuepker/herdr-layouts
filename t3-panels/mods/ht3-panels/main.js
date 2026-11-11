@@ -27,6 +27,7 @@ import { DiffPanel } from "./diff.js";
 import { DashboardPanel } from "./dashboard.js";
 import { PrPanel, PrChatDialog, prChatCommand } from "./pr.js";
 import { BrowserPanel } from "./browser.js";
+import { ChecksPanel, openChecks } from "./checks.js";
 import { SideChat, beginChat } from "./sidechat.js";
 import { Empty } from "./empty.js";
 import { detect } from "./agent-acp.js";
@@ -76,6 +77,8 @@ class Buttons {
     // chat:effort-up and the other composer keys belong to the chat (chat.js), not a side chat start.
     else if (name === "chat" && !/^(effort-up|effort-down|mode|model)$/.test(a ?? "")) cx.spawn(async (cx) => { const d = await detect(activeSpace()?.machine ?? null); if (agentOn(a)) beginChat(b ?? "a", a, d.found); cx.notify(); });
     else if (name === "settings") openSettings();
+    // checks[:<a|b>]: shows the Checks surface (checks.js), in the group that has it, else the first (or the one given).
+    else if (c === "checks" || (name === "checks" && (a === "a" || a === "b"))) cx.spawn(async (cx) => { try { await openChecks(a); } catch (e) { fail(e); } cx.notify(); });
     else if (name === "set") {
       const rest = c.slice(4), at = rest.indexOf("=");
       try { setPref(at < 0 ? rest : rest.slice(0, at), at < 0 ? undefined : JSON.parse(rest.slice(at + 1))); } catch (e) { fail(e); }
@@ -110,7 +113,7 @@ class Buttons {
     else if (name === "worktrees") { if (!worktreesOpen()) openWorktrees(c.slice(10)); }
     // reopen-closed: brings back the newest closed side-panel surface, file or chat tab (side.js reopenClosed; T3's mod+shift+t).
     else if (c === "reopen-closed") cx.spawn(async (cx) => { try { await reopenClosed(cx); } catch (e) { fail(e); } cx.notify(); });
-    else if (name === "menu") openOverlay({ mod: MOD, kind: "popup", at: { x: 900, y: 48 }, width: a === "project" ? 344 : ADD_MENU.w, height: a === "project" ? 660 : ADD_MENU.h, props: { menu: a, group: b ?? "a" } });
+    else if (name === "menu") openOverlay({ mod: MOD, kind: "popup", at: { x: 900, y: 48 }, width: a === "project" ? 344 : ADD_MENU.w, height: a === "project" ? 724 : ADD_MENU.h, props: { menu: a, group: b ?? "a" } });
     cx.notify();
   }
 
@@ -139,6 +142,7 @@ const FACES = {
   pr: () => new PrPanel(false),
   prs: () => new PrPanel(true),
   browser: () => new BrowserPanel(),
+  checks: () => new ChecksPanel(),
   side: () => new SideChat(),
   empty: () => new Empty(),
   buttons: () => new Buttons(),
