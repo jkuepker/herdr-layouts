@@ -310,7 +310,9 @@ export class DiffPanel {
   answer(cx, yes) {
     const a = this.armedNow();
     this.armed = null;
-    if (yes && a) this.act(cx, a.kind, a.path, a.n);
+    // Yes runs what was asked about (act() would only ask again, the question being cleared).
+    const f = yes && a ? this.files?.find((x) => x.path === a.path) : null;
+    if (f && !this.busy) this.run(cx, a.kind, f, a.n);
     else cx.notify();
   }
   run(cx, kind, f, n) {
@@ -585,6 +587,8 @@ export class DiffPanel {
           const b = await exec("sh", ["-c", BASE], { cwd: root, on }).catch(() => null);
           const [ref, sha] = (b?.stdout ?? "").trim().split(" ");
           if (sha) { from = sha; base = ref; }
+          // A base that is HEAD itself (on the base branch, nothing ahead) compares the working tree to HEAD: Revert and Stage work.
+          if (sha) { const h = await exec("git", ["rev-parse", "HEAD"], { cwd: root, on }).catch(() => null); if (h?.code === 0 && h.stdout.trim() === sha) from = "HEAD"; }
         }
         let r = await exec("git", turn ? [...flags, turn.from, turn.to] : [...flags, from], { cwd: root, on });
         let at = turn ? [turn.from, turn.to] : [from];
