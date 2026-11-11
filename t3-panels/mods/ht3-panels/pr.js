@@ -5,18 +5,23 @@
 // - "Linked pull requests" (props.panel "prs"): the open pull requests you authored in the
 //   repository (`gh pr list --author @me`), the branch's own marked; a click opens one.
 // Reads only. Without `gh`, without a sign-in, a GitHub remote or a pull request, it says so.
+// - CI drill-down (ci-log.js): a failed check's Log (`gh run view --log-failed`, cleaned, the last 300 lines, in a step of
+//   the surface with Back), Re-run failed (`gh run rerun <run> --failed`, after a confirmation), Fix with agent (the
+//   failure log, 150 lines, into the shown chat's message box as Quote does, not sent). Checks still running are
+//   refreshed every 30 s while the surface shows; checks of external CI (no GitHub run) have Open instead of Log.
 // - "Start chat from PR" (T3's PullRequestThreadDialog; both surfaces, and `ht3-panels.prChat`, which asks for a number
 //   or an address): the pull request's head in a worktree of its own, <repo>/.worktrees/pr-<number>, and a chat there
 //   with the pull request (title, description, reviews, open review threads, comments) in its message box, not sent.
 
 import { div } from "gpui-kit";
-import { v_flex, h_flex, TextView, InputState, Input } from "gpui-base";
-import { exec, run, notify, focused, openOverlay, closeOverlay } from "herdr";
+import { v_flex, h_flex, TextView, InputState, Input, Scrollbar, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
+import { exec, run, notify, focused, openOverlay, closeOverlay, shared, setShared } from "herdr";
 import { MOD, tokens, alpha, icon, button, iconButton, badge } from "./look.js";
 import { activeSpace, placeOf, showing } from "./side.js";
 import { repoOf, addWorktree, setupWorktree } from "./launcher.js";
 import { AGENTS, detect } from "./agent-acp.js";
 import { firstAgent } from "./settings.js";
+import { runIdOf, failedRuns, logRows, fixPrompt, explainRun, LOG_LINES, PROMPT_LINES } from "./ci-log.js";
 
 const FIELDS = "number,title,state,isDraft,url,author,headRefName,baseRefName,mergeable,reviewDecision,statusCheckRollup,reviews,additions,deletions,changedFiles,body,updatedAt";
 const LIST_FIELDS = "number,title,state,isDraft,url,author,headRefName,reviewDecision,statusCheckRollup,updatedAt";
@@ -46,7 +51,11 @@ export function checkOf(c) {
   const name = c.name ?? c.context ?? "check";
   const raw = (c.conclusion || c.state || c.status || "").toUpperCase();
   const ok = ["SUCCESS", "NEUTRAL", "SKIPPED"].includes(raw), bad = ["FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE"].includes(raw);
-  return { name, group: c.workflowName ?? null, url: c.detailsUrl ?? c.targetUrl ?? null, tone: ok ? "ok" : bad ? "bad" : "wait", raw: raw.toLowerCase().replace(/_/g, " ") || "pending" };
+  const url = c.detailsUrl ?? c.targetUrl ?? null, id = runIdOf(url);
+  const tone = ok ? "ok" : bad ? "bad" : "wait";
+  // A check that hasn't finished says "running" (or "queued"); the rest keep GitHub's word for it.
+  const label = { IN_PROGRESS: "running", QUEUED: "queued", PENDING: "pending", WAITING: "waiting", REQUESTED: "queued" }[raw] ?? (raw.toLowerCase().replace(/_/g, " ") || "pending");
+  return { name, group: c.workflowName ?? null, url, tone, raw: label, run: id?.run ?? null, job: id?.job ?? null, repo: id?.repo ?? null };
 }
 export function checksOf(pr) {
   return (pr.statusCheckRollup ?? []).map(checkOf);
@@ -306,13 +315,23 @@ export class PrPanel {
     this.data = null; // a pull request, or a list
     this.problem = null;
     this.loading = false;
-    this.chat = null; // Start chat from PR: { busy, text, bad }, the line under the title
+    this.chat = null; // Start chat from PR, Re-run, Fix with agent: { busy, text, bad }, the line under the title
+    this.view = null; // a step of the surface: { kind: "log", check, state, rows, … } or { kind: "rerun", runs, busy }
+    this.loadedAt = 0;
+    this.scroll = VirtualListScrollHandle.new();
     this.follow(cx);
-    // Asks GitHub only while its tab shows; back in view, it asks at once.
-    cx.timer.every(30000, (cx) => { if (showing(this.group, this.linked ? "prs" : "pr")) this.load(cx); else this.stale = true; });
+    // Asks GitHub only while its tab shows; back in view, it asks at once. While a check is still running it asks every
+    // 30 s; once all have finished it stops (a slower look every two minutes keeps the rest of the page fresh).
+    cx.timer.every(30000, (cx) => {
+      if (!showing(this.group, this.linked ? "prs" : "pr")) { this.stale = true; return; }
+      if (this.linked || this.running() || Date.now() - this.loadedAt > 110000) this.load(cx);
+    });
   }
-  close() {}
+  close() { try { this.scroll.release(); } catch {} }
   command() {}
+
+  // Whether a check of the shown pull request hasn't finished.
+  running() { return !this.linked && !!this.data && checksOf(this.data).some((c) => c.tone === "wait"); }
 
   follow(cx) {
     const sp = activeSpace(), where = placeOf(sp);
@@ -325,7 +344,83 @@ export class PrPanel {
     this.data = null;
     this.problem = null;
     this.chat = null;
+    this.view = null;
     this.load(cx);
+  }
+
+  // ---- CI: Log, Re-run failed, Fix with agent ----
+
+  say(cx, text, bad = false, busy = false) { this.chat = { text, bad, busy }; cx.notify(); }
+
+  // The log of a check's job: what failed (`--log-failed`), else, for a job that didn't fail outright (cancelled), its whole log.
+  async fetchLog(c) {
+    const at = { cwd: this.cwd, on: this.on, timeout: 90000 }, job = c.job ? ["--job", c.job] : [], repo = c.repo ? ["-R", c.repo] : [];
+    const ask = async (flag) => {
+      const r = await exec("gh", ["run", "view", c.run, ...repo, flag, ...job], at);
+      if (r.code !== 0) throw new Error(r.stderr || r.stdout);
+      return r.stdout;
+    };
+    const out = await ask("--log-failed");
+    return !out.trim() && c.job ? ask("--log") : out;
+  }
+
+  openLog(cx, c) {
+    const view = { kind: "log", check: c, state: "loading", rows: [], raw: "" };
+    this.view = view;
+    this.chat = null;
+    cx.notify();
+    cx.spawn(async (cx) => {
+      try {
+        view.raw = await this.fetchLog(c);
+        Object.assign(view, logRows(view.raw, { max: LOG_LINES }), { state: "ready" });
+        this.scroll.scroll_to_bottom();
+      } catch (e) { view.state = "error"; view.error = explainRun(e, { on: this.on }); }
+      cx.notify();
+    });
+  }
+
+  // Fix with agent: a short prompt and the failure log into the message box of the chat in the shown tab, the way Quote
+  // and the Diff's "Add to chat" do (chat.js takes shared "ht3-panels.quote"); the person reads it and sends it.
+  fixWithAgent(cx, c) {
+    const tab = focused()?.tab, places = shared("ht3-panels.places") ?? {};
+    if (!Object.values(places).some((p) => p.tab === tab)) return this.say(cx, "The shown tab isn't a chat: show the chat this is for, then press Fix with agent.", true);
+    const seen = this.seen, pr = this.data;
+    this.say(cx, `Reading the log of ${c.name}…`, false, true);
+    cx.spawn(async (cx) => {
+      try {
+        const raw = this.view?.check === c && this.view.raw ? this.view.raw : await this.fetchLog(c);
+        if (this.seen !== seen) return;
+        setShared("ht3-panels.quote", { tab, text: fixPrompt({ name: c.group ? `${c.group} / ${c.name}` : c.name, branch: this.branch, number: pr?.number }, raw, { lines: PROMPT_LINES }), at: Date.now() });
+        this.say(cx, `Added the failure of ${c.name} to the chat's message box: the log's last ${PROMPT_LINES} lines. Nothing is sent.`);
+      } catch (e) { if (this.seen === seen) this.say(cx, explainRun(e, { on: this.on }), true); }
+    });
+  }
+
+  // Re-run failed, after the confirmation step: `gh run rerun <run> --failed` for each run with a failed job, then the checks again.
+  rerun(cx, runs) {
+    const view = this.view;
+    if (!view || view.busy) return;
+    const seen = this.seen;
+    view.busy = true;
+    cx.notify();
+    cx.spawn(async (cx) => {
+      const errs = [];
+      let done = 0;
+      for (const r of runs) {
+        try {
+          const o = await exec("gh", ["run", "rerun", r.run, "--failed", ...(r.repo ? ["-R", r.repo] : [])], { cwd: this.cwd, on: this.on, timeout: 30000 });
+          if (o.code !== 0) throw new Error(o.stderr || o.stdout);
+          done += 1;
+        } catch (e) { errs.push(`${r.name}: ${explainRun(e, { on: this.on })}`); }
+      }
+      if (this.seen !== seen) return;
+      if (this.view === view) this.view = null;
+      if (errs.length) this.say(cx, `${done ? `Re-running ${done} of ${runs.length} runs. ` : ""}${errs.join(" ")}`, true);
+      else this.say(cx, `Re-running the failed jobs of ${done} run${done === 1 ? "" : "s"}.`);
+      this.load(cx);
+      // GitHub takes a moment to show the new attempt; ask once more, and the 30 s timer follows while it runs.
+      cx.timer.after(4000, (cx) => { if (this.seen === seen) this.load(cx); });
+    });
   }
 
   // Start chat from PR: what it is doing, then what it did (a reused worktree is said) or why it couldn't.
@@ -353,6 +448,7 @@ export class PrPanel {
         const args = this.linked ? ["pr", "list", "--author", "@me", "--state", "open", "--limit", "30", "--json", LIST_FIELDS] : ["pr", "view", "--json", FIELDS];
         const r = await exec("gh", args, { cwd, on, timeout: 25000 });
         if (this.seen !== seen) return;
+        this.loadedAt = Date.now();
         if (r.code !== 0) { this.data = null; this.problem = explain(r.stderr || r.stdout, this.branch, on); }
         else {
           this.data = JSON.parse(r.stdout || "null") ?? (this.linked ? [] : null);
@@ -372,6 +468,7 @@ export class PrPanel {
   tone(k, t) { return t === "ok" ? k.successText : t === "bad" ? k.destructiveText : k.warningText; }
 
   checkIcon(k, c) {
+    if (c.tone === "wait" && c.raw === "running") return icon("loader-circle").size(14).flex_none().text_color(this.tone(k, c.tone)).spin(1000);
     const g = c.tone === "ok" ? "circle-check" : c.tone === "bad" ? "circle-x" : "circle-dashed";
     return icon(g).size(14).flex_none().text_color(this.tone(k, c.tone));
   }
@@ -396,8 +493,57 @@ export class PrPanel {
     if (!this.cwd) return root.child(this.head(k, title)).child(this.empty(k, "No folder: focus a terminal to see its pull requests."));
     if (this.problem) return root.child(this.head(k, title)).child(this.empty(k, this.problem.text, this.problem.kind === "error" ? k.destructiveText : k.muted));
     if (!this.data) return root.child(this.head(k, title)).child(this.empty(k, "Asking GitHub…"));
+    if (!this.linked && this.view) return root.child(this.view.kind === "log" ? this.logView(k, this.view) : this.rerunView(k, this.view));
     const top = root.child(this.head(k, this.linked ? `${title} · ${this.data.length}` : title)).when(!!this.chat, (el) => el.child(this.chatLine(k)));
     return top.child(this.linked ? this.list(k) : this.one(k, this.data));
+  }
+
+  // The header of a step: Back, then the title.
+  stepHead(k, title, right = []) {
+    return h_flex().h(36).flex_none().px(8).gap(6).items_center().border_b(1).border_color(alpha(k.border, 0.6))
+      .child(iconButton(k, "pr-back", "chevron-left", (cx) => { this.view = null; cx.notify(); }, { tip: "Back to the pull request" }))
+      .child(div().flex_1().min_w(0).truncate().font_medium().text_size(13).child(title))
+      .children(right);
+  }
+
+  // The Log step: the cleaned end of a failed check's log (ci-log.js), job and step names as headers, scrolled to the end.
+  logView(k, v) {
+    const c = v.check, name = c.group ? `${c.group} / ${c.name}` : c.name;
+    const head = this.stepHead(k, `Log · ${name}`, [
+      button(k, "pr-fix", "Fix with agent", (cx) => this.fixWithAgent(cx, c), { variant: "outline", size: "xs", glyph: "sparkles", disabled: v.state !== "ready" || this.chat?.busy === true,
+        tip: "Put the failure into the message box of the shown chat (not sent)" }),
+      iconButton(k, "pr-log-open", "external-link", () => open(c.url), { tip: "Open the check on GitHub" })]);
+    const root = v_flex().size_full().min_h(0).child(head).when(!!this.chat, (el) => el.child(this.chatLine(k)));
+    if (v.state === "loading") return root.child(this.empty(k, "Reading the log…"));
+    if (v.state === "error") return root.child(this.empty(k, v.error, k.destructiveText));
+    if (v.empty) return root.child(this.empty(k, "This check's log has no output."));
+    const rows = v.rows, ROWH = 18;
+    const line = (r, i) => (r.kind === "head"
+      ? h_flex().id(`lg-${i}`).h(ROWH + 4).w_full().px(12).items_center().overflow_hidden().bg(alpha(k.foreground, 0.06)).text_size(11).font_medium().text_color(k.muted).child(div().min_w(0).truncate().child(r.text))
+      : h_flex().id(`lg-${i}`).h(ROWH).w_full().px(12).items_center().overflow_hidden().font_family(k.mono).text_size(11).text_color(r.kind === "error" ? k.destructiveText : k.foreground)
+        .child(div().min_w(0).whitespace_nowrap().truncate().child(r.text || " ")));
+    return root
+      .child(h_flex().h(24).flex_none().px(12).items_center().text_size(11).text_color(k.muted)
+        .child(div().min_w(0).truncate().child(v.hidden > 0 ? `The last ${rows.filter((r) => r.kind !== "head").length} of ${v.total} lines of what failed.` : `${v.total} line${v.total === 1 ? "" : "s"} of what failed.`)))
+      .child(v_flex().relative().flex_1().min_h(0).bg(alpha(k.foreground, k.dark ? 0.03 : 0.02))
+        .child(v_virtual_list("ht3-pr-log", rows.length, ROWH + 4, (i) => `lg-${i}`, (range) => rows.slice(range.start, range.end).map((r, j) => line(r, range.start + j)))
+          .track_scroll(this.scroll).size_full())
+        .child(Scrollbar.vertical("ht3-pr-log").absolute().inset_0()));
+  }
+
+  // The confirmation before Re-run failed: which runs, and what happens.
+  rerunView(k, v) {
+    return v_flex().size_full().min_h(0).child(this.stepHead(k, "Re-run failed jobs"))
+      .child(v_flex().flex_1().min_h(0).px(14).pt(14).gap(10).text_size(13)
+        .child(div().text_size(15).font_semibold().child(`Re-run the failed jobs of ${v.runs.length} run${v.runs.length === 1 ? "" : "s"}?`))
+        .child(div().text_size(12).line_height("18px").text_color(k.muted).child("GitHub starts the jobs that failed again, in the same run (gh run rerun --failed). Jobs that passed are not run again."))
+        .child(v_flex().gap(2).children(v.runs.map((r) => h_flex().min_h(24).gap(8).items_center().text_size(12)
+          .child(icon("rotate-ccw").size(14).flex_none().text_color(k.muted))
+          .child(div().flex_1().min_w(0).truncate().child(r.name))
+          .child(div().flex_none().font_family(k.mono).text_size(11).text_color(k.muted).child(`run ${r.run}`)))))
+        .child(h_flex().pt(6).gap(8)
+          .child(button(k, "rerun-cancel", "Cancel", (cx) => { this.view = null; cx.notify(); }, { variant: "outline", size: "sm", disabled: v.busy }))
+          .child(button(k, "rerun-go", v.busy ? "Re-running…" : "Re-run failed", (cx) => this.rerun(cx, v.runs), { variant: "default", size: "sm", glyph: "rotate-ccw", disabled: v.busy }))));
   }
 
   list(k) {
@@ -424,7 +570,8 @@ export class PrPanel {
 
   one(k, pr) {
     const st = prState(pr, k), checks = checksOf(pr);
-    const passing = checks.filter((c) => c.tone === "ok").length;
+    const passing = checks.filter((c) => c.tone === "ok").length, waiting = checks.filter((c) => c.tone === "wait").length;
+    const runs = failedRuns(checks), fixable = checks.find((c) => c.tone === "bad" && c.run) ?? null;
     const reviews = new Map();
     for (const r of pr.reviews ?? []) if (r.state !== "PENDING" && r.state !== "COMMENTED") reviews.set(r.author?.login ?? "?", r.state);
     const section = (t, right = null) => h_flex().pt(14).pb(4).gap(8).items_center().text_size(11).font_medium().text_color(k.muted)
@@ -446,13 +593,21 @@ export class PrPanel {
         .child(div().child(pr.author?.login ? `by ${pr.author.login}` : ""))
         .child(div().text_color(k.successText).child(`+${pr.additions ?? 0}`)).child(div().text_color(k.destructiveText).child(`−${pr.deletions ?? 0}`))
         .child(div().child(`${pr.changedFiles ?? 0} file${pr.changedFiles === 1 ? "" : "s"}`)).child(div().child(ago(pr.updatedAt))))
-      .child(section("Checks", checks.length ? `${passing}/${checks.length} passing` : null))
+      .child(section("Checks", checks.length ? `${waiting ? `${waiting} running · ` : ""}${passing}/${checks.length} passing` : null))
       .when(!checks.length, (el) => el.child(div().text_size(12).text_color(k.muted).child("No checks reported.")))
-      .children(checks.slice(0, 40).map((c, i) => h_flex().id(`chk-${i}`).h(26).px(4).gap(8).items_center().rounded(6).text_size(12)
+      .when(!!runs.length || !!fixable, (el) => el.child(h_flex().pb(4).gap(6).items_center()
+        .when(!!runs.length, (e) => e.child(button(k, "pr-rerun", "Re-run failed", (cx) => { this.view = { kind: "rerun", runs, busy: false }; this.chat = null; cx.notify(); }, { variant: "outline", size: "xs", glyph: "rotate-ccw",
+          tip: `Start the failed jobs again (gh run rerun --failed): ${runs.length} run${runs.length === 1 ? "" : "s"}, after a confirmation` })))
+        .when(!!fixable, (e) => e.child(button(k, "pr-fix-all", "Fix with agent", (cx) => this.fixWithAgent(cx, fixable), { variant: "outline", size: "xs", glyph: "sparkles", disabled: this.chat?.busy === true,
+          tip: `Put the log of ${fixable.name} into the message box of the shown chat (not sent)` })))))
+      .children(checks.slice(0, 40).map((c, i) => h_flex().id(`chk-${i}`).min_h(26).px(4).gap(8).items_center().rounded(6).text_size(12)
         .when(!!c.url, (el) => el.cursor_pointer().hover((s) => s.bg(alpha(k.foreground, 0.07))).role("button").accessibility_label(`Open ${c.name}`).on_click(() => open(c.url)))
         .child(this.checkIcon(k, c))
         .child(div().min_w(0).flex_1().truncate().child(c.group ? `${c.group} / ${c.name}` : c.name))
-        .child(div().flex_none().text_size(11).text_color(this.tone(k, c.tone)).child(c.raw))))
+        .child(div().flex_none().text_size(11).text_color(this.tone(k, c.tone)).child(c.raw))
+        // A failed GitHub Actions job has a log; a failed check of other CI (no run to ask about) has Open.
+        .when(c.tone === "bad" && !!c.run, (el) => el.child(button(k, `chk-log-${i}`, "Log", (cx) => this.openLog(cx, c), { variant: "ghost", size: "xs", glyph: "scroll-text", tip: `The end of ${c.name}'s log (gh run view --log-failed)` })))
+        .when(c.tone === "bad" && !c.run && !!c.url, (el) => el.child(button(k, `chk-open-${i}`, "Open", () => open(c.url), { variant: "ghost", size: "xs", glyph: "external-link", tip: "This check isn't a GitHub Actions job: open its page" })))))
       .child(section("Reviews", decision ? decision[0] : null))
       .when(!reviews.size, (el) => el.child(div().text_size(12).text_color(k.muted).child("No reviews yet.")))
       .children([...reviews.entries()].map(([who, state]) => h_flex().h(26).px(4).gap(8).items_center().text_size(12)
