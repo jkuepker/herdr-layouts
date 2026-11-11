@@ -19,6 +19,7 @@ import { chatPlace, showing, rememberClosed, panelWidth } from "./side.js";
 import { recordRecent } from "./quick.js";
 import { loadBlame, loadHistory, openCommit, blameCell, blameNote, historyView, gutterWidth } from "./blame.js";
 import { conflictBlocks, stepConflict } from "./gitstate.js";
+import { openOutline, outlineView, shareOutline } from "./outline.js";
 
 const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", cjs: "js", toml: "yaml", jsonc: "json", svelte: "html", vue: "html", yml: "yaml", htm: "html", markdown: "md", zsh: "sh", bash: "sh" };
 const PER_FOLDER = 500, TOTAL = 5000;
@@ -98,6 +99,9 @@ export class FilePanel {
     // blame: shows or hides the author, age and subject of each line's commit in the Lines view (blame.js); history: the file's commits as a step.
     else if (c === "blame") this.toggleBlame(cx, t);
     else if (c === "history") this.toggleHistory(cx, this.ctx, t);
+    // outline: the file's symbols as a step (outline.js); outline-share: Quick open's @ asks for them (shared "ht3-panels.outline").
+    else if (c === "outline") this.toggleOutline(cx, t);
+    else if (c === "outline-share") shareOutline(t);
     else if (c.startsWith("line:")) {
       const m = /^(\d+)(?:-(\d+))?$/.exec(c.slice(5));
       if (t?.state) { t.lines = true; this.pickLine(cx, t, m ? Number(m[1]) : null, m?.[2] ? Number(m[2]) : null); }
@@ -519,6 +523,7 @@ export class FilePanel {
     const off = !!tab.blameOn && !!tab.lines && !tab.history;
     tab.blameOn = !off;
     tab.history = null;
+    tab.outline = null;
     if (!off) tab.lines = true;
     cx.notify();
   }
@@ -542,6 +547,7 @@ export class FilePanel {
 
   toggleHistory(cx, c, tab) {
     if (!tab?.state || !c) return;
+    tab.outline = null;
     if (tab.history) { tab.history = null; return cx.notify(); }
     const h = tab.history = { loading: true, entries: [], error: null };
     cx.spawn(async (cx) => {
@@ -552,6 +558,20 @@ export class FilePanel {
       cx.notify();
     });
     cx.notify();
+  }
+
+  // The Outline step (outline.js): the file's symbols under a filter; a pick closes it and picks that line in the Lines view.
+  toggleOutline(cx, tab) {
+    if (!tab?.state) return;
+    if (tab.outline) { tab.outline = null; return cx.notify(); }
+    tab.history = null;
+    openOutline(cx, tab, (cx) => cx.notify());
+    cx.notify();
+  }
+  pickSymbol(cx, tab, line) {
+    tab.outline = null;
+    tab.lines = true;
+    this.pickLine(cx, tab, line, line);
   }
 
   setWrap(cx) {
@@ -628,7 +648,8 @@ export class FilePanel {
         { variant: tab.dirty ? "default" : "outline", disabled: !tab.dirty || tab.saving, glyph: "save", tip: "Save file (Cmd+S)" })))
       .when(!!tab.state, (el) => el.child(iconButton(k, "file-lines", "list-plus", (cx) => { tab.lines = !tab.lines; this.pickLine(cx, tab, null); }, { on: !!tab.lines, tip: tab.lines ? "Back to the editor" : "Lines: a + beside each line, to insert after it or add it to the chat" })))
       .when(!!tab.state, (el) => el.child(iconButton(k, "file-blame", "blame", (cx) => this.toggleBlame(cx, tab), { on: !!tab.blameOn && !!tab.lines && !tab.history, tip: tab.blameOn && tab.lines ? "Hide blame" : "Blame: who last changed each line, in the Lines view" }))
-        .child(iconButton(k, "file-history", "history", (cx) => this.toggleHistory(cx, c, tab), { on: !!tab.history, tip: tab.history ? "Back to the file" : "History: the commits that changed this file" })))
+        .child(iconButton(k, "file-history", "history", (cx) => this.toggleHistory(cx, c, tab), { on: !!tab.history, tip: tab.history ? "Back to the file" : "History: the commits that changed this file" }))
+        .child(iconButton(k, "file-outline", "list-tree", (cx) => this.toggleOutline(cx, tab), { on: !!tab.outline, tip: tab.outline ? "Back to the file" : "Outline: the file's functions, classes or headings, to go to one" })))
       .child(iconButton(k, "file-wrap", "text-wrap", (cx) => this.setWrap(cx), { on: this.wrap, tip: this.wrap ? "Disable word wrap" : "Enable word wrap" }));
     return v_flex().flex_1().min_w(0).min_h(0)
       .child(head)
@@ -644,7 +665,7 @@ export class FilePanel {
         button(k, "file-keep", "Keep editing", (cx) => { tab.closing = false; cx.notify(); }),
         button(k, "file-discard", "Close without saving", (cx) => { this.drop(c, c.tabs.indexOf(tab)); cx.notify(); }, { variant: "destructive" }),
         button(k, "file-saveclose", "Save and close", (cx) => this.save(cx, tab), { variant: "default" })])))
-      .child(tab.history ? historyView(k, tab, { close: (cx) => { tab.history = null; cx.notify(); }, open: (cx, hash) => openCommit(cx, hash, this.group) }) : tab.state && tab.lines ? this.linesView(k, c, tab) : tab.state ? Editor.new(tab.state).flex_1().min_h(0)
+      .child(tab.outline && tab.state ? outlineView(k, tab, { close: (cx) => { tab.outline = null; cx.notify(); }, pick: (cx, line) => this.pickSymbol(cx, tab, line) }) : tab.history ? historyView(k, tab, { close: (cx) => { tab.history = null; cx.notify(); }, open: (cx, hash) => openCommit(cx, hash, this.group) }) : tab.state && tab.lines ? this.linesView(k, c, tab) : tab.state ? Editor.new(tab.state).flex_1().min_h(0)
         : v_flex().flex_1().items_center().justify_center().px(16).text_size(12).text_color(tab.error ? k.destructiveText : k.muted).child(tab.error ?? "Loading…"));
   }
 
