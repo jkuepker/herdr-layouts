@@ -75,6 +75,8 @@ function subseq(q, s) {
 // How many rows the lane builds at first, and how many more each time you near the first of them.
 const TAIL = 60;
 // The rows a click does something to.
+// A tool's output as its row shows it (cut at DETAIL_MAX).
+const detailOf = (m) => { const d = String(m.detail ?? ""); return d.length > DETAIL_MAX ? d.slice(0, DETAIL_MAX) + "\n…" : d; };
 const CLICKS = ["earlier", "copy", "codehead", "fold", "tool", "thought"];
 
 const LOCAL_COMMANDS = [
@@ -109,7 +111,8 @@ const took = (ms) => (ms < 10000 ? `${(Math.max(0, ms) / 1000).toFixed(1)}s` : s
 const isWork = (m) => m.kind === "thought" || m.kind === "tool";
 // What a chat keeps across a reload of its pane (and of the app) that isn't the agent's to remember:
 // shared("ht3-panels.kept")[chat id] = { allow: true } while "Always allow this session" is on, and
-// { queue: [{ text, blocks, files }] }, the messages waiting for the agent's turn to end.
+// { queue: [{ text, blocks, files }] }, the messages waiting for the agent's turn to end, and { pin: true } while the
+// chat is pinned (pinSync).
 // Empty values aren't kept; a chat with nothing kept has no entry.
 const KEPT = `${MOD}.kept`;
 const keptOf = (id) => (id ? (shared(KEPT) ?? {})[id] ?? {} : {});
@@ -157,7 +160,13 @@ export class ChatPanel {
     // Find in thread (T3's ThreadFindBar): while its bar is open and has text, the lane holds the matching messages only.
     this.finding = false;
     this.findField = InputState.new({ placeholder: "Find in thread" });
-    this.findField.on("change", (_e, cx) => { this.follow = true; cx.notify(); });
+    // Find marks every match in the lane and steps through them; a new word goes to its first match.
+    this.findAt = 0;
+    this.hits = [];
+    this.hitAt = new Map();
+    this.rowH = new Map(); // each built row's height, to scroll to one (goTo)
+    this.findField.on("change", (_e, cx) => { this.findAt = 0; this.findFresh = true; cx.notify(); });
+    this.findField.on("submit", (e, cx) => this.findStep(cx, e?.shift ? -1 : 1));
     this.filter = InputState.new({ placeholder: "Search" });
     this.filter.on("change", (_e, cx) => cx.notify());
 
@@ -558,6 +567,9 @@ export class ChatPanel {
     // copy:thread is "/copy": the thread as Markdown on the clipboard.
     if (c === "copy:thread") this.copyThread(cx);
     // find:<text> opens the find bar with that text (find alone: opens or closes it), find: closes it.
+    // find:next and find:prev step through the matches (Enter and Shift+Enter in the bar); goto:<row id> scrolls to a row.
+    if (c === "find:next" || c === "find:prev") { this.findStep(cx, c === "find:next" ? 1 : -1); return cx.notify(); }
+    if (c.startsWith("goto:")) { this.goTo(c.slice(5)); return cx.notify(); }
     if (c === "find") this.setFind(cx, !this.finding);
     if (c.startsWith("find:")) this.setFind(cx, !!c.slice(5), c.slice(5));
     // plan: the composer's Plan toggle; implement: the last plan card's "Implement this plan".
@@ -582,8 +594,8 @@ export class ChatPanel {
     if (c === "send") this.send(cx);
     // hover:<item id>: as the pointer over that message (its copy icon shows); hover: alone, off.
     if (c.startsWith("hover:")) this.over = c.slice(6) || null;
-    // queue:<steer|edit|drop>:<n>: a queued message's buttons (n from 0).
-    if (c.startsWith("queue:")) { const [, what, n] = c.split(":"); this.queued(cx, what, Number(n) || 0); }
+    // queue:<steer|up|down|edit|drop>:<n>: a queued message's buttons (n from 0, or "last").
+    if (c.startsWith("queue:")) { const [, what, n] = c.split(":"); this.queued(cx, what, n === "last" ? (this.queue?.length ?? 1) - 1 : Number(n) || 0); }
     // turn-diff:<last|item id> and revert:<last|item id>: "View diff" and "Revert" of a turn that changed files.
     if (c.startsWith("turn-diff:") || c.startsWith("revert:")) {
       const w = c.slice(c.indexOf(":") + 1);
@@ -604,6 +616,20 @@ export class ChatPanel {
     cx.notify();
   }
 
+  // A chat's pin outlives its tab. The lists keep pins by address (shared "agents.pins": `pane:<id>`), and a chat
+  // reopened from Earlier chats has a new pane. So the chat keeps its own pin by chat id (kept `pin`): once it knows
+  // its pane it puts a kept pin back on the new address, and from then on follows what the lists say.
+  pinSync() {
+    const pane = this.reporter?.pane;
+    if (!pane || !this.chatId) return;
+    const me = `pane:${pane}`, pins = shared("agents.pins") ?? [], on = pins.includes(me);
+    if (this.pinFor !== me) {
+      this.pinFor = me;
+      if (keptOf(this.chatId).pin === true && !on) return setShared("agents.pins", [...pins, me]);
+    }
+    if (on !== (keptOf(this.chatId).pin === true)) keep(this.chatId, { pin: on });
+  }
+
   // Draws at most every DRAW_EVERY_MS, at once when urgent.
   changed(cx, urgent) {
     this.report();
@@ -612,6 +638,7 @@ export class ChatPanel {
     this.turnEnded(cx);
     this.drain(cx);
     this.asking(cx);
+    this.pinSync();
     const draw = (cx) => {
       cx.notify();
     };
@@ -647,8 +674,9 @@ export class ChatPanel {
     // (QueuedRunsControl.tsx), or, with "Steer instead of queue" on, interrupts it and goes in at once.
     if (this.source.kind === "acp" && (v.status !== "ready" || this.sending || this.queue?.length)) {
       this.queue ??= [];
-      if (followUp() === "steer" && ["working", "blocked"].includes(v.status)) { this.queue.unshift(payload); this.source.stop(); }
-      else this.queue.push(payload);
+      // Steer: into the running turn where the agent takes it, else the turn ends and this is the next message (session.js steer).
+      if (followUp() === "steer" && ["working", "blocked"].includes(v.status) && !this.sending) return this.dispatch(cx, payload, true);
+      this.queue.push(payload);
       this.keepQueue();
       return cx.notify();
     }
@@ -667,24 +695,27 @@ export class ChatPanel {
     keep(this.chatId, { queue: (this.queue ?? []).map((q) => ({ text: q.text, blocks: q.blocks, files: q.files.map((a) => ({ name: a.name, path: a.path, image: a.image, thumb: a.thumb })) })) });
   }
 
-  // A queued message's buttons: steer (it goes in now: the turn is interrupted), edit (back into the message box), drop.
+  // A queued message's buttons: steer (it goes in now), up and down (its place), edit (back into the message box), drop.
   queued(cx, what, i) {
     const q = this.queue?.[i];
     if (!q) return;
     this.queue.splice(i, 1);
-    if (what === "steer") { this.queue.unshift(q); if (this.source.word() === "ready") this.drain(cx); else this.source.stop(); }
+    if (what === "steer") { if (this.source.word() === "ready" || this.sending) { this.queue.unshift(q); this.drain(cx); } else this.dispatch(cx, q, true); }
+    // up and down: its place in the queue.
+    if (what === "up" || what === "down") this.queue.splice(Math.max(0, Math.min(this.queue.length, i + (what === "up" ? -1 : 1))), 0, q);
     if (what === "edit") { this.input.set_value(q.text); this.hasText = !!q.text.trim(); this.attached = [...(this.attached ?? []), ...q.files]; this.input.focus(); }
     this.keepQueue();
     cx.notify();
   }
 
-  // Sends one message: { text, blocks (ACP blocks for "@" files), files (attachments) }.
-  dispatch(cx, { text, blocks, files }) {
+  // Sends one message: { text, blocks (ACP blocks for "@" files), files (attachments) }. `steer`: for the turn that is running.
+  dispatch(cx, { text, blocks, files }, steer = false) {
+    const out = (...args) => (steer && this.source.steer ? this.source.steer(...args) : this.source.send(...args));
     const v = this.view ?? this.source.view();
     this.follow = true;
     const att = files.length ? files.map((a) => ({ name: a.name, path: a.path, image: a.image, thumb: a.thumb })) : null;
     const where = this.source.kind === "acp" && checkpointsOn() && v.cwd ? { cwd: v.cwd, on: v.machine ?? undefined } : null;
-    if (!files.length && !where) { this.source.send(cx, text, blocks); return cx.notify(); }
+    if (!files.length && !where) { out(cx, text, blocks); return cx.notify(); }
     // Reading the pictures and snapshotting the files take a moment: the box empties now and the message follows.
     this.sending = files;
     cx.spawn(async (cx) => {
@@ -693,7 +724,7 @@ export class ChatPanel {
       const n = (this.source.state?.transcript?.nextId ?? Date.now());
       const before = where ? await snapshot(where, this.chatId ?? "chat", `t${n}-before`) : null;
       this.sending = null;
-      this.source.send(cx, text, [...blocks, ...more], att);
+      out(cx, text, [...blocks, ...more], att);
       const mine = [...(this.source.state?.transcript?.items ?? [])].reverse().find((m) => m.kind === "user");
       if (before && mine && !mine.cp) { mine.cp = { before, n }; this.cpOpen = { item: mine, where }; }
       cx.notify();
@@ -746,6 +777,8 @@ export class ChatPanel {
     if (this.phase === "loading") return root.child(this.centered(k, "Loading…"));
     if (this.phase === "empty") return root.child(this.empty(k));
     const v = (this.view = this.source.view());
+    // The pin is read while drawing too: the lists change it, and a draw follows a change of shared state.
+    if (this.pinSeen !== JSON.stringify(shared("agents.pins") ?? [])) { this.pinSeen = JSON.stringify(shared("agents.pins") ?? []); cx.timer.after(0, () => this.pinSync()); }
     // Settings may cut an agent's models to a list of the person's (settings.js).
     if (this.source.kind === "acp") v.options = limitModels(agentOf(this.source.state?.agentArgv)?.id, v.options);
     if (v.status === "working") this.since ??= this.turnAt ?? Date.now();
@@ -905,23 +938,70 @@ export class ChatPanel {
   findQuery() {
     return this.finding ? this.findField.value().trim().toLowerCase() : "";
   }
-  // Opens the find bar (with `text` in it), or closes it; the lane is whole again when it closes.
+  // Opens the find bar (with `text` in it), or closes it; the marks go when it closes, the lane stays where it is.
   setFind(cx, on, text = null) {
     this.finding = on;
     if (text != null) this.findField.set_value(text);
     if (on) this.findField.focus(); else { this.findField.set_value(""); this.input.focus(); }
-    this.follow = true;
+    this.findAt = 0;
+    this.findFresh = on;
     cx.notify();
   }
+  // The next match (d 1) or the one before (d -1), round and round; the lane scrolls to it.
+  findStep(cx, d) {
+    const n = this.hits.length, now = Date.now();
+    // Enter reaches the bar twice where the field both submits and lets the key through.
+    if (!n || now - (this.stepAt ?? 0) < 60) return;
+    this.stepAt = now;
+    this.findAt = (this.findAt + d + n) % n;
+    this.goTo(this.hits[this.findAt]);
+    cx.notify();
+  }
+  // Scrolls the lane to a row by its id: timeline() builds the rows up to it, and once their heights are
+  // measured puts it in the middle of the pane (a row taller than the pane: its start near the top).
+  goTo(id) {
+    this.want = id;
+    this.wantOff = null;
+  }
   findBar(k) {
-    const f = this.found, q = this.findQuery();
+    const n = this.hits.length, q = this.findQuery();
+    const step = (id, glyph, tip, d) => h_flex().id(id).size(24).flex_none().items_center().justify_center().rounded(6).text_color(n ? k.muted : alpha(k.muted, 0.4))
+      .role("button").accessibility_label(tip).when(n > 0, (el) => el.cursor_pointer().tooltip(tip).hover((st) => st.bg(k.accent).text_color(k.foreground)).on_click((_e, cx) => this.findStep(cx, d)))
+      .child(icon(glyph).size(14));
     return h_flex().w_full().flex_none().justify_center().px(16).pt(8)
-      .child(h_flex().w_full().max_w(LANE).h(36).pl(10).pr(4).gap(8).items_center().rounded(10).border(1).border_color(k.input).bg(k.card).text_size(14)
-        .on_key_down((e, cx) => { if (e.key === "escape") { this.setFind(cx, false); cx.stop_propagation?.(); } })
-        .child(icon("search").size(14).flex_none().text_color(k.muted))
+      .child(h_flex().w_full().max_w(LANE).h(36).pl(10).pr(4).gap(4).items_center().rounded(10).border(1).border_color(k.input).bg(k.card).text_size(14)
+        .on_key_down((e, cx) => {
+          const key = String(e.key ?? "").toLowerCase();
+          if (key === "escape") { this.setFind(cx, false); cx.stop_propagation?.(); }
+          if (key === "enter") { this.findStep(cx, e.modifiers?.shift ? -1 : 1); cx.stop_propagation?.(); }
+        })
+        .child(icon("search").size(14).flex_none().mr(4).text_color(k.muted))
         .child(div().flex_1().min_w(0).child(Input.new(this.findField)))
-        .child(div().flex_none().text_size(12).text_color(q && f && !f.n ? k.destructiveText : k.muted).child(!q ? "type to narrow the thread" : f ? `${f.n} of ${f.of} message${f.of === 1 ? "" : "s"}` : ""))
+        .child(div().flex_none().px(4).text_size(12).text_color(q && !n ? k.destructiveText : k.muted).child(!q ? "Enter: next · Shift+Enter: previous" : n ? `${this.findAt + 1} of ${n}` : "No matches"))
+        .child(step("find-prev", "chevron-up", "Previous match (Shift+Enter)", -1))
+        .child(step("find-next", "chevron-down", "Next match (Enter)", 1))
         .child(iconButton(k, "find-close", "x", (cx) => this.setFind(cx, false), { tip: "Close (Esc)" })));
+  }
+  // Text with every match of the find word marked (the one find is on, stronger). TextView can't mark a part of
+  // its text, so this is the text as words in rows that wrap: plain, not Markdown. `at`: the index, among all the
+  // lane's matches, of this text's first one. `one`: a single line that doesn't wrap (a tool's title).
+  marked(k, text, at, one = false) {
+    const q = this.findQuery(), nb = (t) => t.replace(/ /g, "\u00a0").replace(/\t/g, "\u00a0\u00a0");
+    let n = at;
+    const line = (ln) => {
+      const low = ln.toLowerCase(), kids = [];
+      const plain = (t) => { for (const w of t.match(/\S+\s*|\s+/g) ?? []) kids.push(div().flex_none().child(nb(w))); };
+      let i = 0;
+      for (let j; q && (j = low.indexOf(q, i)) >= 0; i = j + q.length) {
+        plain(ln.slice(i, j));
+        const cur = n++ === this.findAt;
+        kids.push(div().flex_none().rounded(3).bg(cur ? k.warning : alpha(k.warning, 0.3)).when(cur, (el) => el.text_color("#000000")).child(nb(ln.slice(j, j + q.length))));
+      }
+      plain(ln.slice(i));
+      return one ? h_flex().min_w(0).overflow_hidden().children(kids) : h_flex().w_full().min_w(0).flex_wrap().children(kids);
+    };
+    if (one) return line(String(text ?? "").split("\n")[0]);
+    return v_flex().w_full().min_w(0).children(String(text ?? "").split("\n").map((ln) => (ln ? line(ln) : div().h(10))));
   }
 
   rows(v) {
@@ -933,14 +1013,14 @@ export class ChatPanel {
     // startup banner: its version, skills, extensions) folds the same way.
     const sought = this.findQuery();
     const wordsOf = (m) => [m.text, m.title, m.detail, ...(m.entries ?? []).map((e) => e.content)].filter(Boolean).join("\n").toLowerCase();
-    const items = sought ? v.items.filter((m) => wordsOf(m).includes(sought)) : v.items, busy = !sought && (v.status === "working" || v.status === "blocked");
-    this.found = sought ? { n: items.length, of: v.items.length } : null;
+    const items = v.items, busy = v.status === "working" || v.status === "blocked";
+    const hot = (m) => !!sought && wordsOf(m).includes(sought);
     const fold = (id, label, inside, rest) => {
       // With nothing under it, it is only the turn's time: no chevron, and nothing to open.
-      // While finding, the matching work shows without its fold: there is nothing to open.
-      if (sought) { for (const m of inside) rows.push(m); for (const m of rest) rows.push(m); return; }
-      rows.push({ id, kind: "fold", label, open: inside.length > 0 && !!this.expanded[id], bare: !inside.length });
-      if (inside.length && this.expanded[id]) for (const m of inside) rows.push(m);
+      // While finding, a fold with a match under it is open.
+      const open = inside.length > 0 && (!!this.expanded[id] || inside.some(hot));
+      rows.push({ id, kind: "fold", label, open, bare: !inside.length });
+      if (open) for (const m of inside) rows.push(m);
       for (const m of rest) rows.push(m);
     };
     let at = items.findIndex((m) => m.kind === "user");
@@ -997,13 +1077,28 @@ export class ChatPanel {
     // The last message's copy icon stays in sight, dimmed by nothing: it is the one most often wanted.
     const lastCopy = [...out].reverse().find((r) => r.kind === "copy");
     if (lastCopy) lastCopy.always = true;
+    // Find: every match in what the rows show, in order: this.hits[i] is the row of match i, this.hitAt its row's first.
+    this.hits = [];
+    this.hitAt = new Map();
+    if (sought) {
+      const count = (t) => { const low = String(t ?? "").toLowerCase(); let c = 0; for (let i = low.indexOf(sought); i >= 0; i = low.indexOf(sought, i + sought.length)) c++; return c; };
+      for (const r of out) {
+        const c = r.kind === "user" || r.kind === "seg" || r.kind === "thought" ? count(r.text) : r.kind === "tool" ? count(String(r.title ?? "").split("\n")[0]) + count(detailOf(r)) : 0;
+        if (!c) continue;
+        this.hitAt.set(r.id, this.hits.length);
+        for (let i = 0; i < c; i++) this.hits.push(r.id);
+      }
+      if (this.findAt >= this.hits.length) this.findAt = 0;
+      if (this.findFresh && this.hits.length) this.goTo(this.hits[this.findAt]);
+    }
+    this.findFresh = false;
     return out;
   }
 
   timeline(k, v) {
     const rows = this.rows(v);
     if (!rows.length) {
-      const text = this.findQuery() ? "No message in this thread has that." : v.status === "starting" ? "Starting the agent…" : v.error ? "" : "Send a message to start the conversation.";
+      const text = v.status === "starting" ? "Starting the agent…" : v.error ? "" : "Send a message to start the conversation.";
       return this.centered(k, text);
     }
     // The lane keeps to its end by itself: gpui-kit's measured `list` can't be scrolled from code
@@ -1011,10 +1106,27 @@ export class ChatPanel {
     // rows are a plain column pinned to the pane's bottom edge instead, and scrolling up moves that
     // column down by `off` pixels. Only the last `tail` rows are built; more as you near the first.
     const zoom = Number(settings()?.zoom) || 1;
+    // A row to go to (goTo): the rows are built up to it; with their heights known, the lane moves so it is in view.
+    let want = this.want != null ? rows.findIndex((r) => r.id === this.want) : -1;
+    if (want < 0) this.want = null;
+    else if ((this.tail ?? TAIL) < rows.length - want + 2) { this.tail = rows.length - want + 2; this.grew = true; }
     const n = Math.min(rows.length, this.tail ?? TAIL), shown = rows.slice(rows.length - n);
-    const off = this.follow ? 0 : (this.off ?? 0);
     // Shorter than the pane: from the top, as T3's.
     const short = n === rows.length && (this.laneH != null && this.viewH != null ? this.laneH <= this.viewH : rows.length <= 6);
+    if (want >= 0 && this.viewH != null && this.laneH != null) {
+      let below = 0, known = this.rowH.has(rows[want].id);
+      for (let i = rows.length - 1; i > want && known; i--) { const h = this.rowH.get(rows[i].id); if (h == null) known = false; else below += h; }
+      if (short) this.want = null;
+      else if (known) {
+        const h = this.rowH.get(rows[want].id), max = Math.max(0, this.laneH - this.viewH);
+        const to = Math.round(Math.max(0, Math.min(max, h < this.viewH - 128 ? below - (this.viewH - h) / 2 : below + h - this.viewH + 64)));
+        this.follow = to === 0;
+        this.off = to;
+        // Settled once two draws agree (the heights of rows just built come in after the first).
+        if (this.wantOff === to) { this.want = null; this.wantOff = null; } else this.wantOff = to;
+      }
+    }
+    const off = this.follow ? 0 : (this.off ?? 0);
     const click = (m, cx) => {
       if (m.kind === "earlier") return this.source.earlier?.(cx);
       if (m.kind === "copy" || m.kind === "codehead") return this.copy(cx, m.id, m.text);
@@ -1037,7 +1149,13 @@ export class ChatPanel {
         cx.notify();
       })
       .children(shown.map((m, i) => {
-        const el = div().id(`row-${m.id}`).w_full().child(this.row(k, m, i === 0 && n === rows.length, i === shown.length - 1));
+        const el = div().id(`row-${m.id}`).w_full().child(this.row(k, m, i === 0 && n === rows.length, i === shown.length - 1))
+          .on_size_change((size, cx) => {
+            const h = size.height / zoom;
+            if (Math.abs((this.rowH.get(m.id) ?? -1) - h) < 0.5) return;
+            this.rowH.set(m.id, h);
+            if (this.want != null) cx.notify();
+          });
         const text = copies(m);
         // A message's rows (its text, its code blocks, its copy row) are one thing to the pointer: over any of them, its copy icon shows.
         const of = ["seg", "user", "copy", "codehead"].includes(m.kind) ? String(m.id).split(":")[0] : null;
@@ -1058,16 +1176,46 @@ export class ChatPanel {
       })
       .on_scroll_wheel((e, cx) => this.wheel(e.delta.y, rows.length, cx))
       .child(short ? lane.top(0) : lane.bottom(-off))
+      .when(!short, (el) => { const map = this.minimap(k, rows, off); return map ? el.child(map) : el; })
       // chat/TimelineOverlays.tsx: the glass pill over the end of the lane.
       .when(!this.follow, (el) => el.child(h_flex().absolute().bottom(6).left(0).right(0).justify_center()
         .child(h_flex().id("to-end").h(24).px(8).gap(4).items_center().rounded_full().border(1).border_color(alpha(k.border, 0.6))
           .bg(k.card).shadow_sm().text_size(12).font_medium().cursor_pointer().role("button").accessibility_label("Scroll to end").hover((s) => s.border_color(k.border))
-          .on_click((_e, cx) => { this.follow = true; this.off = 0; cx.notify(); })
+          .on_click((_e, cx) => { this.follow = true; this.off = 0; this.want = null; cx.notify(); })
           .child(icon("chevron-down").size(14)).child("Scroll to end"))));
+  }
+
+  // chat/TimelineMinimap.tsx: down the lane's right edge, a mark for each of your messages, placed by where it is
+  // in the thread (by row, since rows not built yet have no height); a click goes there. A faint band is what the
+  // pane shows now. Only in a thread of three messages or more that is longer than the pane.
+  minimap(k, rows, off) {
+    const mine = [];
+    rows.forEach((r, i) => { if (r.kind === "user") mine.push([r, i]); });
+    const H = (this.viewH ?? 0) - 24;
+    if (mine.length < 3 || H < 80) return null;
+    const y = (i) => Math.round((i / Math.max(1, rows.length - 1)) * (H - 8));
+    // The rows in view, from the heights known (the built ones, at the lane's end).
+    let acc = 0, first = null, last = null;
+    for (let i = rows.length - 1; i >= 0; i--) {
+      const h = this.rowH.get(rows[i].id);
+      if (h == null) break;
+      if (acc + h > off && acc < off + (this.viewH ?? 0)) { last ??= i; first = i; }
+      acc += h;
+    }
+    return div().absolute().top(12).right(3).w(10).h(H)
+      .when(first != null, (el) => el.child(div().absolute().left(0).right(0).top(y(first)).h(Math.max(10, y(last) - y(first) + 8)).rounded(3).bg(alpha(k.foreground, 0.07))))
+      .children(mine.map(([r, i]) => {
+        const seen = first != null && i >= first && i <= last, said = String(r.text ?? "").trim().split("\n")[0];
+        return h_flex().id(`map-${r.id}`).absolute().left(0).right(0).top(y(i)).h(8).items_center().justify_center().cursor_pointer().role("button")
+          .accessibility_label(`Go to your message: ${said.slice(0, 60)}`).tooltip(said.length > 70 ? said.slice(0, 70) + "…" : said || "Your message")
+          .on_click((_e, cx) => { this.goTo(r.id); cx.notify(); })
+          .child(div().w(8).h(2).rounded_full().bg(alpha(k.foreground, seen ? 0.7 : 0.3)));
+      }));
   }
 
   // The wheel (or `scroll:<px>`): up by `dy` pixels, down when negative; at the end it follows again.
   wheel(dy, total, cx) {
+    this.want = null;
     const max = Math.max(0, (this.laneH ?? 0) - (this.viewH ?? 0));
     let off = (this.follow ? 0 : this.off ?? 0) + dy;
     // Near the first row built: build more, and the column's growth is not new output.
@@ -1250,9 +1398,29 @@ export class ChatPanel {
             : h_flex().h(28).px(8).gap(6).flex_none().max_w(220).items_center().rounded(8).border(1).border_color(alpha(k.border, 0.8)).text_size(12)
               .child(fileIcon(a.name, k.dark, 14)).child(div().min_w(0).truncate().child(a.name)))))))
           .when(!!m.text, (el) => el.child(div().max_w("80%").min_w(0).p(12).rounded(16).bg(k.message).text_size(14).line_height("23px")
-            .when(m.pending, (e) => e.opacity(0.6)).child(m.text))), m.pending ? 16 : 2);
+            .when(m.pending, (e) => e.opacity(0.6)).child(this.hitAt.has(m.id) ? this.marked(k, m.text, this.hitAt.get(m.id)) : m.text)))
+          // It went into the turn that was running (the agent's steering extension).
+          .when(!!m.steered, (el) => el.child(div().text_size(11).text_color(k.muted).child("Sent into the running turn"))), m.pending ? 16 : 2);
       }
       case "seg":
+        // While find has a match in it: its paragraphs with a match as marked plain text, the others as they were.
+        if (this.hitAt.has(m.id)) {
+          const q = this.findQuery();
+          let at = this.hitAt.get(m.id);
+          const parts = m.code ? [m.text] : m.text.split(/\n{2,}/);
+          const el = v_flex().px(m.code ? 12 : 4).py(m.code ? 8 : 2).gap(m.code ? 0 : 10).text_size(m.code ? 13 : 14).line_height(m.code ? "20px" : "23px")
+            .when(!!m.code, (e) => e.mx(4).rounded_b(8).border(1).border_color(alpha(k.border, 0.6)).font_family(k.mono))
+            .children(parts.map((p, j) => {
+              const low = p.toLowerCase();
+              let c = 0;
+              for (let i = low.indexOf(q); i >= 0; i = low.indexOf(q, i + q.length)) c++;
+              if (!c) return TextView.markdown(`md-${m.id}-p${j}`, p).selectable(true);
+              const first = at;
+              at += c;
+              return this.marked(k, p, first);
+            }));
+          return lane(el, 4);
+        }
         // A stretch of a reply: text you can select, or one code block (under its header row).
         return lane(div().px(4).py(m.code ? 0 : 2).text_size(14).line_height("23px")
           .child(TextView.markdown(`md-${m.id}`, m.code ? "```" + m.lang + "\n" + m.text + "\n```" : m.text).selectable(true)), 4);
@@ -1277,27 +1445,29 @@ export class ChatPanel {
         // chat/MessageCopyButton.tsx, under the message: its right edge for yours, its left for a reply.
         return lane(h_flex().w_full().px(m.right ? 0 : 2).when(!!m.right, (el) => el.justify_end()).child(this.copyMark(k, m.id, null, m.always || this.over === String(m.id).split(":")[0])), 12);
       case "thought": {
-        const open = this.expanded[m.id];
+        const found = this.hitAt.has(m.id), open = this.expanded[m.id] || found;
         // T3: the thought itself on one muted line; it opens to the whole of it.
         const line = (m.text ?? "").trim().split("\n")[0];
         return lane(v_flex()
           .child(workLine(k, "brain", line || (m.open ? "Thinking" : "Thought"), { trail: [chevron(open)] }))
-          .when(open, (el) => el.child(div().ml(30).py(4).text_size(14).line_height("23px").text_color(alpha(k.foreground, 0.8)).child(m.text))), 8);
+          .when(open, (el) => el.child(div().ml(30).py(4).text_size(14).line_height("23px").text_color(alpha(k.foreground, 0.8)).child(found ? this.marked(k, m.text, this.hitAt.get(m.id)) : m.text))), 8);
       }
       case "tool": {
         const failed = m.status === "failed";
         const running = m.status === "in_progress" || m.status === "pending";
-        const open = this.expanded[m.id] && (m.detail || m.lazy);
+        const found = this.hitAt.has(m.id), title = String(m.title ?? "").split("\n")[0];
+        const inTitle = found ? title.toLowerCase().split(this.findQuery()).length - 1 : 0;
+        const open = (this.expanded[m.id] || (found && !!m.detail && detailOf(m).toLowerCase().includes(this.findQuery()))) && (m.detail || m.lazy);
         const can = !!(m.detail || m.lazy);
         const trail = [];
         if (failed) trail.push(icon("x").size(12).flex_none().text_color(k.destructive));
         if (can) trail.push(chevron(open));
         const detail = m.detail ?? (m.loading ? "Loading…" : "");
         return lane(v_flex()
-          .child(workLine(k, TOOL_GLYPH[m.toolKind] ?? "wrench", m.title || "Working…", {
+          .child(workLine(k, TOOL_GLYPH[m.toolKind] ?? "wrench", inTitle ? this.marked(k, title, this.hitAt.get(m.id), true) : m.title || "Working…", {
             color: failed ? k.destructive : running ? alpha(k.foreground, 0.8) : null, bold: failed, trail }))
           .when(open, (el) => el.child(div().ml(30).mt(2).mb(6).pb(8).text_size(12).line_height("18px").font_family(k.mono).text_color(k.muted)
-            .child(detail.length > DETAIL_MAX ? detail.slice(0, DETAIL_MAX) + "\n…" : detail))), 4);
+            .child(found && m.detail ? this.marked(k, detailOf(m), this.hitAt.get(m.id) + inTitle) : detail.length > DETAIL_MAX ? detail.slice(0, DETAIL_MAX) + "\n…" : detail))), 4);
       }
       case "plan":
         // chat/ProposedPlanCard.tsx
@@ -1402,6 +1572,29 @@ export class ChatPanel {
   }
 
   // chat/ComposerSurface.tsx and ComposerPrimaryActions.tsx.
+  // chat/ComposerUsageLimits.tsx: a line over the message box when a limit is near or reached. Only what the agent
+  // says is known: Claude Code's adapter sends the account's rate limit (status, how much is used, when it resets),
+  // any agent's refusal for a limit comes as an error, and every agent that reports its context says how full it is.
+  // -> an element, or null. The × hides that one state until it changes.
+  limitLine(k, v) {
+    const l = v.limit, full = v.usage?.size > 0 ? v.usage.used / v.usage.size : 0;
+    const when = (at) => { const d = new Date(at * 1000), mins = Math.round((at * 1000 - Date.now()) / 60000);
+      return mins <= 0 ? "" : ` · resets ${mins < 60 ? `in ${mins} min` : mins < 24 * 60 ? `at ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}` : `in ${Math.round(mins / 1440)} d`}`; };
+    const kind = { five_hour: "5-hour limit", seven_day: "weekly limit", seven_day_opus: "weekly Opus limit", seven_day_sonnet: "weekly Sonnet limit", overage: "extra-usage limit" }[l?.type] ?? "usage limit";
+    let say = null;
+    if (l?.status === "rejected") say = { bad: true, text: l.text ? `The agent says a limit is reached: ${l.text}` : `The ${kind} is reached${l.resetsAt ? when(l.resetsAt) : ""}`, key: `r${l.type ?? ""}${l.resetsAt ?? l.text ?? ""}` };
+    else if (l?.status === "allowed_warning") say = { text: `Near the ${kind}${l.utilization != null ? `: ${Math.round(100 * l.utilization)}% used` : ""}${l.resetsAt ? when(l.resetsAt) : ""}`, key: `w${l.type ?? ""}${Math.round(20 * (l.utilization ?? 0))}` };
+    else if (full >= 0.9) say = { bad: full >= 0.97, text: `Context ${Math.round(100 * full)}% full: the agent may compact or stop soon. A new chat, or /compact where the agent has it, makes room.`, key: `c${full >= 0.97 ? 2 : 1}` };
+    if (!say || this.limitHidden === say.key) return null;
+    const c = say.bad ? k.destructiveText : k.warningText;
+    return h_flex().id("ht3-limit").mx(12).mb(-1).px(12).h(32).gap(8).items_center().rounded_t(12).border(1).border_color(alpha(c, 0.35)).bg(alpha(c, 0.08)).text_size(12).text_color(c)
+      .role("status").accessibility_label(say.text)
+      .child(icon(say.bad ? "circle-alert" : "clock").size(13).flex_none())
+      .child(div().flex_1().min_w(0).truncate().tooltip(say.text).child(say.text))
+      .child(h_flex().id("limit-hide").size(20).flex_none().items_center().justify_center().rounded(5).cursor_pointer().role("button").accessibility_label("Hide this notice").tooltip("Hide")
+        .hover((st) => st.bg(alpha(c, 0.15))).on_click((_e, cx) => { this.limitHidden = say.key; cx.notify(); }).child(icon("x").size(12)));
+  }
+
   composer(k, v) {
     const lane = (body) => h_flex().w_full().flex_none().justify_center().px(16).pb(12).child(v_flex().w_full().max_w(LANE).child(body));
     const line = alpha(k.foreground, k.dark ? 0.1 : 0.08);
@@ -1444,8 +1637,8 @@ export class ChatPanel {
       .on_click(() => this.source.stop()).child(icon("stop").size(12));
     const sendBtn = () => h_flex().id("send").size(32).flex_none().items_center().justify_center().rounded_full()
       .bg(can ? k.primary : alpha(k.foreground, 0.12)).text_color(can ? k.primaryText : k.muted)
-      .role("button").accessibility_label(busy ? (followUp() === "steer" ? "Steer: interrupt and send" : "Queue message") : "Submit message")
-      .when(can && busy, (el) => el.tooltip(followUp() === "steer" ? "Interrupt and send now" : "Queue for when the agent is done"))
+      .role("button").accessibility_label(busy ? (followUp() === "steer" ? (v.steering ? "Steer: send into the running turn" : "Steer: interrupt and send") : "Queue message") : "Submit message")
+      .when(can && busy, (el) => el.tooltip(followUp() === "steer" ? (v.steering ? "Send into the running turn" : "Interrupt and send now") : "Queue for when the agent is done"))
       .when(can, (el) => el.shadow_xs().cursor_pointer().hover((s) => s.bg(alpha(k.primary, 0.9))).on_click((_e, cx) => this.send(cx)))
       .child(icon("arrow-up").size(14));
     const action = working && !(acp && has) ? stopBtn() : working ? h_flex().gap(6).flex_none().child(stopBtn()).child(sendBtn()) : sendBtn();
@@ -1455,11 +1648,12 @@ export class ChatPanel {
     const qBtn = (id, glyph, tip, fn) => h_flex().id(id).size(22).flex_none().items_center().justify_center().rounded(6).text_color(k.muted).cursor_pointer().role("button").accessibility_label(tip).tooltip(tip)
       .hover((s) => s.bg(k.accent).text_color(k.foreground)).on_click((_e, cx) => fn(cx)).child(icon(glyph).size(13));
     const queueRows = v_flex().w_full().items_end().gap(6).pb(8)
-      .child(div().text_size(11).text_color(k.muted).child(`${queue.length} queued${v.status === "ready" ? "" : ": sent when the agent is done"}`))
+      .child(div().text_size(11).text_color(k.muted).child(`${queue.length} queued${v.status === "ready" ? "" : ": sent when the agent is done"} · ↑ in an empty box edits the last`))
       .children(queue.slice(0, 3).map((q, i) => h_flex().max_w("80%").min_w(0).h(34).pl(12).pr(4).gap(4).items_center().rounded(12).border(1).border_color(alpha(k.border, 0.8)).bg(alpha(k.message, 0.5)).text_size(13)
         .child(div().flex_1().min_w(0).truncate().text_color(alpha(k.foreground, 0.8)).child(q.text || `${q.files.length} file${q.files.length === 1 ? "" : "s"}`))
         .when(q.files.length > 0 && !!q.text, (el) => el.child(div().flex_none().text_size(11).text_color(k.muted).child(`+${q.files.length}`)))
-        .child(qBtn(`q-steer-${i}`, "corner-down-left", "Send now: interrupt the agent", (cx) => this.queued(cx, "steer", i)))
+        .when(i > 0, (el) => el.child(qBtn(`q-up-${i}`, "arrow-up", "Move up: send it sooner", (cx) => this.queued(cx, "up", i))))
+        .child(qBtn(`q-steer-${i}`, "corner-down-left", v.steering ? "Send now, into the running turn" : "Send now: interrupt the agent", (cx) => this.queued(cx, "steer", i)))
         .child(qBtn(`q-edit-${i}`, "pen-line", "Edit: back into the message box", (cx) => this.queued(cx, "edit", i)))
         .child(qBtn(`q-drop-${i}`, "x", "Remove from the queue", (cx) => this.queued(cx, "drop", i)))))
       .when(queue.length > 3, (el) => el.child(div().text_size(11).text_color(k.muted).child(`and ${queue.length - 3} more`)));
@@ -1513,6 +1707,11 @@ export class ChatPanel {
         })
         // The open menu's arrows, Tab and Esc, where the text area lets them through (Enter comes as its submit).
         .on_key_down((e, cx) => {
+          // ↑ in an empty box (T3: alt+↑, which works here too): the last queued message comes back to be edited.
+          if (String(e.key ?? "").toLowerCase() === "up" && !this.trig && this.queue?.length && !this.input.value() && !e.modifiers?.platform && !e.modifiers?.control) {
+            this.queued(cx, "edit", this.queue.length - 1);
+            return cx.stop_propagation?.();
+          }
           if (!this.trig || e.modifiers?.platform || e.modifiers?.control || e.modifiers?.alt) return;
           if (this.menuKey(e.key.toLowerCase(), cx)) cx.stop_propagation?.();
         })
@@ -1541,7 +1740,8 @@ export class ChatPanel {
         .children(controls)
         .child(div().w(6).flex_none())
         .child(action));
-    const box = drawer ? v_flex().child(drawer).child(card) : card;
+    const limit = this.limitLine(k, v);
+    const box = drawer || limit ? v_flex().when(!!limit, (el) => el.child(limit)).when(!!drawer, (el) => el.child(drawer)).child(card) : card;
     return lane(queue.length ? v_flex().child(queueRows).child(box) : box);
   }
 }

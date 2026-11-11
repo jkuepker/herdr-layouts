@@ -8,8 +8,21 @@ export function emptyTranscript() {
 }
 
 // `attachments`: what was sent along, for the message to show: [{ name, path, image }].
-export function addUser(t, text, attachments = null) {
-  push(t, attachments?.length ? { kind: "user", text, attachments } : { kind: "user", text });
+// `steered`: it went into a turn that was running (session.js steer), so it starts no turn of its own.
+export function addUser(t, text, attachments = null, steered = false) {
+  push(t, { kind: "user", text, ...(attachments?.length ? { attachments } : {}), ...(steered ? { steered: true } : {}) });
+}
+
+// What an agent says of a limit. Claude Code's adapter sends the account's rate limit with a usage update
+// (`_meta["_claude/rateLimit"]`: status allowed | allowed_warning | rejected, resetsAt in seconds, utilization 0..1,
+// rateLimitType); any agent's refusal for a limit comes as an error's text (limitText). -> t.limit, or nothing.
+const LIMIT_WORDS = /rate.?limit|usage limit|limit (?:reached|exceeded)|quota|too many requests|\b429\b|out of credits|credit balance|insufficient (?:credit|quota|funds)|billing/i;
+export const limitText = (text) => (LIMIT_WORDS.test(String(text ?? "")) ? String(text).trim().split("\n")[0].slice(0, 200) : null);
+export function noteLimit(t, info) {
+  if (!info || typeof info !== "object" || !info.status) return;
+  t.limit = { status: String(info.status), ...(Number.isFinite(Number(info.resetsAt)) ? { resetsAt: Number(info.resetsAt) } : {}),
+    ...(Number.isFinite(Number(info.utilization)) ? { utilization: Number(info.utilization) } : {}), ...(info.rateLimitType ? { type: String(info.rateLimitType) } : {}),
+    ...(info.text ? { text: String(info.text) } : {}), at: Date.now() };
 }
 
 // What was said so far, as text a new session can be told (a forked chat's first prompt): the
@@ -45,6 +58,7 @@ export function applyUpdate(t, u) {
       return;
     }
     case "usage_update":
+      noteLimit(t, u._meta?.["_claude/rateLimit"]);
       // The context now (and the cost, when the agent sends one), and a sample of it for the Usage dialog: each change, the last 240.
       t.usage = { used: u.used, size: u.size, ...(u.cost && typeof u.cost === "object" ? { cost: { amount: u.cost.amount, currency: u.cost.currency } } : {}) };
       t.usageLog ??= [];

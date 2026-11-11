@@ -149,8 +149,11 @@ export async function askOnce(argv, cwd, text, { set = null, timer = new Promise
 export function chatLike(from, space = focused()?.space, prompt = null) {
   if (!Array.isArray(from?.agentArgv) || !from.agentArgv.length) return false;
   const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  // The new chat starts on the model, the effort and the mode this one is on (set before its first message).
+  const set = {};
+  for (const o of from.configOptions ?? []) if (o.type === "select" && ["model", "mode", "thought_level"].includes(o.category ?? o.id) && o.currentValue != null) set[o.id] = o.currentValue;
   run("tab.new", { mod: "ht3-panels", ...(space ? { space } : {}), name: from.agentInfo?.title ?? from.agentInfo?.name ?? agentOf(from.agentArgv)?.name ?? "Chat",
-    props: { panel: "chat", chat: id, agent: from.agentArgv, cwd: from.cwd ?? null, machine: from.machine ?? null, ...(prompt ? { prompt } : {}) } });
+    props: { panel: "chat", chat: id, agent: from.agentArgv, cwd: from.cwd ?? null, machine: from.machine ?? null, ...(prompt ? { prompt } : {}), ...(Object.keys(set).length ? { set } : {}) } });
   return true;
 }
 
@@ -337,6 +340,8 @@ export class AcpSource {
       items: s.transcript.items,
       dropped: s.transcript.dropped,
       usage: s.transcript.usage,
+      limit: s.transcript.limit ?? null,
+      steering: s.steering === true,
       commands: s.transcript.commands ?? [],
       images: s.promptCapabilities?.image === true,
       options: (s.configOptions ?? []).filter((o) => o.type === "select").map((o) => ({
@@ -349,6 +354,8 @@ export class AcpSource {
   }
 
   send(_cx, text, blocks = [], attachments = null) { this.session?.handle({ type: "prompt", text, blocks, attachments }); }
+  // A message for the turn that is running (session.js steer): into the turn where the agent can, else it ends the turn.
+  steer(_cx, text, blocks = [], attachments = null) { this.session?.handle({ type: "steer", text, blocks, attachments }); }
   stop() { this.session?.handle({ type: "cancel" }); }
   answer(_cx, optionId) { this.session?.handle({ type: "permission", optionId }); }
   setOption(id, value) { this.session?.handle({ type: "config", configId: id, value }); }

@@ -7,7 +7,7 @@
 // and calls feed(line) for each stdout line, and exited() when the agent ends.
 
 import { AcpConnection, PROTOCOL_VERSION } from "./acp.js";
-import { emptyTranscript, addUser, addNotice, applyUpdate, endTurn, trim, handoffText } from "./transcript.js";
+import { emptyTranscript, addUser, addNotice, applyUpdate, endTurn, trim, handoffText, noteLimit, limitText } from "./transcript.js";
 
 export class ChatSession {
   // `old`: the chat's last state.json, to continue it.
@@ -108,6 +108,8 @@ export class ChatSession {
       });
       state.agentInfo = init?.agentInfo ?? null;
       state.promptCapabilities = init?.agentCapabilities?.promptCapabilities ?? {};
+      // The ACP steering extension (`_session/steering`): the agent takes a message into the turn it is running.
+      state.steering = init?._meta?.steering?.supported === true;
       if (!(this.resumeId && init?.agentCapabilities?.loadSession && (await this.resume(this.resumeId)))) {
         const session = await this.conn.request("session/new", { cwd: state.cwd, mcpServers: [] });
         state.sessionId = session.sessionId;
@@ -153,6 +155,8 @@ export class ChatSession {
     switch (cmd.type) {
       case "prompt":
         return this.prompt(String(cmd.text ?? ""), Array.isArray(cmd.blocks) ? cmd.blocks : [], cmd.attachments ?? null);
+      case "steer":
+        return this.steer(String(cmd.text ?? ""), Array.isArray(cmd.blocks) ? cmd.blocks : [], cmd.attachments ?? null);
       case "cancel":
         this.answerPermission({ outcome: "cancelled" });
         this.conn.notify("session/cancel", { sessionId: this.state.sessionId });
@@ -167,24 +171,69 @@ export class ChatSession {
   }
 
   // `blocks`: ACP content blocks sent after the text (resource links for mentioned files, images).
-  async prompt(text, blocks = [], attachments = null) {
+  // `opt.shown`: the message is in the transcript already; `opt.lead`: text put before it for the agent only;
+  // `opt.after`: it follows a turn that steer() ended, whose "working" still stands.
+  prompt(text, blocks = [], attachments = null, opt = {}) {
+    const turn = this.turn(text, blocks, attachments, opt);
+    this.inflight = turn;
+    return turn;
+  }
+
+  // A message for the turn that is running. Where the agent has the steering extension it goes into that turn
+  // (the turn goes on and ends as one). Elsewhere the turn is cancelled and the message sent as the next one, with
+  // what the agent had said so far in it, so an agent that drops a cancelled turn still has it.
+  async steer(text, blocks = [], attachments = null) {
     const state = this.state;
     if (!text.trim() && !blocks.length) return;
-    if (state.status === "working") {
+    if (state.status !== "working") return this.prompt(text, blocks, attachments);
+    const from = state.transcript.items.findLastIndex((m) => m.kind === "user");
+    const partial = state.transcript.items.slice(from + 1).filter((m) => m.kind === "agent").map((m) => m.text ?? "").join("\n\n").trim();
+    if (state.steering) {
+      addUser(state.transcript, text, attachments, true);
+      this.changed(false);
+      try {
+        const r = await this.conn.request("_session/steering", { sessionId: state.sessionId,
+          prompt: [...(text.trim() ? [{ type: "text", text }] : []), ...blocks], _meta: { steering: { idleBehavior: "promptRequired" } } });
+        if (r?.outcome === "injected" || r?.outcome === "startedNewTurn") return;
+      } catch (e) {
+        addNotice(state.transcript, `The agent didn't take the message into its turn (${e.message}); it is sent as the next one.`, "warn");
+      }
+      // The turn ended before the message got there: it is the next turn's message.
+      await this.inflight;
+      const mine = state.transcript.items.findLast((m) => m.kind === "user" && m.steered);
+      if (mine) delete mine.steered;
+      return this.prompt(text, blocks, attachments, { shown: true });
+    }
+    this.steered = true;
+    this.answerPermission({ outcome: "cancelled" });
+    this.conn.notify("session/cancel", { sessionId: state.sessionId });
+    await this.inflight;
+    this.steered = false;
+    const lead = `[I stopped your last turn to add the message below. Take it into account and carry on with what you were doing.${partial ? ` This is what you had written when I stopped you:\n<interrupted-reply>\n${partial.slice(-2000)}\n</interrupted-reply>` : ""}]\n\n`;
+    return this.prompt(text, blocks, attachments, { lead, after: true });
+  }
+
+  async turn(text, blocks, attachments, opt) {
+    const state = this.state;
+    if (!text.trim() && !blocks.length) return;
+    if (state.status === "working" && !opt.after) {
       addNotice(state.transcript, "Still working on the last message; send again when it's done.", "warn");
       return this.changed(false);
     }
     // A fork's first message carries the conversation it continues.
     const told = state.handoff ? handoffText(state.transcript) : "";
     state.handoff = false;
-    const sent = told ? `This conversation continues an earlier one. What was said so far:\n\n<earlier-conversation>\n${told}\n</earlier-conversation>\n\n${text}` : text;
-    addUser(state.transcript, text, attachments);
+    const sent = (opt.lead ?? "") + (told ? `This conversation continues an earlier one. What was said so far:\n\n<earlier-conversation>\n${told}\n</earlier-conversation>\n\n${text}` : text);
+    if (!opt.shown) addUser(state.transcript, text, attachments);
     state.status = "working";
     state.error = null;
     this.changed(false);
     try {
       const r = await this.conn.request("session/prompt", { sessionId: state.sessionId, prompt: [...(sent.trim() ? [{ type: "text", text: sent }] : []), ...blocks] });
-      if (r?.stopReason && r.stopReason !== "end_turn") addNotice(state.transcript, stopNote(r.stopReason), "warn");
+      // An answer after a refusal for a limit: the limit is over.
+      if (state.transcript.limit?.text) delete state.transcript.limit;
+      if (r?.stopReason === "cancelled" && this.steered) addNotice(state.transcript, "Stopped to take your message.");
+      else if (r?.stopReason && r.stopReason !== "end_turn") addNotice(state.transcript, stopNote(r.stopReason), "warn");
       // The turn's tokens, when the agent sends them with its answer: added up per chat for the Usage dialog.
       const u = r?.usage;
       if (u && typeof u === "object") {
@@ -194,9 +243,12 @@ export class ChatSession {
       }
     } catch (e) {
       addNotice(state.transcript, e.message, "error");
+      // A refusal for a limit (rate, usage, credits) is also kept as the chat's limit, for the line over the message box.
+      if (limitText(e.message)) noteLimit(state.transcript, { status: "rejected", text: limitText(e.message) });
     }
     endTurn(state.transcript);
-    if (state.status === "working") state.status = "ready";
+    // A turn stopped by steer() stays "working": the steering message is on its way, and nothing queued may pass it.
+    if (state.status === "working" && !this.steered) state.status = "ready";
     this.changed(false);
   }
 
