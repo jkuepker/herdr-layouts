@@ -93,6 +93,7 @@ export class FilePanel {
     else if (c.startsWith("line-text:")) this.lineBox.set_value(c.slice(10).replace(/\\n/g, "\n"));
     else if (c === "line-insert") this.insertLines(cx, t);
     else if (c === "line-chat") this.quoteLines(cx, t);
+    else if (c === "close-file") { if (this.ctx?.active >= 0) this.shut(cx, this.ctx.active); } // as its ×
     else if (c.startsWith("open:") && this.ctx) {
       const path = c.slice(5), root = this.ctx.root + "/";
       if (!path.startsWith("/")) this.open(cx, path);

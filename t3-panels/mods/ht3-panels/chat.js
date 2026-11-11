@@ -237,8 +237,12 @@ const initials = (name) => {
   return ((words.length > 1 ? words[0][0] + words[1][0] : (words[0] ?? "").slice(0, 2)) || "?").toUpperCase();
 };
 
+// Every chat view in this window, for the composer keys (chatKey): one press acts on one chat.
+const CHATS = new Set();
+
 export class ChatPanel {
   init(p, cx) {
+    CHATS.add(this); // the composer keys: a side chat leaves them to the focused tab's own chat
     this.p = p; // kept for Retry, which starts a chat that never got an agent again (begin)
     this.chatId = p.chat ?? null;
     this.source = null;
@@ -1786,6 +1790,8 @@ export class ChatPanel {
   chatKey(cx, key) {
     const tab = this.reporter?.tab, now = focused()?.tab;
     if ((tab && now && tab !== now) || this.source.kind !== "acp" || !["effort-up", "effort-down", "mode", "model"].includes(key)) return;
+    // A side chat (no tab of its own) acts only when the focused tab has no chat that will.
+    if (!tab && now && [...CHATS].some((c) => c !== this && c.reporter?.tab === now && c.source?.kind === "acp")) return;
     const v = this.view ?? this.source.view();
     const say = (body) => notify({ title: "Chat", body, level: "info", timeout: 2500 });
     if (!v.alive) return say("The agent isn't running.");
