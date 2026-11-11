@@ -12,6 +12,11 @@
 // folder (watchFolder) and a 15 s timer. A hunk or some of its lines can be picked and sent to
 // the shown chat's message box with a comment. The header's toggle shows the same rows Unified (one
 // column) or Split (old on the left, new on the right), kept as the setting "diffLayout".
+//
+// In the uncommitted scope (the working tree against HEAD) each hunk has Stage and Revert and each file Revert
+// (hunkpatch.js builds the patch of one hunk and runs `git apply`): a first click asks, the second within 4 s does it,
+// and the last revert can be undone for 30 s. The buttons in a list row are zones of the row (a list row can't hold a
+// click handler of its own): the press's place across the row says which one was meant.
 
 import { div, list } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, InputState, Input } from "gpui-base";
@@ -21,8 +26,11 @@ import { fileIcon } from "./fileicons.js";
 import { activeSpace, placeOf, showing } from "./side.js";
 import { syntax } from "./editor.js";
 import { prefs, setPref, diffHidesWhitespace } from "./settings.js";
+import { parseDiff, MAX_LINES_FILE, hunkActions, applyHunk, revertFile, redo } from "./hunkpatch.js";
 
-const MAX_FILES = 200, MAX_LINES_FILE = 1500, MAX_ROWS = 12000, MAX_UNTRACKED = 40;
+export { parseDiff };
+
+const MAX_FILES = 200, MAX_ROWS = 12000, MAX_UNTRACKED = 40;
 // The default branch's ref and the merge base with it, as "<ref> <sha>"; nothing when there is none.
 const BASE = 'b=$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null); for c in "$b" origin/main origin/master main master; do [ -n "$c" ] && m=$(git merge-base HEAD "$c" 2>/dev/null) && [ -n "$m" ] && echo "$c $m" && break; done; true';
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
@@ -30,47 +38,14 @@ const untracked = (ws) => `git ls-files -o --exclude-standard | head -n ${MAX_UN
 const COMMITS = 50;
 // The commit list: one commit a line, fields parted by the unit separator (the subject has no newline).
 export const COMMIT_FORMAT = "--format=%H%x1f%h%x1f%s%x1f%an%x1f%ar%x1f%P";
-const GIT = ["--no-optional-locks", "-c", "core.fsmonitor=false"];
+const GIT = ["--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "core.quotePath=false"];
 // What the panel runs for a commit (`git show`): no header, a merge against its first parent (a combined diff is
 // not something parseDiff reads), a root commit as everything added. -w when whitespace is hidden.
 export const showArgs = (hash, ws, extra = []) => [...GIT, "show", "--no-color", "--no-ext-diff", "--format=", "--first-parent", "-m", "--find-renames", ...extra, ...(ws ? ["-w"] : []), hash, "--"];
 // Hash or position: "3" is the 4th commit of the list (0 is the newest), anything longer is a hash or a ref.
 export const isIndex = (s) => /^\d{1,3}$/.test(s);
 
-// ---- a unified diff, parsed ----
-
-export function parseDiff(text) {
-  const files = [];
-  let file = null, hunk = null, o = 0, n = 0;
-  for (const line of text.split("\n")) {
-    if (line.startsWith("diff --git ")) {
-      const m = line.match(/^diff --git a\/(.*) b\/(.*)$/);
-      file = { path: m ? m[2] : line.slice(11), old: m ? m[1] : null, status: "M", add: 0, del: 0, binary: false, hunks: [], lines: 0, cut: false };
-      files.push(file);
-      hunk = null;
-    } else if (!file) {
-      continue;
-    } else if (!hunk && line.startsWith("new file")) file.status = "A";
-    else if (!hunk && line.startsWith("deleted file")) file.status = "D";
-    else if (!hunk && line.startsWith("rename from ")) { file.status = "R"; file.old = line.slice(12); }
-    else if (!hunk && line.startsWith("Binary files")) file.binary = true;
-    else if (line.startsWith("@@")) {
-      const m = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@ ?(.*)$/);
-      o = m ? Number(m[1]) : 0;
-      n = m ? Number(m[2]) : 0;
-      hunk = { head: line, ctx: m?.[3] ?? "", lines: [] };
-      file.hunks.push(hunk);
-    } else if (hunk) {
-      if (file.lines >= MAX_LINES_FILE) { file.cut = true; continue; }
-      const c = line[0];
-      if (c === "+") { hunk.lines.push({ t: "+", text: line.slice(1), n: n++ }); file.add++; file.lines++; }
-      else if (c === "-") { hunk.lines.push({ t: "-", text: line.slice(1), o: o++ }); file.del++; file.lines++; }
-      else if (c === " ") { hunk.lines.push({ t: " ", text: line.slice(1), o: o++, n: n++ }); file.lines++; }
-      // "\ No newline at end of file" and the like are left out.
-    }
-  }
-  return files;
-}
+// ---- a unified diff, parsed: parseDiff, in hunkpatch.js ----
 
 // ---- a commit list, parsed ----
 
@@ -212,6 +187,8 @@ function list_(commits, k, shown, pick) {
   }).on_item_click((id, cx) => pick(id, cx));
 }
 
+// The buttons in a row: widths and the row's right padding, which zoneAt measures from.
+const ZR = 52, ZS = 44, ZGAP = 6, ZPAD = 12;
 const extOf = (path) => (path.includes(".") ? path.split(".").pop().toLowerCase() : "");
 
 export class DiffPanel {
@@ -247,6 +224,19 @@ export class DiffPanel {
     this.side = null; // Split: the half that press was on, "L" or "R"
     this.width = null; // the surface's own, for Split's fallback
     this.said = null; // what happened to the last one
+    this.saidBad = false; // ...and whether it went wrong
+    // Revert / Stage: whether the files shown are the working tree against HEAD (live), which of them have staged
+    // changes, whether that diff hid whitespace, the click that asked (armed: { key, text, until }), the work running,
+    // the last revert's way back (undo: { label, steps, until }), and where the last press was across the list.
+    this.live = false;
+    this.staged = new Set();
+    this.untrackedPaths = new Set();
+    this.diffWs = false;
+    this.armed = null;
+    this.busy = false;
+    this.undo = null;
+    this.again = false;
+    this.press = null;
     this.note = InputState.new({ placeholder: "What should the agent do about this change?" });
     this.note.on("change", (_e, cx) => cx.notify());
     this.note.on("submit", (_e, cx) => this.quote(cx));
@@ -274,6 +264,106 @@ export class DiffPanel {
     }
     if (c.startsWith("hunk:")) { const ids = this.rows(false).filter((r) => r.kind === "hunk").map((r) => r.id); this.pickHunk(cx, c.slice(5) === "" ? null : ids[Number(c.slice(5))] ?? null); }
     if (c.startsWith("comment:")) { this.note.set_value(c.slice(8)); this.quote(cx); }
+    // hunk-revert:<file>:<n> and hunk-stage:<file>:<n> (the nth hunk of the file, from 0), file-revert:<file>: as the
+    // buttons; a revert asks first and the same command again within 4 s does it. undo-revert puts the last one back,
+    // revert-yes and revert-no answer the question.
+    if (c.startsWith("hunk-revert:") || c.startsWith("hunk-stage:")) {
+      const kind = c.startsWith("hunk-revert:") ? "revert" : "stage", rest = c.slice(c.indexOf(":") + 1), at = rest.lastIndexOf(":");
+      this.act(cx, kind === "revert" ? "hunk-revert" : "hunk-stage", rest.slice(0, at), Number(rest.slice(at + 1)));
+    }
+    if (c.startsWith("file-revert:")) this.act(cx, "file-revert", c.slice(12), 0);
+    if (c === "undo-revert") this.undoRevert(cx);
+    if (c === "revert-yes") this.answer(cx, true);
+    if (c === "revert-no") this.answer(cx, false);
+  }
+
+  // ---- Revert and Stage ----
+  say(cx, text, bad = false) { this.said = text; this.saidBad = bad; cx.notify(); }
+  armedNow() { return this.armed && this.armed.until > Date.now() ? this.armed : null; }
+  // What can be done to a hunk of a shown file: { revert, stage, why }.
+  hunkActs(f, hi) { return hunkActions(f, hi, { worktree: this.live && !this.picking, staged: this.staged.has(f.path) }); }
+  // A hunk button or command: Stage goes at once, a revert asks first (the second ask within 4 s, or Yes, does it).
+  act(cx, kind, path, n) {
+    const f = this.files?.find((x) => x.path === path);
+    if (!f) return this.say(cx, `No file ${path} in the diff.`, true);
+    if (!this.live || this.picking) return this.say(cx, "Only the uncommitted changes can be reverted or staged: switch the scope to Uncommitted.", true);
+    if (this.busy) return;
+    if (kind !== "file-revert") {
+      const a = this.hunkActs(f, n);
+      if (kind === "hunk-revert" && !a.revert) return this.say(cx, a.why ?? "This hunk can't be reverted.", true);
+      if (kind === "hunk-stage" && !a.stage) return this.say(cx, a.why ?? (this.staged.has(f.path) ? `${path} already has staged changes: this diff can't tell which hunks they are. Stage it with git.` : "This hunk can't be staged."), true);
+    } else if (f.quoted) return this.say(cx, "This file's name needs quoting; use git itself.", true);
+    const key = `${kind}:${path}:${n}`;
+    if (kind !== "hunk-stage") {
+      const was = this.armedNow();
+      if (!was || was.key !== key) {
+        const untracked = kind === "file-revert" && f.status === "A" && this.untrackedPaths.has(path);
+        const what = kind === "hunk-revert" ? `Revert hunk ${n + 1} of ${path}? It is dropped from the file.` : untracked ? `Delete ${path}? It is a new file git doesn't track: it is removed from disk.` : `Revert ${path}? Its changes, staged and not, are thrown away.`;
+        this.armed = { key, kind, path, n, text: what, until: Date.now() + 4000 };
+        cx.timer.after(4050, (cx) => cx.notify());
+        return cx.notify();
+      }
+    }
+    this.armed = null;
+    this.run(cx, kind, f, n);
+  }
+  answer(cx, yes) {
+    const a = this.armedNow();
+    this.armed = null;
+    if (yes && a) this.act(cx, a.kind, a.path, a.n);
+    else cx.notify();
+  }
+  run(cx, kind, f, n) {
+    const root = this.root, ctx = { cwd: root, on: this.on }, ws = this.diffWs;
+    this.busy = true;
+    this.said = null;
+    cx.notify();
+    cx.spawn(async (cx) => {
+      let r;
+      try {
+        if (kind === "file-revert") r = await revertFile(exec, ctx, f);
+        else r = await applyHunk(exec, ctx, f, n, kind === "hunk-revert" ? "revert" : "stage", ws);
+      } catch (e) { r = { ok: false, err: String(e?.message ?? e) }; }
+      this.busy = false;
+      if (this.root !== root) return;
+      const label = kind === "file-revert" ? f.path : `hunk ${n + 1} of ${f.path}`;
+      if (r.ok) {
+        this.picked = null;
+        this.pickedTo = null;
+        if (kind === "hunk-stage") { this.undo = null; this.say(cx, `Staged ${label}.`); }
+        else {
+          this.undo = { label, steps: r.undo, until: Date.now() + 30000 };
+          cx.timer.after(30050, (cx) => cx.notify());
+          this.say(cx, r.untracked ? `Deleted ${f.path}.` : `Reverted ${label}.`);
+        }
+      } else this.say(cx, `Couldn't ${kind === "hunk-stage" ? "stage" : "revert"} ${label}: ${r.err} The diff may be out of date: refreshed.`, true);
+      this.reload(cx);
+    });
+  }
+  // The last revert's way back, while it shows (30 s).
+  undoRevert(cx) {
+    const u = this.undo;
+    if (!u || u.until <= Date.now() || this.busy || !this.root) return;
+    const root = this.root, ctx = { cwd: root, on: this.on };
+    this.busy = true;
+    cx.notify();
+    cx.spawn(async (cx) => {
+      let r;
+      try { r = await redo(exec, ctx, u.steps); } catch (e) { r = { ok: false, err: String(e?.message ?? e) }; }
+      this.busy = false;
+      if (this.root !== root) return;
+      if (r.ok) { this.undo = null; this.say(cx, `Put back ${u.label}.`); }
+      else this.say(cx, `Couldn't undo the revert of ${u.label}: ${r.err} The diff may be out of date: refreshed.`, true);
+      this.reload(cx);
+    });
+  }
+  // Read the diff again after a change: now, or when the read already running is done (it may have started before).
+  reload(cx) { if (this.loading) this.again = true; else { this.stale = true; this.refresh(cx); } }
+  // The hunk the picked row is in: { f, hi }.
+  pickedHunk() {
+    const m = HUNK.exec(this.picked ?? "") ?? LINE.exec(this.picked ?? "");
+    const f = m ? this.files?.find((x) => x.path === m[1]) : null;
+    return f ? { f, hi: Number(m[2]) } : null;
   }
 
   pickHunk(cx, id) {
@@ -422,6 +512,9 @@ export class DiffPanel {
     this.commits = null;
     this.commit = null;
     this.picking = false;
+    this.undo = null;
+    this.armed = null;
+    this.live = false;
     if (this.scope === "commit") this.scope = "branch";
     cx.spawn(async (cx) => {
       const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd: where.cwd, on: where.on }).catch(() => null);
@@ -481,6 +574,7 @@ export class DiffPanel {
             this.files = files.slice(0, MAX_FILES);
             this.more = files.length - this.files.length;
             this.error = null;
+            this.live = false;
             this.usedSig = sig;
             used = true;
           }
@@ -498,7 +592,21 @@ export class DiffPanel {
         if (r.code !== 0) throw new Error(r.stderr.trim().split("\n")[0] || "git diff failed");
         const extra = turn ? null : await exec("sh", ["-c", untracked(ws)], { cwd: root, on, timeout: 20000 }).catch(() => null);
         const files = withWhitespaceOnly(parseDiff(r.stdout + "\n" + (extra?.stdout ?? "")), await names([...GIT, "diff", "--name-only", "--find-renames", ...at]));
+        // Revert and Stage work on the working tree against HEAD (or against nothing, before the first commit).
+        const live = !turn && (at[0] === "HEAD" || at[0] === EMPTY_TREE);
+        let staged = new Set(), untrackedPaths = new Set();
+        if (live) {
+          const sg = await exec("git", [...GIT, "diff", "--cached", "--name-only", "--find-renames"], { cwd: root, on }).catch(() => null);
+          if (sg?.code === 0) staged = new Set(sg.stdout.split("\n").map((x) => x.replace(/\r$/, "")).filter(Boolean));
+          else if (sg) staged = new Set(files.map((f) => f.path)); // can't tell: no Stage
+          const ut = await exec("git", [...GIT, "ls-files", "-o", "--exclude-standard"], { cwd: root, on }).catch(() => null);
+          if (ut?.code === 0) untrackedPaths = new Set(ut.stdout.split("\n").filter(Boolean));
+        }
         if ((turn ? this.turn === turn : this.root === root) && this.scope === scope) {
+          this.live = live;
+          this.staged = staged;
+          this.untrackedPaths = untrackedPaths;
+          this.diffWs = ws;
           this.usedSig = sig;
           this.base = base;
           this.files = files.slice(0, MAX_FILES);
@@ -507,7 +615,7 @@ export class DiffPanel {
           used = true;
         }
       } catch (e) { if (turn ? this.turn === turn : this.root === root) { used = this.scope === scope; this.error = String(e?.message ?? e); if (turn) this.files = []; } }
-      finally { this.loading = false; if (!used) this.stale = true; cx.notify(); }
+      finally { this.loading = false; if (!used || this.again) this.stale = true; this.again = false; cx.notify(); }
     });
   }
 
@@ -521,7 +629,7 @@ export class DiffPanel {
       if (f.binary) rows.push({ id: `b:${f.path}`, kind: "note", text: "Binary file not shown." });
       else if (!f.hunks.length) rows.push({ id: `e:${f.path}`, kind: "note", text: f.wsOnly ? "Only whitespace changed here, and whitespace changes are hidden." : "No content changes." });
       f.hunks.forEach((h, hi) => {
-        rows.push({ id: `h:${f.path}:${hi}`, kind: "hunk", h });
+        rows.push({ id: `h:${f.path}:${hi}`, kind: "hunk", h, f, hi });
         if (split) pairLines(h.lines).forEach((p, pi) => rows.push({ id: `p:${f.path}:${hi}:${pi}`, kind: "pair", L: p.L, R: p.R, path: f.path, hi, ext: extOf(f.path) }));
         else h.lines.forEach((l, li) => rows.push({ id: `l:${f.path}:${hi}:${li}`, kind: "line", l, path: f.path, hi, li, ext: extOf(f.path) }));
       });
@@ -544,7 +652,26 @@ export class DiffPanel {
         .child(div().flex_none().font_medium().child(f.path.slice(at + 1))))
       .when(!!mark[0], (el) => el.child(div().flex_none().text_size(11).text_color(mark[1]).child(mark[0])))
       .when(f.add > 0, (el) => el.child(div().flex_none().font_family(k.mono).text_size(11).text_color(k.successText).child(`+${f.add}`)))
-      .when(f.del > 0, (el) => el.child(div().flex_none().font_family(k.mono).text_size(11).text_color(k.destructiveText).child(`−${f.del}`)));
+      .when(f.del > 0, (el) => el.child(div().flex_none().font_family(k.mono).text_size(11).text_color(k.destructiveText).child(`−${f.del}`)))
+      .when(this.live && !this.picking && !f.quoted, (el) => el.child(this.zone(k, "Revert", this.armedNow()?.key === `file-revert:${f.path}:0`, ZR, "Revert this file to HEAD: its staged and unstaged changes are thrown away (a new file is deleted)")));
+  }
+
+  // A button drawn as part of a list row (the row has no click handler of its own: onItemClick finds it by where the
+  // press was). Armed: it asks "Sure?" for 4 s.
+  zone(k, label, armed, w, tip) {
+    return div().w(w).h(20).flex_none().flex().items_center().justify_center().rounded(4).text_size(11).font_medium().whitespace_nowrap().cursor_pointer()
+      .bg(armed ? k.destructive : alpha(k.foreground, k.dark ? 0.1 : 0.07)).text_color(armed ? "#ffffff" : label === "Revert" ? k.destructiveText : k.foreground)
+      .hover((s) => s.bg(armed ? alpha(k.destructive, 0.9) : alpha(k.foreground, 0.18))).tooltip(tip).child(armed ? "Sure?" : label);
+  }
+  // Which button of a row the last press was on, from its distance to the row's right edge: "revert", "stage" or null.
+  zoneAt(kind) {
+    const p = this.press;
+    if (!p || p.w == null || p.x == null) return null;
+    const d = p.w - p.x;
+    if (kind === "file") return d <= ZPAD + ZR + 2 ? "revert" : null;
+    if (d <= ZPAD + ZR + ZGAP / 2) return "revert";
+    if (d <= ZPAD + ZR + ZGAP + ZS + 2) return "stage";
+    return null;
   }
 
   lineRow(k, r, colors) {
@@ -624,7 +751,7 @@ export class DiffPanel {
     const root = v_flex().id("ht3-diff").size_full().min_h(0).bg(k.background).text_color(k.foreground).text_size(12)
       .on_size_change((size, cx) => { if (Math.abs((this.width ?? 0) - size.width) >= 1) { this.width = size.width; cx.notify(); } })
       // Esc lets go of what is picked (the comment field has the focus while something is).
-      .on_key_down((e, cx) => { if (e.key === "escape" && this.picking) this.closePicker(cx); else if (e.key === "escape" && this.picked) this.pickHunk(cx, null); })
+      .on_key_down((e, cx) => { if (e.key === "escape" && this.picking) this.closePicker(cx); else if (e.key === "escape" && this.armed) { this.armed = null; cx.notify(); } else if (e.key === "escape" && this.picked) this.pickHunk(cx, null); })
       .on_modifiers_changed((e) => { this.shift = !!e.modifiers?.shift; });
     const say = (text, color = k.muted) => root.child(v_flex().flex_1().items_center().justify_center().px(24).gap(8).text_size(12).text_color(color).child(text));
     if (!this.seen) return say("No folder: focus a terminal to see its changes.");
@@ -636,7 +763,7 @@ export class DiffPanel {
     const rows = files.length ? this.rows(split) : [];
     const byId = split ? new Map(rows.filter((r) => r.kind === "pair").map((r) => [r.id, r])) : null;
     const allShut = files.length > 0 && files.every((f) => this.shut.has(f.path));
-    const picked = this.hunkAt();
+    const picked = this.hunkAt(), ph = picked ? this.pickedHunk() : null, ask = this.armedNow(), undo = this.undo && this.undo.until > Date.now() ? this.undo : null;
     const hideWs = diffHidesWhitespace();
     const scopeLabel = this.scope === "branch" ? "Changes" : this.scope === "turn" ? "This turn" : this.scope === "commit" ? "Commit" : "Uncommitted";
     const older = this.scope === "commit" ? this.neighbour(1) : null, newer = this.scope === "commit" ? this.neighbour(-1) : null;
@@ -695,6 +822,7 @@ export class DiffPanel {
         .on_mouse_down("left", (e) => {
           this.shift = !!e.modifiers?.shift;
           this.side = e.local_position && e.bounds?.width ? (e.local_position.x < e.bounds.width / 2 ? "L" : "R") : null;
+          this.press = e.local_position && e.bounds?.width ? { x: e.local_position.x, w: e.bounds.width } : null;
         })
         .child(list("ht3-diff-rows", rows.length, (i) => rows[i].id, (i) => {
           const r = rows[i];
@@ -706,10 +834,23 @@ export class DiffPanel {
             .cursor_pointer().hover((s) => s.bg(alpha(k.info, 0.2)))
             .child(div().flex_none().child(r.h.head.match(/^@@[^@]*@@/)?.[0] ?? "@@"))
             .child(div().flex_1().min_w(0).truncate().child(r.h.ctx))
-            .child(h_flex().flex_none().gap(4).items_center().child(icon("message-square").size(12).flex_none()).child(r.id === this.picked ? "Commenting" : "Comment"));
+            .child(h_flex().flex_none().gap(4).items_center().child(icon("message-square").size(12).flex_none()).when(!(this.live && !this.picking), (e) => e.child(r.id === this.picked ? "Commenting" : "Comment")))
+            .when(this.live && !this.picking && this.hunkActs(r.f, r.hi).revert, (e) => {
+              const a = this.hunkActs(r.f, r.hi), arm = this.armedNow();
+              return e.child(h_flex().flex_none().gap(ZGAP).items_center()
+                .when(a.stage, (z) => z.child(this.zone(k, "Stage", false, ZS, "Stage this hunk: git apply --cached")))
+                .child(this.zone(k, "Revert", arm?.key === `hunk-revert:${r.f.path}:${r.hi}`, ZR, "Revert this hunk in the working tree: git apply -R")));
+            });
           return div().h(24).px(12).flex().items_center().text_size(11).text_color(k.muted).child(r.text);
         })
           .on_item_click((id, cx) => {
+            const z = id.startsWith("h:") || id.startsWith("f:") ? this.zoneAt(id[0] === "f" ? "file" : "hunk") : null;
+            this.press = null;
+            if (z && this.live && !this.picking) {
+              if (id.startsWith("f:")) return this.act(cx, "file-revert", id.slice(2), 0);
+              const m = HUNK.exec(id), f = m ? this.files?.find((x) => x.path === m[1]) : null, a = f ? this.hunkActs(f, Number(m[2])) : null;
+              if (a?.revert && (z === "revert" || a.stage)) return this.act(cx, z === "stage" ? "hunk-stage" : "hunk-revert", m[1], Number(m[2]));
+            }
             if (id.startsWith("h:")) return this.pickHunk(cx, id);
             if (id.startsWith("l:")) return this.pickLine(cx, id, this.shift);
             if (id.startsWith("p:")) { const r = byId?.get(id); return r ? this.pickLine(cx, this.pairLine(r), this.shift) : undefined; }
@@ -724,11 +865,26 @@ export class DiffPanel {
         .child(h_flex().gap(6).items_center().text_size(12).text_color(k.muted)
           .child(icon("message-square").size(14).flex_none())
           .child(div().flex_1().min_w(0).truncate().child(`${picked.path} · ${where(picked)} · ${picked.lines.length} line${picked.lines.length === 1 ? "" : "s"} of diff${picked.parts.length > 1 ? ` in ${picked.parts.length} hunks` : ""}`))
-          .when(!!this.picked?.startsWith("l:"), (e) => e.child(div().flex_none().text_size(11).child(this.pickedTo ? "Shift-click moves the end · Esc clears" : "Shift-click another + for a range"))))
+          .when(!!this.picked?.startsWith("l:"), (e) => e.child(div().flex_none().text_size(11).child(this.pickedTo ? "Shift-click moves the end · Esc clears" : "Shift-click another + for a range")))
+          // The hunk's own buttons, for when the one in its row is hard to hit.
+          .when(!!ph && this.live && this.hunkActs(ph.f, ph.hi).revert, (e) => e.child(h_flex().flex_none().gap(4).items_center()
+            .when(this.hunkActs(ph.f, ph.hi).stage, (z) => z.child(button(k, "hunk-stage", "Stage hunk", (cx) => this.act(cx, "hunk-stage", ph.f.path, ph.hi), { variant: "ghost-muted" })))
+            .child(button(k, "hunk-revert", "Revert hunk", (cx) => this.act(cx, "hunk-revert", ph.f.path, ph.hi), { variant: "ghost-muted" })))))
         .child(h_flex().gap(8).items_center()
           .child(div().flex_1().min_w(0).h(30).px(8).rounded(8).border(1).border_color(k.input).bg(k.background).text_size(13).child(Input.new(this.note)))
           .child(button(k, "hunk-cancel", "Cancel", (cx) => this.pickHunk(cx, null), { variant: "outline", size: "sm" }))
           .child(button(k, "hunk-add", "Add to chat", (cx) => this.quote(cx), { variant: "default", size: "sm" })))))
-      .when(!!this.said, (el) => el.child(div().flex_none().px(12).py(6).border_t(1).border_color(k.border).text_size(12).text_color(k.muted).child(this.said)));
+      // A revert asks: Yes (or the same button again within 4 s) does it.
+      .when(!!ask, (el) => el.child(h_flex().flex_none().px(12).py(6).gap(8).items_center().border_t(1).border_color(k.border).bg(k.card).text_size(12)
+        .child(icon("triangle-alert").size(14).flex_none().text_color(k.destructiveText))
+        .child(div().flex_1().min_w(0).child(ask.text))
+        .child(button(k, "revert-no", "No", (cx) => this.answer(cx, false), { variant: "outline" }))
+        .child(button(k, "revert-yes", "Yes", (cx) => this.answer(cx, true), { variant: "destructive" }))))
+      // The last revert can be put back for 30 s.
+      .when(!!undo && !ask, (el) => el.child(h_flex().flex_none().px(12).py(6).gap(8).items_center().border_t(1).border_color(k.border).bg(k.card).text_size(12)
+        .child(icon("rotate-ccw").size(14).flex_none().text_color(k.muted))
+        .child(div().flex_1().min_w(0).truncate().text_color(k.muted).child(`Reverted ${undo.label}.`))
+        .child(button(k, "undo-revert", "Undo revert", (cx) => this.undoRevert(cx), { variant: "outline" }))))
+      .when(!!this.said && !(undo && !this.saidBad && this.said.startsWith("Reverted ")), (el) => el.child(div().flex_none().px(12).py(6).border_t(1).border_color(k.border).text_size(12).text_color(this.saidBad ? k.destructiveText : k.muted).child(this.said)));
   }
 }
