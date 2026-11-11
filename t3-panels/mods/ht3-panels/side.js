@@ -96,6 +96,11 @@ export function spaceState(id) {
   const st = read().spaces[id ?? ""];
   return st ? { ...blank(), ...st } : blank();
 }
+// About how wide the side panel is in px (wide when maximized), for surfaces that fit columns to it.
+export function panelWidth() {
+  const st = spaceState(activeSpace()?.id);
+  return read().max ? 2000 : st.w ?? 540;
+}
 // Applies `mut` to a copy of the space's state (and of the whole value) and shares it.
 export function change(id, mut) {
   const all = clone(read());

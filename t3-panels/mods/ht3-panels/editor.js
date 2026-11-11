@@ -15,9 +15,9 @@ import { spaces, panes, focused, exec, readTextFile, writeTextFile, watchFolder,
 import { tokens, alpha, icon, button, iconButton, shortPath } from "./look.js";
 import { fileIcon } from "./fileicons.js";
 import { isSecretPath } from "./secrets.js";
-import { chatPlace, showing, rememberClosed } from "./side.js";
+import { chatPlace, showing, rememberClosed, panelWidth } from "./side.js";
 import { recordRecent } from "./quick.js";
-import { loadBlame, loadHistory, openCommit, blameCell, blameNote, historyView, GUTTER as BLAME_W } from "./blame.js";
+import { loadBlame, loadHistory, openCommit, blameCell, blameNote, historyView, gutterWidth } from "./blame.js";
 
 const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", cjs: "js", toml: "yaml", jsonc: "json", svelte: "html", vue: "html", yml: "yaml", htm: "html", markdown: "md", zsh: "sh", bash: "sh" };
 const PER_FOLDER = 500, TOTAL = 5000;
@@ -462,7 +462,7 @@ export class FilePanel {
       if (!this.wrap) text = text.whitespace_nowrap().overflow_hidden();
       rows.push(h_flex().id(`ln-${no}`).w_full().flex_none().items_start().font_family(k.mono).bg(on ? alpha(blue, k.dark ? 0.16 : 0.1) : "#00000000")
         .hover((s) => s.bg(on ? alpha(blue, k.dark ? 0.16 : 0.1) : alpha(k.foreground, 0.05)))
-        .when(!!tab.blameOn, (el) => el.child(blameCell(k, tab, i, (cx, hash) => openCommit(cx, hash, this.group))))
+        .when(!!tab.blameOn, (el) => el.child(blameCell(k, tab, i, (cx, hash) => openCommit(cx, hash, this.group), this.blameW())))
         // GitHub's blue square +: faint on every line, filled under the pointer and on the picked lines.
         .child(h_flex().id(`ln-add-${no}`).size(16).mt(2).ml(6).flex_none().items_center().justify_center().rounded(4).cursor_pointer()
           .role("button").accessibility_label(`Line ${no}: insert after it, or add it to the chat`)
@@ -484,7 +484,7 @@ export class FilePanel {
   // The box under the picked line. Esc closes it.
   lineBoxView(k, tab, p, blue) {
     const where = p.from === p.to ? `line ${p.from}` : `lines ${p.from}-${p.to}`;
-    return v_flex().id("ln-box").flex_none().my(4).ml(66 + (tab.blameOn ? BLAME_W : 0)).mr(12).p(8).gap(8).rounded(8).border(1).border_color(alpha(blue, 0.6)).bg(k.card)
+    return v_flex().id("ln-box").flex_none().my(4).ml(66 + (tab.blameOn ? this.blameW() : 0)).mr(12).p(8).gap(8).rounded(8).border(1).border_color(alpha(blue, 0.6)).bg(k.card)
       .on_key_down((e, cx) => { if (e.key === "escape") this.pickLine(cx, tab, null); })
       .child(h_flex().gap(6).items_center().text_size(12).line_height("16px").text_color(k.muted)
         .child(div().flex_1().min_w(0).truncate().child(`${tab.path.split("/").pop()} · ${where}`))
@@ -547,6 +547,9 @@ export class FilePanel {
   }
 
   // ---- drawing ----
+
+  // The blame column's width: the panel less the file tree beside the file.
+  blameW() { return gutterWidth(panelWidth() - (this.ctx?.tree ? 224 : 0)); }
 
   render(cx) {
     this.follow(cx);

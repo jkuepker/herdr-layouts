@@ -18,7 +18,9 @@ import { activeSpace, spaceState, GROUPS } from "./side.js";
 import { parseBlame, parseLog, blameArgs, logArgs, blameLabel, blameTip, relTime, blameProblem, isHash, BLAME_CAP, LOG_MAX } from "./blame-parse.js";
 
 export { BLAME_CAP, LOG_MAX };
-export const GUTTER = 232; // px: the blame column of a line row
+export const GUTTER = 232; // px: the blame column of a line row, at most
+// The blame column for `avail` px of editor: narrower in a narrow panel, so the code keeps most of the room.
+export const gutterWidth = (avail) => Math.round(Math.max(88, Math.min(GUTTER, (avail - 120) * 0.35)));
 
 // ---- reading ----
 
@@ -81,9 +83,9 @@ export function blameNote(tab) {
 }
 
 // The blame cell of line index `i` (0-based) in the Lines view: `open(hash)` is what a click does.
-export function blameCell(k, tab, i, open) {
+export function blameCell(k, tab, i, open, w = GUTTER) {
   const data = tab.blame?.data, r = data?.rows[i];
-  let el = h_flex().id(`bl-${i}`).w(GUTTER).h(20).flex_none().pl(8).pr(6).gap(6).items_center().overflow_hidden().text_size(11).line_height("20px")
+  let el = h_flex().id(`bl-${i}`).w(w).h(20).flex_none().pl(8).pr(6).gap(6).items_center().overflow_hidden().text_size(11).line_height("20px")
     .text_color(alpha(k.muted, 0.85));
   if (!r) return el;
   const c = data.commits[r.hash];
