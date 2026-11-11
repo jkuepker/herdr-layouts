@@ -28,6 +28,8 @@ import { DashboardPanel } from "./dashboard.js";
 import { PrPanel, PrChatDialog, prChatCommand } from "./pr.js";
 import { BrowserPanel } from "./browser.js";
 import { ChecksPanel, openChecks } from "./checks.js";
+import { TasksPanel } from "./tasks.js";
+import { LogsPanel } from "./logs.js";
 import { SideChat, beginChat } from "./sidechat.js";
 import { Empty } from "./empty.js";
 import { detect } from "./agent-acp.js";
@@ -150,6 +152,8 @@ const FACES = {
   prs: () => new PrPanel(true),
   browser: () => new BrowserPanel(),
   checks: () => new ChecksPanel(),
+  tasks: () => new TasksPanel(),
+  logs: () => new LogsPanel(),
   side: () => new SideChat(),
   empty: () => new Empty(),
   buttons: () => new Buttons(),
