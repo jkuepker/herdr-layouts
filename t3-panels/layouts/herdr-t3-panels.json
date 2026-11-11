@@ -304,6 +304,17 @@
                           }
                         },
                         {
+                          "id": "ht3-a-checks",
+                          "type": "block",
+                          "content": {
+                            "mod": "ht3-panels",
+                            "props": {
+                              "panel": "checks",
+                              "group": "a"
+                            }
+                          }
+                        },
+                        {
                           "id": "ht3-a-browser",
                           "type": "block",
                           "content": {
@@ -415,6 +426,17 @@
                             "mod": "ht3-panels",
                             "props": {
                               "panel": "prs",
+                              "group": "b"
+                            }
+                          }
+                        },
+                        {
+                          "id": "ht3-b-checks",
+                          "type": "block",
+                          "content": {
+                            "mod": "ht3-panels",
+                            "props": {
+                              "panel": "checks",
                               "group": "b"
                             }
                           }

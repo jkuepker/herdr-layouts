@@ -15,6 +15,7 @@ import { exec, hc, closeOverlay, openOverlay, notify, shared, setShared } from "
 import { MOD, tokens, alpha, icon, button, iconButton, shortPath } from "./look.js";
 import { openUrl } from "./browser.js";
 import { placeOf, activeSpace } from "./side.js";
+import { runScript } from "./scripts.js";
 
 export const SERVERS_SIZE = { width: 560, height: 440 };
 const POLL = 5000;
@@ -32,6 +33,19 @@ const FOLDERS = PATHS + 'r=$(cd "$1" 2>/dev/null && pwd -P); echo "#root $r"; sh
   + 'else lsof -a -d cwd -Fpn -p "$l" 2>/dev/null; fi; echo "#args"; ps -o pid=,args= -p "$l" 2>/dev/null; true';
 // SIGTERM (or $2), then up to three seconds for it to go.
 const SIGNAL = 'kill -s "$2" "$1" || exit 1; i=0; while [ $i -lt 15 ]; do kill -0 "$1" 2>/dev/null || exit 0; sleep 0.2; i=$((i+1)); done; true';
+
+const HOT = `${MOD}.servers-hot`;
+
+// Run dev (the Project popover): starts the project's dev command as a server. It runs in a new terminal tab of the side
+// panel, in the project's folder (scripts.js runScript), so its output is there to read and Ctrl-C stops it; once it
+// listens on a port it is one of the folder's servers, in the strip over the message box, the dialog and the popover's
+// Servers row (found by discover below), and the watches look often for the next 45 seconds. -> false: nothing to run.
+export function startDevServer(project, dev) {
+  if (!project?.cwd || !dev?.command) return false;
+  runScript(project, { name: "Dev server", command: dev.command });
+  setShared(HOT, Date.now());
+  return true;
+}
 
 const LOOPBACK = /^(127\.|\[?::1\]?$|localhost$)/;
 const base = (p) => String(p ?? "").split("/").filter(Boolean).pop() ?? "";
@@ -164,6 +178,8 @@ export class ServerWatch {
     this.always = always;
     this.cx = cx;
     cx.timer.every(POLL, (cx) => { if (this.always || Date.now() - this.seen < SEEN) this.scan(cx); });
+    // A dev server just started (startDevServer) takes a few seconds to listen: look every 1.5 s for the next 45.
+    cx.timer.every(1500, (cx) => { if (Date.now() - (shared(HOT) ?? 0) < 45000 && (this.always || Date.now() - this.seen < SEEN)) this.scan(cx); });
     return this;
   }
 

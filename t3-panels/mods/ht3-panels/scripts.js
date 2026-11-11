@@ -11,6 +11,7 @@ import { exec, shared, setShared } from "herdr";
 import { MOD } from "./look.js";
 import { placeOf, send } from "./side.js";
 import { repoOf } from "./launcher.js";
+import { READ, parseBundle, detectCommands } from "./detect.js";
 
 const KEY = `${MOD}.scripts`, RUN = `${MOD}.script`, SETUP = `${MOD}.setup`;
 
@@ -71,3 +72,25 @@ export function runScript(project, script) {
   send("script");
 }
 export const pendingScript = () => shared(RUN) ?? null;
+
+// ---- the Checks surface's commands (checks.js) ----
+// Beside the scripts, per project key: the commands the person added to Checks themselves, { name, command }. The ones a
+// project says it has (package.json scripts, a Makefile, …) are found, not kept (detect.js).
+// shared("ht3-panels.checks"): { "<project key>": [{ name, command }] }.
+const CHECKS = `${MOD}.checks`;
+export const customChecksOf = (key) => {
+  const list = key ? (shared(CHECKS) ?? {})[key] : null;
+  return Array.isArray(list) ? list.filter((c) => c?.name && c?.command).map((c) => ({ name: String(c.name), command: String(c.command) })) : [];
+};
+export function setCustomChecks(key, list) {
+  if (!key) return;
+  const all = { ...(shared(CHECKS) ?? {}) };
+  if (list.length) all[key] = list.map((c) => ({ name: String(c.name), command: String(c.command) })); else delete all[key];
+  setShared(CHECKS, all);
+}
+
+// What the folder says it has: { checks, dev, scripts } (detect.js detectCommands), asked of the folder's machine.
+export async function detectProject(cwd, on = null) {
+  const r = await exec("sh", ["-c", READ, "sh", cwd], { cwd, on: on ?? undefined, timeout: 10000 }).catch(() => null);
+  return detectCommands(parseBundle(r?.stdout ?? ""));
+}

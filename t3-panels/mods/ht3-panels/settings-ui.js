@@ -13,7 +13,8 @@ import { div, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { closeOverlay } from "herdr";
 import { activeSpace } from "./side.js";
-import { projectOf, scriptsOf, setScripts, toggleSetup } from "./scripts.js";
+import { projectOf, scriptsOf, setScripts, toggleSetup, detectProject } from "./scripts.js";
+import { importable } from "./detect.js";
 import { tokens, alpha, icon, agentMark, button, iconButton, shortPath, badge } from "./look.js";
 import { AGENTS, detect } from "./agent-acp.js";
 import { EDITORS, editors } from "./menus.js";
@@ -34,6 +35,8 @@ export class Settings {
     // Project scripts: the shown space's project, and the two fields a new one is typed into.
     this.project = null;
     this.editing = null; // the script whose pen was pressed
+    this.importing = false; // Import scripts: the list of detected commands is open
+    this.detected = null; // { scripts } the folder's package.json, Makefile and justfile say it has (detect.js)
     this.scriptName = InputState.new({ placeholder: "Name, e.g. Dev" });
     this.scriptCommand = InputState.new({ placeholder: "Command, e.g. npm run dev" });
     for (const f of [this.scriptName, this.scriptCommand]) { f.on("change", (_e, cx) => cx.notify()); f.on("submit", (_e, cx) => { this.addScript(); cx.notify(); }); }
@@ -71,6 +74,9 @@ export class Settings {
     // ui:move:<n>:<up|down> moves it one place.
     else if (what === "edit") this.editScript(rest === "" ? null : Number(rest));
     else if (what === "move") { const [n, way] = rest.split(":"); this.moveScript(Number(n), way === "up" ? -1 : 1); }
+    // ui:import opens (again: closes) the list of commands the folder's package.json, Makefile and justfile have that
+    // the project doesn't have as scripts yet; ui:import:<n> adds the nth (from 0), ui:import:all adds them all.
+    else if (what === "import") this.importScripts(rest, cx);
     // ui:skip folds Agents and Editors away (and back), so a script's picture shows the sections under them.
     else if (what === "skip") this.skip = !this.skip;
     else if (what === "close") closeOverlay(this.overlay);
@@ -117,6 +123,23 @@ export class Settings {
     if (at != null && list[at]) setScripts(this.project.key, list.map((s, i) => (i === at ? { name, command } : s)).filter((s, i) => i === at || s.name !== name));
     else setScripts(this.project.key, [...list.filter((s) => s.name !== name), { name, command }]);
     this.editScript(null);
+  }
+
+  // Import scripts: reads the folder (package.json scripts, Makefile targets, justfile recipes) and offers what the
+  // project doesn't have yet. `which`: "" opens or closes the list, "all" or a number adds from it.
+  offers() { return this.detected && this.project ? importable(this.detected.scripts, scriptsOf(this.project.key)) : []; }
+  importScripts(which, cx) {
+    if (!this.project) return;
+    if (which === "") {
+      this.importing = !this.importing;
+      if (this.importing) {
+        this.detected = null;
+        cx.spawn(async (cx) => { this.detected = await detectProject(this.project.cwd, this.project.on).catch(() => ({ scripts: [] })); cx.notify(); });
+      }
+      return;
+    }
+    const offers = this.offers(), pick = which === "all" ? offers : [offers[Number(which)]].filter(Boolean);
+    if (pick.length) setScripts(this.project.key, [...scriptsOf(this.project.key), ...pick.map((s) => ({ name: s.name, command: s.command }))]);
   }
 
   // The pen: the script goes into the two fields; null leaves them empty again.
@@ -254,7 +277,14 @@ export class Settings {
             .child(div().w(150).flex_none().h(30).px(8).rounded(8).border(1).border_color(k.input).text_size(13).child(Input.new(this.scriptName)))
             .child(div().flex_1().min_w(0).h(30).px(8).rounded(8).border(1).border_color(k.input).text_size(13).font_family(k.mono).child(Input.new(this.scriptCommand)))
             .when(this.editing != null, (e) => e.child(button(k, "script-cancel", "Cancel", (cx) => { this.editScript(null); cx.notify(); }, { size: "sm", variant: "outline" })))
-            .child(button(k, "script-add", this.editing != null ? "Save" : "Add", (cx) => { this.addScript(); cx.notify(); }, { size: "sm", variant: this.editing != null ? "default" : "outline", disabled: !this.scriptName.value().trim() || !this.scriptCommand.value().trim() }))])))
+            .child(button(k, "script-add", this.editing != null ? "Save" : "Add", (cx) => { this.addScript(); cx.notify(); }, { size: "sm", variant: this.editing != null ? "default" : "outline", disabled: !this.scriptName.value().trim() || !this.scriptCommand.value().trim() })),
+          // Import scripts: what package.json, a Makefile or a justfile in the folder has, to add as scripts.
+          this.row(icon("list-plus").size(16).flex_none().text_color(k.muted), "Import scripts", this.importing ? (this.detected ? (this.offers().length ? `${this.offers().length} to add from package.json, Makefile and justfile` : "Nothing new: every command found is already a script.") : "Reading the folder…") : "Offers the package.json scripts, Makefile targets and justfile recipes of the folder.",
+            [...(this.importing && this.offers().length > 1 ? [button(k, "script-import-all", "Add all", (cx) => { this.importScripts("all", cx); cx.notify(); }, { size: "sm", variant: "default" })] : []),
+              button(k, "script-import", this.importing ? "Close" : "Import…", (cx) => { this.importScripts("", cx); cx.notify(); }, { size: "sm", variant: "outline" })]),
+          ...(this.importing ? this.offers().map((s, i) => this.row(icon("square-terminal").size(16).flex_none().text_color(k.muted),
+            h_flex().gap(6).items_center().child(div().min_w(0).truncate().child(s.name)).child(badge(k, s.source)), s.command,
+            [button(k, `script-import-${i}`, "Add", (cx) => { this.importScripts(String(i), cx); cx.notify(); }, { size: "sm", variant: "outline" })])) : [])])))
         .child(this.section(k, "Diff", "How the Diff surface shows changes.",
           [this.row(icon("pilcrow").size(16).flex_none().text_color(k.muted), "Hide whitespace changes", "Runs every diff and commit view with -w, so lines that only changed in whitespace don't show. Also the pilcrow button in Diff's header.",
             [this.toggle(k, "set-diff-ws", diffHidesWhitespace(), "Hide whitespace changes", () => setPref("diffIgnoreWhitespace", diffHidesWhitespace() ? false : undefined))])]))
