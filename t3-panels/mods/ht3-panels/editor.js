@@ -17,6 +17,7 @@ import { fileIcon } from "./fileicons.js";
 import { isSecretPath } from "./secrets.js";
 import { chatPlace, showing, rememberClosed } from "./side.js";
 import { recordRecent } from "./quick.js";
+import { loadBlame, loadHistory, openCommit, blameCell, blameNote, historyView, GUTTER as BLAME_W } from "./blame.js";
 
 const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", cjs: "js", toml: "yaml", jsonc: "json", svelte: "html", vue: "html", yml: "yaml", htm: "html", markdown: "md", zsh: "sh", bash: "sh" };
 const PER_FOLDER = 500, TOTAL = 5000;
@@ -73,7 +74,12 @@ export class FilePanel {
     this.lineBox.set_auto_grow(1, 8);
     this.follow(cx);
     // Lists the folder and asks git only while the tab shows; back in view, at once (render).
-    cx.timer.every(10000, (cx) => { if (showing(this.group, "files")) this.refresh(cx); else this.stale = true; });
+    cx.timer.every(10000, (cx) => {
+      if (!showing(this.group, "files")) { this.stale = true; return; }
+      this.refresh(cx);
+      const t = this.tab(); // a new commit changes what blame says
+      if (t?.blameOn && t.lines && !t.history) this.syncBlame(cx, this.ctx, t, true);
+    });
   }
 
   close() {}
@@ -88,6 +94,9 @@ export class FilePanel {
     if (c === "save") this.save(cx, t);
     else if (c === "tree") { if (this.ctx) this.ctx.tree = !this.ctx.tree; }
     else if (c === "lines") { if (t?.state) { t.lines = !t.lines; this.pickLine(cx, t, null); } }
+    // blame: shows or hides the author, age and subject of each line's commit in the Lines view (blame.js); history: the file's commits as a step.
+    else if (c === "blame") this.toggleBlame(cx, t);
+    else if (c === "history") this.toggleHistory(cx, this.ctx, t);
     else if (c.startsWith("line:")) {
       const m = /^(\d+)(?:-(\d+))?$/.exec(c.slice(5));
       if (t?.state) { t.lines = true; this.pickLine(cx, t, m ? Number(m[1]) : null, m?.[2] ? Number(m[2]) : null); }
@@ -453,6 +462,7 @@ export class FilePanel {
       if (!this.wrap) text = text.whitespace_nowrap().overflow_hidden();
       rows.push(h_flex().id(`ln-${no}`).w_full().flex_none().items_start().font_family(k.mono).bg(on ? alpha(blue, k.dark ? 0.16 : 0.1) : "#00000000")
         .hover((s) => s.bg(on ? alpha(blue, k.dark ? 0.16 : 0.1) : alpha(k.foreground, 0.05)))
+        .when(!!tab.blameOn, (el) => el.child(blameCell(k, tab, i, (cx, hash) => openCommit(cx, hash, this.group))))
         // GitHub's blue square +: faint on every line, filled under the pointer and on the picked lines.
         .child(h_flex().id(`ln-add-${no}`).size(16).mt(2).ml(6).flex_none().items_center().justify_center().rounded(4).cursor_pointer()
           .role("button").accessibility_label(`Line ${no}: insert after it, or add it to the chat`)
@@ -467,13 +477,14 @@ export class FilePanel {
     if (page < pages - 1) rows.push(turn("ln-next", `Show lines ${end + 1} to ${Math.min(n, end + PAGE)}`, page + 1));
     return v_flex().flex_1().min_h(0)
       .child(v_flex().id("ht3-file-lines").flex_1().min_h(0).overflow_y_scrollbar().py(4).text_size(13).line_height("20px").children(rows))
-      .when(!!tab.said, (el) => el.child(div().flex_none().px(12).py(6).border_t(1).border_color(k.border).text_size(12).text_color(k.muted).child(tab.said)));
+      .when(!!tab.said, (el) => el.child(div().flex_none().px(12).py(6).border_t(1).border_color(k.border).text_size(12).text_color(k.muted).child(tab.said)))
+      .when(!!blameNote(tab), (el) => el.child(div().flex_none().px(12).py(6).border_t(1).border_color(k.border).text_size(12).text_color(k.muted).child(blameNote(tab))));
   }
 
   // The box under the picked line. Esc closes it.
   lineBoxView(k, tab, p, blue) {
     const where = p.from === p.to ? `line ${p.from}` : `lines ${p.from}-${p.to}`;
-    return v_flex().id("ln-box").flex_none().my(4).ml(66).mr(12).p(8).gap(8).rounded(8).border(1).border_color(alpha(blue, 0.6)).bg(k.card)
+    return v_flex().id("ln-box").flex_none().my(4).ml(66 + (tab.blameOn ? BLAME_W : 0)).mr(12).p(8).gap(8).rounded(8).border(1).border_color(alpha(blue, 0.6)).bg(k.card)
       .on_key_down((e, cx) => { if (e.key === "escape") this.pickLine(cx, tab, null); })
       .child(h_flex().gap(6).items_center().text_size(12).line_height("16px").text_color(k.muted)
         .child(div().flex_1().min_w(0).truncate().child(`${tab.path.split("/").pop()} · ${where}`))
@@ -483,6 +494,49 @@ export class FilePanel {
         .child(button(k, "ln-cancel", "Cancel", (cx) => this.pickLine(cx, tab, null), { variant: "outline", size: "sm" }))
         .child(button(k, "ln-chat", "Add to chat", (cx) => this.quoteLines(cx, tab), { variant: tab.readonly ? "default" : "outline", size: "sm", glyph: "message-square", tip: "Put these lines and this note into the shown chat's message box" }))
         .when(!tab.readonly, (el) => el.child(button(k, "ln-insert", p.from === p.to ? "Insert after this line" : `Insert after line ${p.to}`, (cx) => this.insertLines(cx, tab), { variant: "default", size: "sm", glyph: "plus", tip: "Write this text into the file after the line, and save" }))));
+  }
+
+  // ---- blame and history (blame.js) ----
+
+  // Blame on in the Lines view (which it turns on), or off again when it is already showing.
+  toggleBlame(cx, tab) {
+    if (!tab?.state) return;
+    const off = !!tab.blameOn && !!tab.lines && !tab.history;
+    tab.blameOn = !off;
+    tab.history = null;
+    if (!off) tab.lines = true;
+    cx.notify();
+  }
+
+  // Reads blame of the saved file when it has not been read for what is saved now (`quiet`: again, for a new HEAD).
+  // The answer is kept per file, HEAD and mtime (blame.js), so asking again is cheap.
+  syncBlame(cx, c, tab, quiet = false) {
+    const b = tab.blame ?? (tab.blame = { data: null, error: null, loading: false, saved: null });
+    if (b.loading || (!quiet && b.saved === tab.saved && (b.data || b.error))) return;
+    b.loading = true;
+    const saved = tab.saved, total = saved.split("\n").length;
+    cx.spawn(async (cx) => {
+      const r = await loadBlame(c, tab.path, total);
+      b.loading = false;
+      b.saved = saved;
+      b.error = r.error ?? null;
+      if (!r.error) b.data = r; else b.data = null;
+      cx.notify();
+    });
+  }
+
+  toggleHistory(cx, c, tab) {
+    if (!tab?.state || !c) return;
+    if (tab.history) { tab.history = null; return cx.notify(); }
+    const h = tab.history = { loading: true, entries: [], error: null };
+    cx.spawn(async (cx) => {
+      const r = await loadHistory(c, tab.path);
+      h.loading = false;
+      h.entries = r.entries ?? [];
+      h.error = r.error ?? null;
+      cx.notify();
+    });
+    cx.notify();
   }
 
   setWrap(cx) {
@@ -504,6 +558,7 @@ export class FilePanel {
     const tab = this.tab();
     // A tab made before the wrap switch changed takes it on when shown.
     if (tab?.state && tab.wrap !== this.wrap) this.editorFor(tab, tab.state.value());
+    if (tab?.blameOn && tab.lines && !tab.history) this.syncBlame(cx, c, tab);
     return root
       .when(c.tabs.length > 0, (el) => el.child(this.strip(k, c)))
       .child(h_flex().flex_1().min_h(0).items_stretch()
@@ -554,6 +609,8 @@ export class FilePanel {
       .when(!tab.readonly && !!tab.state, (el) => el.child(button(k, "file-save", tab.saving ? "Saving…" : "Save", (cx) => this.save(cx, tab),
         { variant: tab.dirty ? "default" : "outline", disabled: !tab.dirty || tab.saving, glyph: "save", tip: "Save file (Cmd+S)" })))
       .when(!!tab.state, (el) => el.child(iconButton(k, "file-lines", "list-plus", (cx) => { tab.lines = !tab.lines; this.pickLine(cx, tab, null); }, { on: !!tab.lines, tip: tab.lines ? "Back to the editor" : "Lines: a + beside each line, to insert after it or add it to the chat" })))
+      .when(!!tab.state, (el) => el.child(iconButton(k, "file-blame", "blame", (cx) => this.toggleBlame(cx, tab), { on: !!tab.blameOn && !!tab.lines && !tab.history, tip: tab.blameOn && tab.lines ? "Hide blame" : "Blame: who last changed each line, in the Lines view" }))
+        .child(iconButton(k, "file-history", "history", (cx) => this.toggleHistory(cx, c, tab), { on: !!tab.history, tip: tab.history ? "Back to the file" : "History: the commits that changed this file" })))
       .child(iconButton(k, "file-wrap", "text-wrap", (cx) => this.setWrap(cx), { on: this.wrap, tip: this.wrap ? "Disable word wrap" : "Enable word wrap" }));
     return v_flex().flex_1().min_w(0).min_h(0)
       .child(head)
@@ -566,7 +623,7 @@ export class FilePanel {
         button(k, "file-keep", "Keep editing", (cx) => { tab.closing = false; cx.notify(); }),
         button(k, "file-discard", "Close without saving", (cx) => { this.drop(c, c.tabs.indexOf(tab)); cx.notify(); }, { variant: "destructive" }),
         button(k, "file-saveclose", "Save and close", (cx) => this.save(cx, tab), { variant: "default" })])))
-      .child(tab.state && tab.lines ? this.linesView(k, c, tab) : tab.state ? Editor.new(tab.state).flex_1().min_h(0)
+      .child(tab.history ? historyView(k, tab, { close: (cx) => { tab.history = null; cx.notify(); }, open: (cx, hash) => openCommit(cx, hash, this.group) }) : tab.state && tab.lines ? this.linesView(k, c, tab) : tab.state ? Editor.new(tab.state).flex_1().min_h(0)
         : v_flex().flex_1().items_center().justify_center().px(16).text_size(12).text_color(tab.error ? k.destructiveText : k.muted).child(tab.error ?? "Loading…"));
   }
 
