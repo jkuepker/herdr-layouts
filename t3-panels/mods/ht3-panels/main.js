@@ -116,6 +116,8 @@ class Buttons {
     // worktrees: the repository's worktrees to clean up, as a dialog (worktrees.js); worktrees:<folder> for that folder's repository.
     // Again while it is open closes it (the dialog does that itself).
     else if (name === "worktrees") { if (!worktreesOpen()) openWorktrees(c.slice(10)); }
+    // blame / history: Files shows or hides blame in its open file's Lines view / the file's commit history (editor.js, blame.js; they reach Files while it is shown).
+    // (Nothing to run here: the Files copy takes them, like lines and open:<path>.)
     // reopen-closed: brings back the newest closed side-panel surface, file or chat tab (side.js reopenClosed; T3's mod+shift+t).
     else if (c === "reopen-closed") cx.spawn(async (cx) => { try { await reopenClosed(cx); } catch (e) { fail(e); } cx.notify(); });
     else if (name === "menu") openOverlay({ mod: MOD, kind: "popup", at: { x: 900, y: 48 }, width: a === "project" ? 344 : ADD_MENU.w, height: a === "project" ? 724 : ADD_MENU.h, props: { menu: a, group: b ?? "a" } });
