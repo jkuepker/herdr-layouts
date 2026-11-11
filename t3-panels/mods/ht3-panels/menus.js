@@ -17,6 +17,7 @@ import { SURFACES, send, placeOf, activeSpace, surfaceOff, surfacesHere } from "
 import { projectOf, scriptsOf, runScript, detectProject } from "./scripts.js";
 import { devCommand } from "./detect.js";
 import { write, wroteLine, Cancelled } from "./gitwrite.js";
+import { holdForSecrets, guardStep } from "./secretguard.js";
 import { discover, startDevServer } from "./servers.js";
 import { readBranches, switchRow, pullFastForward, pickerRows, rowBlocked } from "./branches.js";
 
@@ -535,6 +536,7 @@ export class ProjectMenu {
     if (this.writing?.kind === "commit") this.stopWriting();
     this.run(cx, async () => {
       const opt = { cwd: this.root, on: this.on };
+      if (await holdForSecrets(this, opt)) return; // secretguard.js: the warning shows, Commit anyway comes back here
       const a = await exec("git", ["add", "-A"], opt);
       if (a.code !== 0) throw new Error(a.stderr.trim().split("\n").pop() || "git add failed");
       const r = await exec("git", ["commit", "-m", message], opt);
@@ -804,6 +806,7 @@ export class ProjectMenu {
               .child(writer("commit", "Write message"))
               .child(div().flex_1())
               .child(button(k, "git-commit-go", this.busy ? "…" : "Commit", (cx) => this.commit(cx)))))))
+          .when(this.step === "commit" && !!this.guard, (e) => e.child(guardStep(k, this)))
           // Pull is there while the branch has an upstream; when Push says it is behind, Pull is offered right in its row too.
           .when(canPull, (e) => e.child(act("git-pull", "arrow-down", "Pull", !this.busy, g.behind > 0 ? `${g.behind} behind` : "fast-forward only", (cx) => this.pull(cx), false)))
           .child(act("git-push", "arrow-up", "Push", canPush, g.behind > 0 ? `${g.behind} behind: pull first` : !g.remote ? "no remote" : g.ahead > 0 ? `${n(g.ahead, "commit")} ahead` : !g.upstream ? "no upstream yet" : "up to date", (cx) => this.push(cx), false,
