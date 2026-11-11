@@ -10,7 +10,7 @@ import { closeOverlay, exec, hc, run, appHome, shared, setShared, readTextFile, 
 import { chatLike, forkChat } from "./agent-acp.js";
 import { toMarkdown } from "./transcript.js";
 import { agentName } from "./report.js";
-import { MOD, tokens, icon, button, iconButton, badge, shortPath } from "./look.js";
+import { MOD, tokens, icon, button, iconButton, badge, shortPath, alpha } from "./look.js";
 import { revertTo } from "./checkpoint.js";
 import { editorOn } from "./settings.js";
 import { SURFACES, send, placeOf, activeSpace, surfaceOff, surfacesHere } from "./side.js";
@@ -19,6 +19,8 @@ import { devCommand } from "./detect.js";
 import { write, wroteLine, Cancelled } from "./gitwrite.js";
 import { discover, startDevServer } from "./servers.js";
 import { readBranches, switchRow, pullFastForward, pickerRows, rowBlocked } from "./branches.js";
+import { stashView, conflictView, showStash, readStashes, readConflicts, stashPush, stashRun, stashAndPull, takeSide, markResolved, continueOp, abortOp } from "./stash.js";
+import { conflictRow } from "./gitstate.js";
 
 export class AddMenu {
   init(p, cx) {
@@ -320,6 +322,14 @@ export class ProjectMenu {
     this.git = null; // { changed, ahead, behind, upstream, remote, base }
     this.step = null; // "commit" | "pr"
     this.note = null; // what the last action did
+    // Stash and the merge-conflict helper (stash.js): each is a step that replaces the popover's rows (`view`).
+    this.view = null; // "stash" | "conflict"
+    this.stashes = null; // parseStashList, read with the status
+    this.conflicts = null; // { op, files, active }: a merge, rebase or cherry-pick that stopped, or unmerged files
+    this.confirm = null; // { kind: "drop", index } | { kind: "abort" }: the question that is open in a step
+    this.offer = null; // { untracked }: a pull that local changes stopped, and "Stash and retry" answers it
+    this.untracked = false;
+    this.stashMsg = InputState.new({ placeholder: "Message (optional)" });
     // The message field takes a subject and a body (an agent writes both, gitwrite.js). Enter commits a message of
     // one line, as it did; in one with more lines Enter is a new line and only the Commit button commits.
     this.message = TextareaState.new({ placeholder: "Commit message (empty: one is made up)" });
@@ -470,6 +480,26 @@ export class ProjectMenu {
     // types in its filter, branch:<name> switches to that branch (a remote-only one tracked), branch:new:<name> creates
     // it, key:<up|down|enter|escape> presses a key in the picker.
     if (c === "git:pull") return this.pull(cx);
+    // stash opens the Stash step (again: back), stash:push[:<message>] stashes (stash:push-u: untracked files too),
+    // stash:apply:<n>, stash:pop:<n>, stash:drop:<n> (drops at once), stash:show:<n>; conflicts opens the conflict helper;
+    // conflict:ours:<file>, conflict:theirs:<file>, conflict:resolved:<file>, conflict:continue, conflict:abort (asks, then
+    // conflict:abort again does it); retry stashes, pulls and pops (the "Stash and retry" button).
+    if (c === "stash" || c === "conflicts") { const v = c === "stash" ? "stash" : "conflict"; this.view = this.view === v ? null : v; this.confirm = null; return cx.notify(); }
+    if (c.startsWith("stash:push")) { this.view = "stash"; this.untracked = c.startsWith("stash:push-u"); this.stashMsg.set_value(c.replace(/^stash:push(-u)?:?/, "")); return this.run(cx, () => this.stashAct("push")); }
+    if (/^stash:(apply|pop|drop|show):\d+$/.test(c)) {
+      const [, verb, n] = c.split(":"), s = (this.stashes ?? []).find((x) => x.index === Number(n));
+      this.view = "stash";
+      if (!s) return cx.notify();
+      return verb === "show" ? showStash(this, cx, s) : this.run(cx, () => this.stashAct(verb, s));
+    }
+    if (c.startsWith("conflict:")) {
+      this.view = "conflict";
+      const [, how, ...rest] = c.split(":"), file = rest.join(":");
+      if (how === "ours" || how === "theirs" || how === "resolved") return this.run(cx, () => this.conflictAct(how, file));
+      if (how === "continue") return this.run(cx, () => this.continueAct());
+      if (how === "abort") { if (this.confirm?.kind === "abort") return this.run(cx, () => this.abortAct()); this.confirm = { kind: "abort" }; return cx.notify(); }
+    }
+    if (c === "retry") return this.offer ? this.stashAndRetry(cx) : undefined;
     if (c === "branches") return this.toggleBranches(cx);
     if (c.startsWith("branch:filter:")) { if (this.pick !== "branch") this.toggleBranches(cx); this.filter.set_value(c.slice(14)); this.at = 0; return cx.notify(); }
     if (c.startsWith("branch:new:")) return this.choose(cx, { kind: "create", name: c.slice(11), current: false, elsewhere: null });
@@ -502,6 +532,7 @@ export class ProjectMenu {
     if (this.busy) return;
     this.busy = true;
     this.error = null;
+    this.offer = null;
     cx.spawn(async (cx) => {
       try { await fn(); } catch (e) { this.error = String(e?.message ?? e); }
       this.busy = false;
@@ -513,7 +544,7 @@ export class ProjectMenu {
   async status() {
     const opt = { cwd: this.root, on: this.on };
     const r = await exec("git", ["--no-optional-locks", "status", "--porcelain=v2", "--branch"], opt).catch(() => null);
-    if (r?.code !== 0) { this.git = null; return; }
+    if (r?.code !== 0) { this.git = null; await this.repoState(); return; }
     const lines = r.stdout.split("\n"), head = (key) => lines.find((l) => l.startsWith(`# branch.${key} `))?.slice(10 + key.length) ?? null;
     const ab = /\+(\d+) -(\d+)/.exec(head("ab") ?? "");
     const remotes = (await exec("git", ["remote"], opt).catch(() => null))?.stdout.split("\n").filter(Boolean) ?? [];
@@ -524,6 +555,87 @@ export class ProjectMenu {
     let ahead = ab ? Number(ab[1]) : 0;
     if (!upstream && remotes.length) ahead = Number((await exec("git", ["rev-list", "--count", "HEAD", "--not", "--remotes"], opt).catch(() => null))?.stdout.trim() || 0);
     this.git = { changed: files.length, names: files.slice(0, 3).map((l) => l.split(/\s+/).pop().split("/").pop()), ahead, behind: ab ? Number(ab[2]) : 0, upstream, remote: remotes.includes("origin") ? "origin" : remotes[0] ?? null, base, detached: head("head") === "(detached)" };
+    await this.repoState();
+  }
+
+  // The stashes and whether a merge, rebase or cherry-pick stopped (stash.js), read with the status.
+  async repoState() {
+    const o = { cwd: this.root, on: this.on };
+    const [s, c] = await Promise.all([readStashes(o).catch(() => null), readConflicts(o).catch(() => null)]);
+    if (s) this.stashes = s;
+    if (c) this.conflicts = c;
+    if (this.view === "conflict" && !this.conflicts?.active) this.view = null;
+  }
+
+  // Everything the popover shows about the repository, read again (a step's refresh).
+  async refreshAll() {
+    await this.status();
+    await this.loadChanges();
+  }
+
+  // Stash changes (the step's field and -u toggle), and Apply, Pop and Drop of one stash. A pop or apply that leaves
+  // conflicts goes to the conflict helper.
+  async stashAct(verb, s) {
+    const o = { cwd: this.root, on: this.on };
+    this.note = null;
+    if (verb === "push") {
+      const r = await stashPush(o, { message: this.stashMsg.value(), untracked: this.untracked });
+      this.note = r.created ? "Stashed the changes" : "Nothing to stash";
+      this.stashMsg.set_value("");
+    } else {
+      const r = await stashRun(o, verb, s.index);
+      this.confirm = null;
+      this.note = verb === "drop" ? `Dropped ${s.ref}` : r.conflict ? `Applied ${s.ref} with conflicts. The stash is kept.` : verb === "pop" ? `Popped ${s.ref}` : `Applied ${s.ref}`;
+      if (r.conflict) this.view = "conflict";
+    }
+    await this.refreshAll();
+    if (this.view === "conflict" && !this.conflicts?.active) this.view = "stash";
+  }
+
+  // Take ours, Take theirs and Mark resolved of one file.
+  async conflictAct(how, file) {
+    const o = { cwd: this.root, on: this.on };
+    this.note = null;
+    if (how === "resolved") await markResolved(o, file); else await takeSide(o, file, how);
+    this.note = how === "resolved" ? `Marked ${file} resolved` : `Took ${how} for ${file}`;
+    await this.refreshAll();
+  }
+
+  // Continue and Abort (Abort after its question).
+  async continueAct() {
+    const op = this.conflicts?.op;
+    const r = await continueOp({ cwd: this.root, on: this.on }, op);
+    this.note = r.more ? `Stopped again: ${r.message}` : `${op} continued`;
+    await this.refreshAll();
+    if (!this.conflicts?.active) this.view = null;
+  }
+  async abortAct() {
+    const op = this.conflicts?.op;
+    await abortOp({ cwd: this.root, on: this.on }, op);
+    this.note = `Aborted the ${op}`;
+    this.confirm = null;
+    this.changes = null;
+    await this.refreshAll();
+    if (!this.conflicts?.active) this.view = null;
+  }
+
+  // Open: the Files editor shows the file (the keeper's goto:, as a Search hit does), and the popover goes.
+  openConflict(file) {
+    if (!this.root || this.on) return;
+    closeOverlay(this.overlay);
+    run(`${MOD}.goto:0:${this.root}/${file}`);
+  }
+
+  // "Stash and retry" under a pull that local changes stopped: stash, pull, pop. A pop that conflicts opens the helper.
+  stashAndRetry(cx) {
+    const untracked = !!this.offer?.untracked;
+    this.run(cx, async () => {
+      const r = await stashAndPull({ cwd: this.root, on: this.on }, { untracked });
+      this.note = r.note;
+      this.changes = null;
+      await this.refreshAll();
+      if (r.conflict && this.conflicts?.active) this.view = "conflict";
+    });
   }
 
   // Commit: everything that changed (`git add -A`), with the message typed or one made from the file names.
@@ -612,7 +724,10 @@ export class ProjectMenu {
     if (!g?.upstream || g.detached) return;
     this.note = null;
     this.run(cx, async () => {
-      this.note = await pullFastForward({ cwd: this.root, on: this.on });
+      try { this.note = await pullFastForward({ cwd: this.root, on: this.on }); } catch (e) {
+        if (e?.localChanges) this.offer = { untracked: !!e.untracked };
+        throw e;
+      }
       this.changes = null;
       await this.status();
       await this.loadChanges();
@@ -719,6 +834,9 @@ export class ProjectMenu {
 
   render(_cx) {
     const k = tokens();
+    // Stash and the conflict helper replace the rows (stash.js).
+    if (this.view === "stash") return stashView(this, k);
+    if (this.view === "conflict") return conflictView(this, k);
     const row = (id, glyph, label, { detail = null, onClick = null, trail = null, on = false, picture = null } = {}) => {
       let el = h_flex().id(id).h(32).px(8).gap(8).flex_none().items_center().rounded(8).text_size(14).bg(on ? k.accent : "#00000000")
         .child(picture ? image(picture).w(16).h(16).flex_none() : icon(glyph).size(16).flex_none().text_color(k.muted))
@@ -766,6 +884,12 @@ export class ProjectMenu {
         })
         : row("proj-nobranch", "git-branch", "Not a git repository"))
       .when(this.pick === "branch", (el) => el.child(this.branchStep(k)))
+      // A merge, rebase or cherry-pick that stopped, or unmerged files: the row opens the conflict helper.
+      .when(!!this.root && !!this.conflicts?.active, (el) => {
+        const cr = conflictRow(this.conflicts);
+        return el.child(row("proj-conflict", "triangle-alert", cr.label, { detail: cr.detail, onClick: (cx) => { this.view = "conflict"; this.confirm = null; this.note = null; this.error = null; cx.notify(); },
+          trail: icon("chevron-right").size(14).flex_none().text_color(k.muted) }).bg(alpha(k.warning, k.dark ? 0.16 : 0.1)).text_color(k.warningText));
+      })
       // T3's card ends with the pull request and the changes; here they open the panel's surfaces.
       .when(!!this.root && this.github, (el) => el.child(row("proj-pr", "git-pull-request", "Pull request", {
         onClick: () => { closeOverlay(this.overlay); send("add:pr:a"); },
@@ -808,6 +932,8 @@ export class ProjectMenu {
           .when(canPull, (e) => e.child(act("git-pull", "arrow-down", "Pull", !this.busy, g.behind > 0 ? `${g.behind} behind` : "fast-forward only", (cx) => this.pull(cx), false)))
           .child(act("git-push", "arrow-up", "Push", canPush, g.behind > 0 ? `${g.behind} behind: pull first` : !g.remote ? "no remote" : g.ahead > 0 ? `${n(g.ahead, "commit")} ahead` : !g.upstream ? "no upstream yet" : "up to date", (cx) => this.push(cx), false,
             g.behind > 0 && canPull ? button(k, "git-push-pull", "Pull", (cx) => this.pull(cx), { variant: "outline", disabled: this.busy }) : null))
+          .child(act("git-stash", "archive", "Stash", true, this.stashes?.length ? n(this.stashes.length, "stash") : g.changed > 0 ? "put changes away" : "none", (cx) => { this.view = "stash"; this.confirm = null; this.note = null; this.error = null; cx.notify(); }, false,
+            icon("chevron-right").size(14).flex_none().text_color(k.muted)))
           .child(act("git-pr", "git-pull-request-arrow", "Create PR", canPr, !this.github ? "no GitHub remote" : this.branch === g.base ? `on ${g.base}` : null, (cx) => { this.step = this.step === "pr" ? null : "pr"; cx.notify(); }, this.step === "pr"))
           .when(this.step === "pr" && canPr, (e) => e.child(v_flex().mx(8).my(4).gap(6)
             .child(div().min_w(0).h(28).px(8).rounded(6).border(1).border_color(k.input).text_size(13).child(Input.new(this.prTitle)))
@@ -842,6 +968,9 @@ export class ProjectMenu {
             .child(button(k, "wt-yes", this.busy ? "…" : "Remove", (cx) => this.removeWorktree(cx), { variant: "destructive" }))))))
       .when(!!this.note, (el) => el.child(div().px(8).py(6).text_size(12).line_height("16px").text_color(k.successText).child(this.note)))
       .when(!!this.error && this.pick !== "branch", (el) => el.child(div().px(8).py(6).text_size(12).line_height("16px").text_color(k.destructiveText).child(this.error)))
+      // A pull that local changes stopped: stash them, pull, pop (stash.js stashAndPull).
+      .when(!!this.offer, (el) => el.child(h_flex().px(8).pb(4).child(button(k, "git-stash-retry", "Stash and retry", (cx) => this.stashAndRetry(cx),
+        { variant: "default", glyph: "archive", disabled: this.busy, tip: "Stash your changes, pull, then pop them back" }))))
       .child(div().flex_1())
       .child(div().mx(4).my(4).h(1).flex_none().bg(k.border))
       // Run dev (servers.js startDevServer) and the Checks surface (checks.js).

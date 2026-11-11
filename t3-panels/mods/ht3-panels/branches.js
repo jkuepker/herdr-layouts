@@ -4,6 +4,7 @@
 // so they run where the space runs.
 
 import { exec } from "herdr";
+import { classifyPullFailure } from "./gitstate.js";
 
 // What the branch list asks git for: local branches and remote-tracking ones, the newest commit first.
 // Fields, tab separated: full ref name, "*" on the checked-out one, committer time, upstream.
@@ -85,11 +86,11 @@ export function switchMessage(r) {
   return words(r).slice(0, 5).join(" ") || "git switch failed";
 }
 
-// A failed pull in plain words, then git's message.
+// A failed pull in plain words, then git's message. What kind of failure it is is gitstate.js classifyPullFailure.
 export function pullError(r) {
-  const all = String(r?.stderr ?? "") + String(r?.stdout ?? ""), msg = gitMessage(r, 4, "git pull failed");
-  if (/not possible to fast-forward|diverging|divergent|non-fast-forward/i.test(all)) return `Not a fast-forward: this branch and its upstream have both moved on. ${msg}`;
-  if (/conflict|would be overwritten|overwritten by merge|unmerged|commit your changes or stash/i.test(all)) return `Local changes are in the way: ${msg}`;
+  const kind = classifyPullFailure(r).kind, msg = gitMessage(r, 4, "git pull failed");
+  if (kind === "diverged") return `Not a fast-forward: this branch and its upstream have both moved on. ${msg}`;
+  if (kind === "local-changes") return `Local changes are in the way: ${msg}`;
   return msg;
 }
 
@@ -129,7 +130,13 @@ export async function pullFastForward(o) {
   const head = async () => { const r = await exec("git", ["rev-parse", "HEAD"], opt(o, 15000)).catch(() => null); return r?.code === 0 ? r.stdout.trim() : null; };
   const before = await head();
   const r = await exec("git", ["pull", "--ff-only"], opt(o, 120000));
-  if (r.code !== 0) throw new Error(pullError(r));
+  if (r.code !== 0) {
+    // `localChanges` (and `untracked`: the files in the way aren't tracked) is what the popover's "Stash and retry" goes by.
+    const why = classifyPullFailure(r), err = new Error(pullError(r));
+    err.localChanges = why.kind === "local-changes";
+    err.untracked = why.untracked;
+    throw err;
+  }
   const after = await head();
   let count = 0;
   if (before && after && before !== after) {

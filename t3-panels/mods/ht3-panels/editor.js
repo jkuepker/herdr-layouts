@@ -16,6 +16,7 @@ import { tokens, alpha, icon, button, iconButton, shortPath } from "./look.js";
 import { fileIcon } from "./fileicons.js";
 import { chatPlace, showing, rememberClosed } from "./side.js";
 import { recordRecent } from "./quick.js";
+import { conflictBlocks, stepConflict } from "./gitstate.js";
 
 const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", cjs: "js", toml: "yaml", jsonc: "json", svelte: "html", vue: "html", yml: "yaml", htm: "html", markdown: "md", zsh: "sh", bash: "sh" };
 const PER_FOLDER = 500, TOTAL = 5000;
@@ -438,6 +439,20 @@ export class FilePanel {
     cx.notify();
   }
 
+  // Merge-conflict markers in the open file (gitstate.js conflictBlocks), kept until the text changes. The banner's Next and
+  // Previous pick the marker line in the Lines view (a range of one line, so a second press on the same line doesn't let go).
+  conflictsOf(tab) {
+    const v = tab.state.value();
+    if (tab.confCache?.v !== v) tab.confCache = { v, blocks: conflictBlocks(v) };
+    return tab.confCache.blocks;
+  }
+  stepConflicts(cx, tab, dir) {
+    const line = stepConflict(this.conflictsOf(tab), tab.lines ? tab.pick?.from ?? null : null, dir);
+    if (line == null) return;
+    tab.lines = true;
+    this.pickLine(cx, tab, line, line);
+  }
+
   linesView(k, c, tab) {
     const all = this.linesOf(tab), n = all.length, pages = Math.max(1, Math.ceil(n / PAGE));
     const page = Math.min(tab.page ?? 0, pages - 1), start = page * PAGE, end = Math.min(n, start + PAGE);
@@ -558,6 +573,9 @@ export class FilePanel {
       .child(head)
       .when(c.on != null, (el) => el.child(banner(`Read-only: this space is on ${c.on}, and Herdr can only write files on this computer.`, k.muted)))
       .when(!!tab.note, (el) => el.child(banner(tab.note, k.warningText, alpha(k.warning, k.dark ? 0.16 : 0.08))))
+      .when(!!tab.state && this.conflictsOf(tab).length > 0, (el) => el.child(banner(`${this.conflictsOf(tab).length} conflict${this.conflictsOf(tab).length === 1 ? "" : "s"}`, k.warningText, alpha(k.warning, k.dark ? 0.16 : 0.08), [
+        button(k, "file-conflict-prev", "Previous", (cx) => this.stepConflicts(cx, tab, -1), { glyph: "chevron-up" }),
+        button(k, "file-conflict-next", "Next", (cx) => this.stepConflicts(cx, tab, 1), { glyph: "chevron-down" })])))
       .when(!!tab.conflict, (el) => el.child(banner(tab.conflict, k.destructiveText, alpha(k.destructive, k.dark ? 0.16 : 0.08), [
         button(k, "file-reload", "Reload", (cx) => this.reload(cx, c, tab)),
         button(k, "file-overwrite", "Overwrite", (cx) => this.save(cx, tab, true), { variant: "destructive" })])))
