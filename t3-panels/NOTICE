@@ -1,6 +1,33 @@
 t3-panels
 
-mods/ht3-panels/acp.js, session.js and transcript.js are the acp-chat mod's (this repo), unchanged.
+This folder is MIT (the repository's LICENSE) except the pieces below, which keep their own licences.
+
+herdr-t3 (github.com/JinJieBeWater/herdr-t3, Apache License 2.0: LICENSE.herdr-t3; copied at its commit 9e4c65d of
+2026-11-09). Its mods are named t3-<name> there and ht3-<name> here, so both can be installed side by side; the
+rename (folder names, `mod` names, command and shared-state prefixes) is the only change to the unchanged ones.
+- Unchanged but for the rename: mods/ht3-actions, mods/ht3-spaces, mods/ht3-home, mods/ht3-menu, mods/ht3-new-menu,
+  mods/ht3-picker, and layouts/herdr-t3-panels.svg (its layouts/herdr-t3.svg). Its check-*.cjs test files are left out.
+- Changed by this build: mods/ht3-agents (main.js, name.js, rows.js), mods/ht3-chrome (main.js; icons chart-column,
+  circle-arrow-up, git-pull-request added), mods/ht3-inbox (actions.js, main.js, name.js, row-view.js; icon laptop
+  added), mods/ht3-pane (main.js, name.js; icons git-branch redrawn, square-pen added), mods/ht3-tabs (main.js,
+  name.js). The changes: a chat tab's agent counts as an agent, a chat is never closed by a tab or pane key, the
+  sidebar footer has the usage, pull-request and settings buttons, and the window buttons are aligned in a layout
+  named herdr-t3 or herdr-t3-panels.
+- layouts/herdr-t3-panels.json is its layouts/herdr-t3.json with the panel buttons, the bottom panel, the side panel
+  and the T3 Code themes added (layouts/README.md lists each change).
+- herdr-t3's mods and layout start from mods the Herdr app ships (workspace-chrome, spaces, agents, tabs, pane,
+  new-menu, picker, the main layout; Apache License 2.0).
+- mods/ht3-palette and mods/ht3-panels are this repository's own.
+
+Icons in every mods/ht3-*/icons/ folder come from Lucide (https://lucide.dev, ISC; some derive from Feather, MIT:
+LICENSE.lucide), except mods/ht3-panels/icons/stop.svg, drawn after T3 Code's stop glyph, and mods/ht3-panels/icons/files/
+(below).
+
+T3 Code (github.com/pingdotgg/t3code, MIT, Copyright (c) 2026 T3 Tools Inc.: LICENSE.t3code): the look, and the icon
+additions and color table named below.
+
+mods/ht3-panels/acp.js is the acp-chat mod's (this repository, MIT), unchanged; session.js and transcript.js started as
+its files and have grown here.
 
 mods/ht3-panels/core/ (chat-log.js, chat-reader.js, bg-jobs.js, asks.js, send.js) is copied unchanged from
 Shepherdr (core/), Copyright (c) 2026 Elias Stravik, MIT: see mods/ht3-panels/core/LICENSE.shepherdr.
@@ -12,8 +39,6 @@ themes/t3code-dark.json and themes/t3code-light.json are herdr-t3's extras/theme
 (github.com/JinJieBeWater/herdr-t3, Apache License 2.0), checked against T3 Code's apps/web/src/index.css; the
 light one adds `dim`.
 
-mods/ht3-panels/icons/ come from Lucide (https://lucide.dev, ISC), except stop.svg, drawn after T3 Code's stop glyph.
-
 mods/ht3-panels/icons/files/ and fileicons.data.js hold the file-type icons and the file-name tables of @pierre/trees
 1.0.0-beta.6 (github.com/pierrecomputer/pierre, Apache License 2.0; its license is in mods/ht3-panels/icons/files/LICENSE.pierre-trees),
 cut from its built-in "complete" sprite into one SVG each, with T3 Code's additions to it (apps/web/src/pierre-icons.ts,
@@ -22,3 +47,7 @@ MIT: the TOML, PDF, Word, XML, Java, PHP, Lua and other glyphs, Lucide ISC and S
 
 The look follows T3 Code (github.com/pingdotgg/t3code, MIT): sizes, radii, spacing and colors are read from its
 apps/web/src; no code is copied from it.
+
+mods/ht3-panels/planmap-graph.js and planmap-data.js are copied from the xo-map mod (the author's own xo project);
+planmap-graph.js's project-map layout is a fork of agenttrail (github.com/sodiumsun/agenttrail at 5996e48, MIT:
+mods/ht3-panels/LICENSE.agenttrail).
