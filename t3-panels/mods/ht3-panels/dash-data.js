@@ -188,12 +188,15 @@ export function ciOf(checks) {
 
 // A dashboard file's text -> { title, widgets, … } with what is missing filled in; throws with a reason a person can act on.
 export const TYPES = ["stat", "table", "list", "bars", "line", "status"];
+// Old names of widget types: a file that has one still loads, and the editor writes the new name (dash-edit.js renamed).
+export const TYPE_ALIASES = { "xo-map": "plan-map" };
+export const typeOf = (t) => TYPE_ALIASES[t] ?? t;
 export function readDashboard(text, name) {
   let d;
   try { d = JSON.parse(text); } catch (e) { throw new Error(`${name}: not valid JSON (${String(e?.message ?? e)})`); }
   if (!d || typeof d !== "object" || !Array.isArray(d.widgets)) throw new Error(`${name}: needs a "widgets" list`);
   return { title: String(d.title ?? name), refresh: Math.max(5, seconds(d.refresh, 30)), prometheus: d.prometheus ?? null,
     // A source used by several widgets is written once, under "sources", and named: "source": "fleet".
-    widgets: d.widgets.map((w, i) => ({ ...w, source: typeof w?.source === "string" ? d.sources?.[w.source] ?? { type: `(no source named "${w.source}")` } : w?.source, id: `${name}:${i}`, type: TYPES.includes(w?.type) ? w.type : null, typeName: String(w?.type ?? ""),
+    widgets: d.widgets.map((w, i) => ({ ...w, source: typeof w?.source === "string" ? d.sources?.[w.source] ?? { type: `(no source named "${w.source}")` } : w?.source, id: `${name}:${i}`, type: TYPES.includes(typeOf(w?.type)) ? typeOf(w.type) : null, typeName: String(w?.type ?? ""),
       title: String(w?.title ?? ""), w: Math.max(1, Math.min(4, Math.round(Number(w?.w) || 1))), refresh: w?.refresh != null ? Math.max(5, seconds(w.refresh, 30)) : null })) };
 }

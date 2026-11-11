@@ -1,4 +1,4 @@
-// The parts of xo-map/data.js the Dashboard's xo-map widget needs (xo repository, herdr/xo-map, commit 2217cc2 of
+// The parts of xo-map/data.js the Dashboard's Plan map widget (dash-planmap.js) needs (xo repository, herdr/xo-map, commit 2217cc2 of
 // 2026-11-06), copied: what `xo plan --rows` and `xo bearings --rows` say, made ready to draw. Left out: the `xo act`
 // buttons (the widget is read-only), the done trail's helpers and readBoth. `pill` is xo-map/act.js's. No Herdr imports.
 

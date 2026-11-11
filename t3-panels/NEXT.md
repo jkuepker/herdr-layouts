@@ -82,12 +82,12 @@ Left:
 - A saved file loses its hand formatting, and a named source under "sources" can be picked but not edited in the form.
 - Every click, the form's typing, Cmd+Enter and Esc were driven by command, never by hand.
 
-## Round 8, continued: more widget types, the xo-map widget, the Agents dashboard (done)
+## Round 8, continued: more widget types, the Plan map widget, the Agents dashboard (done)
 
-gauge, text, log, heatmap, link, terminal, chat and xo-map (RECIPE.md, "More types"); `agents.json`.
+gauge, text, log, heatmap, link, terminal, chat and plan-map (first called xo-map; RECIPE.md, "More types"); `agents.json`.
 
 Left:
-- xo-map widget: no `xo act` buttons (asked for), and also no worker or component side panel, no problems strip, no jump along a cross-project stub; a wide project scrolls inside the card below 62% zoom (50% compact). In herdr-t3 it reads xo itself every refresh, as nothing publishes `xo.data` there.
+- Plan map: no `xo act` buttons (asked for), and also no worker or component side panel, no problems strip, no jump along a cross-project stub; a wide project scrolls inside the card below 62% zoom (50% compact). In herdr-t3 it reads xo itself every refresh, as nothing publishes `xo.data` there.
 - terminal: the last line is a guess at "not a prompt" (lines with icon-font glyphs or ending in a prompt sign are skipped), and the terminal tab takes the place of the Dashboard tab when it opens. A terminal closed by hand is forgotten at the widget's next refresh.
 - chat: the last message comes from the chat's file, so it is as old as the widget's refresh; a chat whose file is over 1 MiB shows no last message. Only chats open as tabs are listed.
 - heatmap: no per-box GPU metric exists in Prometheus here, so no GPU heatmap ships.

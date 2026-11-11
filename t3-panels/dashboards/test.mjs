@@ -78,8 +78,15 @@ assert.throws(() => d.readDashboard("{}", "empty"), /widgets/);
 
 // ---- edit mode's save path (dash-edit.js): a change is an edit(), then checked() gives the text to write ----
 const e = await import(join(here, "../mods/ht3-panels/dash-edit.js"));
-await import(join(here, "../mods/ht3-panels/dash-types.js")); // registers gauge, text, log, heatmap, link, terminal, chat, xo-map
-assert.ok(["gauge", "text", "log", "heatmap", "link", "terminal", "chat", "xo-map"].every((x) => e.WIDGETS.some((w) => w.type === x) && d.TYPES.includes(x)));
+await import(join(here, "../mods/ht3-panels/dash-types.js")); // registers gauge, text, log, heatmap, link, terminal, chat, plan-map
+assert.ok(["gauge", "text", "log", "heatmap", "link", "terminal", "chat", "plan-map"].every((x) => e.WIDGETS.some((w) => w.type === x) && d.TYPES.includes(x)));
+// "xo-map" is the Plan map's old name: a file with it loads as plan-map, and any change writes plan-map.
+const old = { widgets: [{ type: "xo-map", view: "fleet" }, { type: "stat", source: { type: "static", data: 1 } }] };
+assert.equal(d.readDashboard(JSON.stringify(old), "o").widgets[0].type, "plan-map");
+assert.equal(e.renamed(old).widgets[0].type, "plan-map");
+assert.equal(old.widgets[0].type, "xo-map"); // the object read is left alone
+assert.equal(JSON.parse(e.checked(e.edit(old, { width: 1, w: 2 }), "o", old)).widgets[0].type, "plan-map");
+assert.ok(!e.WIDGETS.some((w) => w.type === "xo-map") && e.WIDGETS.find((w) => w.type === "plan-map").name === "Plan map");
 // A text may go without a source ("none"); a link has none at all, and its form never adds one.
 assert.equal(e.sourceKindOf({ type: "text", text: "x" }), "none");
 assert.equal(e.applyForm({ type: "text", text: "x", source: { type: "static", data: 1 } }, "none", { text: "y" }).widget.source, undefined);
@@ -133,8 +140,8 @@ const odd = { widgets: [{ type: "pie" }] };
 assert.ok(e.checked(e.edit(odd, { add: "stat" }), "x", odd));
 assert.throws(() => e.checked({ widgets: [{ type: "pie" }, { type: "donut" }] }, "x", odd), /donut/);
 
-// ---- the xo-map widget's copied layout and data steps (xomap-graph.js, xomap-data.js) ----
-const xg = await import(join(here, "../mods/ht3-panels/xomap-graph.js")), xd = await import(join(here, "../mods/ht3-panels/xomap-data.js"));
+// ---- the Plan map widget's copied layout and data steps (planmap-graph.js, planmap-data.js) ----
+const xg = await import(join(here, "../mods/ht3-panels/planmap-graph.js")), xd = await import(join(here, "../mods/ht3-panels/planmap-data.js"));
 const plan = { projects: [{ project: "p", has_plan: true, components: [
   { id: "a", title: "A", status: "done", tasks: [{ id: "t", title: "T", state: "done" }], live: [] },
   { id: "b", title: "B", status: "stuck", needs: ["a"], live: [{ task_key: "p/fix", via: "explicit" }] },

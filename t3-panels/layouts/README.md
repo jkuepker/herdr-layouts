@@ -76,6 +76,6 @@ Copy rows, the `/` `$` `@` menu, attachments, thread names, earlier chats, fork,
 
 The Dashboard surface (`+` menu, letter G) needs one block per panel group in the layout file, beside the other surfaces of `GROUP(g)` above: `ht3-a-dashboard` and `ht3-b-dashboard`, with `"props": { "panel": "dashboard", "group": "<g>" }`. Herdr reads the layout file again when it is saved, so the surface is there without a restart.
 
-The widgets need nothing more in the layout: the `terminal` widget opens its terminal as a side-panel terminal tab (the `ht3-term-*` blocks the mod already manages), and the `xo-map` widget opens the real xo-map with `tab.new` (`mod: "xo-map"`), as a tab of the work area, so no block for it either; the xo-map mod itself must be in `~/.config/herdr-app/mods/xo-map`.
+The widgets need nothing more in the layout: the `terminal` widget opens its terminal as a side-panel terminal tab (the `ht3-term-*` blocks the mod already manages), and the Plan map widget (`plan-map`) opens the real xo-map mod with `tab.new` (`mod: "xo-map"`), as a tab of the work area, so no block for it either; the xo-map mod itself must be in `~/.config/herdr-app/mods/xo-map`.
 
 The dashboards themselves are not in the layout: they are JSON files in `~/.config/herdr-app/data/ht3-dashboards/`. Copy the ones in `t3-panels/dashboards/` there (`fleet`, `model-servers`, `projects`, `agents`, and `kit`, which shows every widget type) (`cp t3-panels/dashboards/*.json ~/.config/herdr-app/data/ht3-dashboards/`). The format is in `RECIPE.md`, under "Dashboard".

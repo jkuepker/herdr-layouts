@@ -5,7 +5,7 @@
 // The file's own object is what gets edited, so a field this surface doesn't know (or a named source under
 // "sources") stays as it was. A saved file is written as plain two-space JSON: hand formatting is not kept.
 
-import { pick, isPath, readDashboard, TYPES } from "./dash-data.js";
+import { pick, isPath, readDashboard, TYPES, typeOf } from "./dash-data.js";
 
 // The widget types, in the order the "Add widget" picker shows them, each with what it is for and what a new one
 // starts as (data written in the file, so it draws at once; its settings then point it at a real source).
@@ -207,10 +207,15 @@ export function applyForm(widget, sourceKind, texts) {
 }
 
 const clone = (v) => JSON.parse(JSON.stringify(v));
+// A dashboard file's object with old widget type names replaced (dash-data.js TYPE_ALIASES), so what is saved has the new ones.
+export function renamed(raw) {
+  if (!Array.isArray(raw?.widgets)) return raw;
+  return { ...raw, widgets: raw.widgets.map((w) => (w && typeOf(w.type) !== w.type ? { ...w, type: typeOf(w.type) } : w)) };
+}
 // One change to a dashboard file's object -> a new object. Throws when the change makes no sense.
 // op: { add: type } | { remove: i } | { move: i, by: -1 | 1 } | { width: i, w } | { replace: i, widget } | { title }.
 export function edit(raw, op) {
-  const d = clone(raw);
+  const d = renamed(clone(raw));
   if (!Array.isArray(d.widgets)) d.widgets = [];
   const at = (i) => { if (!Number.isInteger(i) || i < 0 || i >= d.widgets.length) throw new Error(`No widget ${i}`); return i; };
   if ("add" in op) {

@@ -1,6 +1,6 @@
 // The Dashboard widget types beyond the six data ones, as the editor knows them: what the Add widget picker says,
 // what a new one starts as, and the settings form's fields (dash-edit.js registerWidget). No Herdr imports: node
-// reads it in t3-panels/dashboards/test.mjs. They are drawn by dash-widgets.js and dash-xomap.js.
+// reads it in t3-panels/dashboards/test.mjs. They are drawn by dash-widgets.js and dash-planmap.js.
 
 import { registerWidget } from "./dash-edit.js";
 
@@ -48,8 +48,8 @@ registerWidget({ type: "chat", about: "Open chats: status, name, agent and last 
   make: { type: "chat", title: "Chats", w: 2 } },
 [{ key: "chat", label: "Chat", kind: "text", hint: "a chat's id for that one; empty: every open chat" }, { key: "limit", label: "At most", kind: "number", min: 1 }], { source: false });
 
-registerWidget({ type: "xo-map", about: "xo's plan as xo-map draws it: the fleet, or one project's components",
-  make: { type: "xo-map", title: "xo map", w: 4, view: "fleet", layout: "compact" } },
+registerWidget({ type: "plan-map", name: "Plan map", about: "xo's plan as a map: the fleet, or one project's components and what they need",
+  make: { type: "plan-map", title: "Plan map", w: 4, view: "fleet", layout: "compact" } },
 [{ key: "view", label: "View", kind: "choice", options: ["fleet", "project"], hint: "the fleet, or the project picked below" },
   { key: "project", label: "Project", kind: "pick", from: "xo-projects", none: "xo's projects are listed here once the widget has read them", hint: "used by the project view" },
   { key: "layout", label: "Layout", kind: "choice", options: ["compact", "full"], hint: "full: a project's cards list their tasks and live workers" }], { source: false });

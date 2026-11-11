@@ -32,6 +32,7 @@
     { "type": "link", "title": "Link, a space", "w": 1, "label": "Home", "space": "Home" },
     { "type": "terminal", "title": "Terminal", "w": 2, "label": "Say hello", "command": "echo hello from the dashboard" },
     { "type": "chat", "title": "Chat", "w": 2 },
+    { "type": "plan-map", "title": "Plan map", "w": 4, "view": "fleet", "layout": "compact" },
     { "type": "list", "title": "Empty", "w": 1, "source": { "type": "static", "data": [] }, "empty": "Nothing queued" },
     { "type": "stat", "title": "A dead source", "w": 1, "broken": true, "source": { "type": "nowhere" } },
     { "type": "pie", "title": "An unknown type", "w": 1, "broken": true, "source": { "type": "static", "data": 1 } }

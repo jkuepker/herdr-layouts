@@ -249,9 +249,9 @@ export const editor = {
       .child(h_flex().px(6).pb(4).items_center().child(div().flex_1().font_medium().text_size(13).child("Add a widget"))
         .child(this.tiny(k, "dash-add-x", icon("x").size(12), (cx) => { this.adding = false; cx.notify(); }, "Close")))
       .child(h_flex().flex_wrap().gap(4).children(WIDGETS.map((t) => v_flex().id(`dash-add-${t.type}`).flex_grow(1).flex_basis(220).min_w(180).px(8).py(6).rounded(6).cursor_pointer()
-        .role("button").accessibility_label(`Add a ${t.type} widget: ${t.about}`).hover((s) => s.bg(k.accent))
+        .role("button").accessibility_label(`Add a ${t.name ?? t.type} widget: ${t.about}`).hover((s) => s.bg(k.accent))
         .on_click((_e, cx) => this.addWidget(cx, t.type))
-        .child(div().font_medium().font_family(k.mono).text_size(12).child(t.type))
+        .child(div().font_medium().font_family(k.mono).text_size(12).child(t.name ?? t.type))
         .child(div().text_size(11).line_height("15px").text_color(k.muted).child(t.about)))));
   },
   // The settings of one widget: its fields in groups, a wrong one in red with why, Save and Close.
@@ -285,7 +285,7 @@ export const editor = {
       .on_key_down((e, cx) => { if (e.key === "escape") { this.closeForm(); cx.notify(); } else if (e.keystroke === "cmd-enter" || e.keystroke === "cmd-s") this.applyForm(cx); })
       .child(h_flex().gap(8).items_center()
         .child(icon("settings-2").size(14).flex_none().text_color(k.muted))
-        .child(div().flex_1().min_w(0).truncate().font_medium().text_size(13).child(`${w.title || "Widget"} · ${f.type}`))
+        .child(div().flex_1().min_w(0).truncate().font_medium().text_size(13).child(`${w.title || "Widget"} · ${WIDGETS.find((t) => t.type === f.type)?.name ?? f.type}`))
         .when(!!f.top, (el) => el.child(div().flex_none().text_size(11).text_color(Object.keys(f.errors).length ? k.destructiveText : k.successText).child(f.top)))
         .child(button(k, "dash-form-close", "Close", (cx) => { this.closeForm(); cx.notify(); }, { variant: "outline", size: "xs" }))
         .child(button(k, "dash-form-save", this.saving ? "Saving…" : "Save", (cx) => this.applyForm(cx), { variant: "default", size: "xs", glyph: "save", tip: "Save these settings to the file (Cmd+Enter)" })))

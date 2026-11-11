@@ -17,10 +17,11 @@ import { showing } from "./side.js";
 import { pick, field, num, show, level, stateLevel, keep, sortRows, age, readDashboard } from "./dash-data.js";
 import { fetchSource } from "./dash-sources.js";
 import { editor } from "./dash-editor.js";
+import { renamed } from "./dash-edit.js";
 import "./dash-types.js";
 import { widgets as moreWidgets, DIRECT } from "./dash-widgets.js";
 import { TYPES } from "./dash-data.js";
-import { xomap } from "./dash-xomap.js";
+import { planmap } from "./dash-planmap.js";
 
 const TICK_MS = 5000, SHARE_MS = 4000; // widgets asking for the same source within a tick share one answer
 const KEEP = 40; // values a stat keeps for its sparkline
@@ -77,7 +78,7 @@ export class DashboardPanel {
             if (text == null) throw new Error(`${name}: couldn't be read (over 1 MiB?)`);
             // text and raw: what edit mode changes and writes back (dash-editor.js).
             const dash = readDashboard(text, name);
-            files.push({ name, dash, text, raw: JSON.parse(text) });
+            files.push({ name, dash, text, raw: renamed(JSON.parse(text)) });
           } catch (e) { files.push({ name, error: String(e?.message ?? e) }); }
         }
         this.files = files;
@@ -346,4 +347,4 @@ export class DashboardPanel {
     }));
   }
 }
-Object.assign(DashboardPanel.prototype, editor, moreWidgets, xomap);
+Object.assign(DashboardPanel.prototype, editor, moreWidgets, planmap);

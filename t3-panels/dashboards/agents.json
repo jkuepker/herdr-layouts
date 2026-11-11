@@ -3,10 +3,10 @@
   "refresh": 20,
   "prometheus": "http://192.168.1.126:9090",
   "widgets": [
-    {"type": "xo-map", "title": "xo: the fleet's plan", "w": 4, "view": "fleet", "layout": "compact", "refresh": 15},
+    {"type": "plan-map", "title": "Plan map: every project", "w": 4, "view": "fleet", "layout": "compact", "refresh": 15},
     {"type": "chat", "title": "Open chats", "w": 2, "refresh": 10},
     {"type": "gauge", "title": "Plan done", "w": 1, "refresh": 60, "source": {"type": "command", "shell": "xo plan --rows | python3 -c 'import json,sys; c=[x for p in json.load(sys.stdin)[\"projects\"] for x in p.get(\"components\",[])]; d=sum(x.get(\"status\")==\"done\" for x in c); print(json.dumps({\"done\": d, \"all\": len(c), \"pct\": round(100*d/max(1,len(c)))}))'"}, "value": ".pct", "unit": "%", "sub": "{.done} of {.all} components", "thresholds": {"below": true, "warn": 50, "bad": 20}},
     {"type": "gauge", "title": "KV cache, busiest server", "w": 1, "source": {"type": "prometheus", "query": "100 * max(vllm:kv_cache_usage_perc)"}, "unit": "%", "decimals": 0, "thresholds": {"warn": 80, "bad": 95}, "sub": "of the model servers"},
-    {"type": "xo-map", "title": "xo: one project", "w": 4, "view": "project", "project": "xo", "layout": "compact", "refresh": 15}
+    {"type": "plan-map", "title": "Plan map: one project", "w": 4, "view": "project", "project": "xo", "layout": "compact", "refresh": 15}
   ]
 }

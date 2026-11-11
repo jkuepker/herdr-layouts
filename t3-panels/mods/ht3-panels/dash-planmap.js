@@ -1,24 +1,25 @@
-// The Dashboard's xo-map widget (type "xo-map"): xo's planned work as xo-map draws it, read-only, inside a card.
+// The Dashboard's Plan map widget (type "plan-map"; "xo-map" is its old name and still loads): xo's planned work as
+// the xo-map mod draws it, read-only, inside a card.
 // - view "fleet" (default): a region per project with a mini card per component, coloured by status.
 //   view "project" with `project`: that project's components in columns by `needs` depth, with the edges.
 // - layout "compact" (default): fleet as is, capped in height; a project's cards are their heads only.
 //   layout "full": a project's cards list their tasks and live workers, as in xo-map.
 // - Data: shared("xo.data") while xo-status keeps it fresh (it runs in the xo layouts); otherwise this widget runs
 //   `xo plan --rows` and `xo bearings --rows` itself, which only read. The card's foot says which it was.
-// - No `xo act` buttons. A click on a region, a card or "Open in xo-map" opens the real xo-map as a tab (on that
+// - No `xo act` buttons. A click on a region, a card or "Open full map" opens the real xo-map as a tab (on that
 //   project): the mod must be installed (~/.config/herdr-app/mods/xo-map).
-// The layout is xomap-graph.js and the data steps xomap-data.js, both copied from xo-map (see their headers); the
+// The layout is planmap-graph.js and the data steps planmap-data.js, both copied from xo-map (see their headers); the
 // drawing follows xo-map/main.js fleetView and projectView, in this surface's colours.
 
 import { div, PathBuilder } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { exec, home, run, shared, spaces, focused } from "herdr";
 import { alpha, icon } from "./look.js";
-import { fleetLayout, projectLayout, CARD_HEAD, TASK_ROW, MAX_TASKS, CHIP_ROW, REGION_W, REGION_GAP } from "./xomap-graph.js";
-import { normalize, joinLive, counts, taskMark, edgeLook } from "./xomap-data.js";
+import { fleetLayout, projectLayout, CARD_HEAD, TASK_ROW, MAX_TASKS, CHIP_ROW, REGION_W, REGION_GAP } from "./planmap-graph.js";
+import { normalize, joinLive, counts, taskMark, edgeLook } from "./planmap-data.js";
 
 const FRESH_MS = 60000; // xo.data older than this is nobody's live read
-const PAD = 40; // xomap-graph.js lays out with this margin; a card has its own
+const PAD = 40; // planmap-graph.js lays out with this margin; a card has its own
 const VIOLET = "#8f7fd1";
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
@@ -34,8 +35,8 @@ async function xo(args) {
   throw new Error(`xo isn't installed (looked on PATH and in ~/.local/bin)${last?.message && !/installed/.test(last.message) ? `: ${String(last.message).slice(0, 80)}` : ""}`);
 }
 
-export const xomap = {
-  async "load_xo-map"() {
+export const planmap = {
+  async "load_plan-map"() {
     const s = shared("xo.data");
     if (s?.plan && Date.now() - (Number(s.updated) || 0) < FRESH_MS) return { via: "xo-status", data: joinLive(normalize(s.plan), { rows: s.rows ?? [], bearings: s.bearings ?? [] }) };
     const plan = await xo(["plan", "--rows"]);
@@ -50,14 +51,14 @@ export const xomap = {
     return [];
   },
   // arg: a project's name (a click on its region or on one of its cards), or "" for the fleet.
-  "press_xo-map"(w, _cx, arg) {
-    const project = arg || (w.view === "project" ? w.project : null) || null, name = project ? `XO Map · ${project}` : "XO Map";
+  "press_plan-map"(w, _cx, arg) {
+    const project = arg || (w.view === "project" ? w.project : null) || null, name = project ? `Plan map · ${project}` : "Plan map";
     const here = spaces().find((s) => s.id === focused()?.space), had = here?.tabs.find((t) => t.name === name);
     if (had) return run("tab.select", { id: had.id });
     run("tab.new", { name, mod: "xo-map", ...(project ? { props: { project } } : {}) });
   },
 
-  "draw_xo-map"(k, w, st) {
+  "draw_plan-map"(k, w, st) {
     if (st.data === undefined) return this.say(k, st.error ? `xo plan --rows failed: ${st.error}` : "Reading xo plan…", st.error ? k.destructiveText : k.muted);
     const d = st.data.data, compact = w.layout !== "full";
     const C = { done: k.success, working: VIOLET, planned: alpha(k.muted, 0.55), stuck: k.destructive };
@@ -65,7 +66,7 @@ export const xomap = {
     const p = w.view === "project" ? d.projects.find((x) => x.project === w.project) : null;
     const open = (id, label, project) => h_flex().id(id).h(22).px(8).gap(4).flex_none().items_center().rounded(6).border(1).border_color(k.input).text_size(11).text_color(k.muted).cursor_pointer()
       .role("button").accessibility_label(label).hover((s) => s.bg(k.accent).text_color(k.foreground))
-      .on_click((_e, cx) => { if (!this.editing) this["press_xo-map"](w, cx, project); }).child(icon("arrow-up-right").size(12)).child("Open in xo-map");
+      .on_click((_e, cx) => { if (!this.editing) this["press_plan-map"](w, cx, project); }).child(icon("arrow-up-right").size(12)).child("Open full map");
     const live = d.projects.reduce((a, x) => a + x.live, 0), need = d.projects.reduce((a, x) => a + x.needsYou, 0);
     let head, canvas;
     if (w.view === "project" && !p) {
@@ -83,7 +84,7 @@ export const xomap = {
     return v_flex().gap(8)
       .child(h_flex().gap(8).items_center()
         .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(need ? k.warningText : k.foreground).child(head))
-        .child(open(`xo-open-${w.id}`, "Open the full xo-map", p?.project ?? "")))
+        .child(open(`xo-open-${w.id}`, "Open the full map (the xo-map mod)", p?.project ?? "")))
       .child(div().id(`xo-size-${w.id}`).w_full().on_size_change((size, cx) => { if (Math.abs((sizes.get(w.id) ?? 0) - size.width) >= 1) { sizes.set(w.id, size.width); cx.notify(); } }).child(canvas))
       .child(h_flex().gap(10).flex_wrap().items_center().text_size(10).text_color(k.dim)
         .children(["done", "working", "planned", "stuck"].map((s) => h_flex().gap(4).items_center().child(div().size(7).rounded_full().bg(C[s])).child(s)))
@@ -99,8 +100,8 @@ export const xomap = {
     const inner = div().relative().w_full().h(H).children(L.regions.map((r) => {
       const p = byProject[r.project], n = counts(p);
       return div().id(`xo-region-${w.id}-${r.project}`).absolute().left((r.x - PAD) * z).top((r.y - PAD) * z).w(Math.min(r.w * z, width)).h(r.h * z).rounded(10 * z).bg(alpha(k.foreground, 0.03))
-        .border(1).border_color(p.needsYou ? k.warning : alpha(k.border, 0.9)).overflow_hidden().cursor_pointer().role("button").accessibility_label(`Open ${r.project} in xo-map`)
-        .hover((s) => s.bg(alpha(k.foreground, 0.06))).on_click((_e, cx) => { if (!this.editing) this["press_xo-map"](w, cx, r.project); })
+        .border(1).border_color(p.needsYou ? k.warning : alpha(k.border, 0.9)).overflow_hidden().cursor_pointer().role("button").accessibility_label(`Open ${r.project} in the full map`)
+        .hover((s) => s.bg(alpha(k.foreground, 0.06))).on_click((_e, cx) => { if (!this.editing) this["press_plan-map"](w, cx, r.project); })
         .child(h_flex().absolute().left(14 * z).top(11 * z).right(14 * z).h(22 * z).gap(8 * z).items_center()
           .child(div().min_w(0).truncate().font_semibold().text_size(13 * z).child(r.project))
           .child(div().flex_1())
@@ -147,8 +148,8 @@ export const xomap = {
       const chipTop = CARD_HEAD + (tasks.length + (c.tasks.length > MAX_TASKS ? 1 : 0)) * TASK_ROW;
       return div().id(`xo-card-${w.id}-${c.id}`).absolute().left(X(q.x)).top(Y(q.y)).w(q.w * z).h(q.h * z).rounded(9 * z).bg(k.card)
         .border(1).border_color(real.needsYou ? k.warning : c.status === "stuck" ? k.destructive : k.border).overflow_hidden().cursor_pointer()
-        .role("button").accessibility_label(`${c.title}: ${c.status}. Open ${p.project} in xo-map`).hover((s) => s.bg(k.accent))
-        .on_click((_e, cx) => { if (!this.editing) this["press_xo-map"](w, cx, p.project); })
+        .role("button").accessibility_label(`${c.title}: ${c.status}. Open ${p.project} in the full map`).hover((s) => s.bg(k.accent))
+        .on_click((_e, cx) => { if (!this.editing) this["press_plan-map"](w, cx, p.project); })
         .child(div().absolute().left(0).top(0).w(q.w * z).h(3 * z).bg(col))
         .child(h_flex().absolute().left(10 * z).top(9 * z).right(8 * z).h((CARD_HEAD - 12) * z).gap(6 * z).items_center().min_w(0)
           .child(div().flex_none().size(8 * z).rounded_full().bg(col))

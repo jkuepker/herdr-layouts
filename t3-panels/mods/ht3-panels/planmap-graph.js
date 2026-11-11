@@ -1,5 +1,5 @@
 // Copied unchanged below this header from xo-map/graph.js (xo repository, herdr/xo-map, commit 2217cc2 of 2026-11-06)
-// for the Dashboard's xo-map widget (dash-xomap.js): a mod can't import another mod's code. Its project-map layout is a
+// for the Dashboard's Plan map widget (dash-planmap.js): a mod can't import another mod's code. Its project-map layout is a
 // fork of agenttrail (https://github.com/sodiumsun/agenttrail at 5996e48, MIT: LICENSE.agenttrail beside this file).
 // To update: copy the file again and keep these four lines.
 
