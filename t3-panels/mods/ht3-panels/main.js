@@ -164,7 +164,9 @@ export default class T3Panels extends View {
     cx.spawn(async (cx) => {
       for (;;) {
         const c = await nextCommand();
-        this.face.command(c, cx);
+        // A command that throws (or a face with a field named `command` shadowing its method: the
+        // prototype's is called) must not end this loop, or the copy never hears a command again.
+        try { Object.getPrototypeOf(this.face).command.call(this.face, c, cx); } catch (e) { console.log(`ht3-panels.${c}: ${String(e?.message ?? e)}`); }
       }
     });
   }

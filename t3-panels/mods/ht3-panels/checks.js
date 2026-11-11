@@ -171,8 +171,8 @@ export class ChecksPanel {
     this.output = false; // the raw output is open
     this.said = null; // { text, bad }
     this.name = InputState.new({ placeholder: "Name, e.g. Lint" });
-    this.command = InputState.new({ placeholder: "Command, e.g. npm run lint" });
-    for (const f of [this.name, this.command]) { f.on("change", (_e, cx) => cx.notify()); f.on("submit", (_e, cx) => { this.addCustom(cx); }); }
+    this.commandBox = InputState.new({ placeholder: "Command, e.g. npm run lint" });
+    for (const f of [this.name, this.commandBox]) { f.on("change", (_e, cx) => cx.notify()); f.on("submit", (_e, cx) => { this.addCustom(cx); }); }
     this.pscroll = VirtualListScrollHandle.new();
     this.oscroll = VirtualListScrollHandle.new();
     this.follow(cx);
@@ -249,11 +249,11 @@ export class ChecksPanel {
   }
 
   addCustom(cx) {
-    const name = this.name.value().trim(), command = this.command.value().trim();
+    const name = this.name.value().trim(), command = this.commandBox.value().trim();
     if (!this.project || !name || !command) return;
     setCustomChecks(this.project.key, [...customChecksOf(this.project.key).filter((c) => c.name !== name), { name, command }]);
     this.name.set_value("");
-    this.command.set_value("");
+    this.commandBox.set_value("");
     this.adding = false;
     cx.notify();
   }
@@ -308,10 +308,10 @@ export class ChecksPanel {
   }
 
   addForm(k) {
-    const ok = !!this.name.value().trim() && !!this.command.value().trim();
+    const ok = !!this.name.value().trim() && !!this.commandBox.value().trim();
     return h_flex().flex_none().px(12).py(6).gap(6).items_center().border_b(1).border_color(alpha(k.border, 0.6))
       .child(div().w(96).flex_none().h(28).px(8).rounded(8).border(1).border_color(k.input).text_size(13).child(Input.new(this.name)))
-      .child(div().flex_1().min_w(0).h(28).px(8).rounded(8).border(1).border_color(k.input).text_size(13).font_family(k.mono).child(Input.new(this.command)))
+      .child(div().flex_1().min_w(0).h(28).px(8).rounded(8).border(1).border_color(k.input).text_size(13).font_family(k.mono).child(Input.new(this.commandBox)))
       .child(button(k, "check-new", "Add", (cx) => this.addCustom(cx), { variant: "default", disabled: !ok || !this.project, tip: "Kept for this project" }));
   }
 
