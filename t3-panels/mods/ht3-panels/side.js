@@ -17,6 +17,7 @@
 import { MOD } from "./look.js";
 import { shared, setShared, spaces, machines, layout, run, notify, hc, exec, appHome, readTextFile, writeTextFile, terminals, focused, panes, home } from "herdr";
 import { enabledAgents, sideStartsHidden } from "./settings.js";
+import { agentName } from "./report.js";
 
 export const SIDE = "ht3-side", CENTER = "ht3-center", BOTTOM = "ht3-bottom", BOTTOM_EMPTY = "ht3-bottom-empty";
 export const KEY = "ht3-side.state";
@@ -192,6 +193,7 @@ export async function keep(cx) {
     }
     try {
       reconcile();
+      await watchChats();
       await syncBlocks();
       if (tick % 4 === 0) await sweep();
     } catch (e) { console.log(`ht3-panels: ${String(e?.message ?? e)}`); }
@@ -352,7 +354,88 @@ export function closeTab(group, id) {
     tidy(st);
   });
   reconcile();
+  // T3's closedViewStore: a surface closed by hand can come back (Reopen closed panel). Not a terminal: its shell is gone.
+  if (gone && gone.kind !== "terminal") rememberClosed({ kind: "surface", space: space.id, props: { surface: gone.kind, group, ...(gone.chat ? { chat: gone.chat } : {}) } });
   return gone?.kind === "terminal" ? ask(() => endTerminal(gone.addr)) : Promise.resolve();
+}
+
+// ---- reopen closed (T3's closedViewStore.ts, the mod+shift+t key in keybindings.ts) ----
+// What was closed, newest last, at most CLOSED_MAX, in shared `ht3-side.closed`: { kind, props, space, at }.
+// kind "surface": props { surface (a SURFACES kind), group, chat? (a side chat's agent and folder) }, closed with its x
+// (closeTab); a terminal is left out, as T3 does, since what it ran is gone. kind "file": props { path (absolute),
+// on? }, a file closed in Files (editor.js calls rememberClosed). kind "chat": props { chat (its id), agent (argv),
+// cwd, machine, name }, a chat tab that went (watchChats: Herdr tells a mod nothing of a closed tab, so the keeper
+// compares the chat panes it saw with the ones there now). `space` is the space it was closed in; a surface or a file
+// comes back in the shown space only, a chat in whichever space is shown.
+export const CLOSED = "ht3-side.closed", CLOSED_MAX = 10;
+export const closedList = () => { const v = shared(CLOSED); return Array.isArray(v) ? v : []; };
+const sameClosed = (a, b) => a.kind === b.kind && a.space === b.space && JSON.stringify(a.kind === "chat" ? a.props.chat : a.props) === JSON.stringify(b.kind === "chat" ? b.props.chat : b.props);
+export function rememberClosed({ kind, props, space = activeSpace()?.id ?? null }) {
+  if (!kind || !props) return;
+  const entry = { kind, props, space, at: Date.now() };
+  setShared(CLOSED, [...closedList().filter((e) => !sameClosed(e, entry)), entry].slice(-CLOSED_MAX));
+}
+// A closed chat that is open again (from Earlier chats) is no longer closed.
+function forgetClosedChat(chat) {
+  const list = closedList();
+  if (list.some((e) => e.kind === "chat" && e.props.chat === chat)) setShared(CLOSED, list.filter((e) => !(e.kind === "chat" && e.props.chat === chat)));
+}
+// The newest entry that can come back here: -> its index in closedList(), or -1.
+export function nextClosed(space = activeSpace()?.id ?? null) {
+  const list = closedList();
+  for (let i = list.length - 1; i >= 0; i--) if (list[i].kind === "chat" || list[i].space === space) return i;
+  return -1;
+}
+// Brings back the newest closed thing (the keeper's: main.js `reopen-closed`). -> the entry, or null when there is none.
+export async function reopenClosed(cx) {
+  const space = activeSpace(), at = space ? nextClosed(space.id) : -1;
+  if (at < 0) { notify({ title: "Reopen closed panel", body: "Nothing closed to reopen.", level: "info" }); return null; }
+  const list = closedList(), e = list[at], p = e.props;
+  setShared(CLOSED, list.filter((_, i) => i !== at));
+  if (e.kind === "chat") {
+    const places = shared("ht3-panels.places") ?? {};
+    // Open again already (a chat reopened another way): that one is shown.
+    if (places[p.chat] && panes().some((x) => x.pane === places[p.chat].pane)) run("pane.focus", { pane: places[p.chat].pane });
+    else run("tab.new", { mod: MOD, space: space.id, name: p.name, props: { panel: "chat", chat: p.chat, agent: p.agent, cwd: p.cwd, machine: p.machine } });
+  } else if (e.kind === "file") {
+    const st = spaceState(space.id), group = GROUPS.find((g) => st[g].tabs.some((t) => t.kind === "files")) ?? "a", was = showing(group, "files");
+    await openSurface(group, "files");
+    await sleep(cx, was ? 100 : 500);
+    run(`${MOD}.open:${p.path}`);
+  } else {
+    // The group it was in, when that group shows; else the first.
+    const group = p.group === "b" && spaceState(space.id).split ? "b" : "a";
+    await openSurface(group, p.surface);
+    if (p.chat) change(space.id, (st) => { const t = st[group].tabs.find((x) => x.kind === "chat"); if (t && !t.chat) t.chat = p.chat; });
+  }
+  return e;
+}
+// The keeper, every second: the chats seen in a chat pane (`ht3-panels.places`: chat -> { pane, tab }, report.js) that
+// are gone now, tab and pane, while their space still is: those were closed. -> the entries it pushed.
+const seenChats = new Map();
+// chat id -> { pane, tab, space }
+export async function watchChats() {
+  if (!machines().every((m) => m.layout === "ready")) return;
+  const ps = panes(), sp = spaces(), tabs = new Set(sp.flatMap((s) => s.tabs.map((t) => t.id)));
+  // Nothing listed yet (the app is starting, a mod reloading) is not everything closed.
+  if (!ps.length || !tabs.size) return;
+  for (const [chat, at] of Object.entries(shared("ht3-panels.places") ?? {})) {
+    if (chat.startsWith("side-") || !ps.some((p) => p.pane === at.pane && p.mod === MOD)) continue;
+    seenChats.set(chat, { pane: at.pane, tab: at.tab, space: sp.find((s) => s.tabs.some((t) => t.id === at.tab))?.id ?? seenChats.get(chat)?.space ?? null });
+    forgetClosedChat(chat);
+  }
+  for (const [chat, at] of [...seenChats]) {
+    if (ps.some((p) => p.pane === at.pane) || tabs.has(at.tab)) continue;
+    seenChats.delete(chat);
+    // A closed space takes its chats with it: nobody closed those one by one.
+    if (!at.space || !sp.some((s) => s.id === at.space)) continue;
+    try {
+      const s = JSON.parse(await readTextFile(`${appHome()}/data/${MOD}/chats/${chat}/state.json`));
+      // A chat that never got a message has no state to come back to.
+      if (!Array.isArray(s.agentArgv)) continue;
+      rememberClosed({ kind: "chat", space: at.space, props: { chat, agent: s.agentArgv, cwd: s.cwd ?? null, machine: s.machine ?? null, name: agentName(s.agentArgv, s.agentInfo?.title ?? s.agentInfo?.name) } });
+    } catch {}
+  }
 }
 
 // The second group goes when empty; an empty first group takes the second one's tabs.

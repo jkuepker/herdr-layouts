@@ -14,7 +14,7 @@ import { v_flex, h_flex, Editor, EditorState, InputState, Input, TextareaState, 
 import { spaces, panes, focused, exec, readTextFile, writeTextFile, watchFolder, theme, pickFolder, shared, setShared } from "herdr";
 import { tokens, alpha, icon, button, iconButton, shortPath } from "./look.js";
 import { fileIcon } from "./fileicons.js";
-import { chatPlace, showing } from "./side.js";
+import { chatPlace, showing, rememberClosed } from "./side.js";
 
 const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", cjs: "js", toml: "yaml", jsonc: "json", svelte: "html", vue: "html", yml: "yaml", htm: "html", markdown: "md", zsh: "sh", bash: "sh" };
 const PER_FOLDER = 500, TOTAL = 5000;
@@ -281,7 +281,7 @@ export class FilePanel {
     if (c.tabs.length >= MAX_TABS) {
       const spare = c.tabs.findIndex((x) => !x.dirty);
       if (spare < 0) { c.error = `Save or close a file first: ${MAX_TABS} are open.`; return cx.notify(); }
-      this.drop(c, spare);
+      this.drop(c, spare, false); // making room is not a close the user can undo
     }
     const tab = { path, abs: `${c.root}/${path}`, state: null, saved: "", dirty: false, readonly: c.on != null, note: null, error: null, conflict: null, closing: false, loading: true };
     c.tabs.push(tab);
@@ -312,7 +312,8 @@ export class FilePanel {
     });
   }
 
-  drop(c, at) {
+  drop(c, at, user = true) {
+    if (user && c.tabs[at]?.abs) rememberClosed({ kind: "file", props: { path: c.tabs[at].abs } }); // reopen-closed
     c.tabs[at].state?.release();
     c.tabs.splice(at, 1);
     if (c.active === at) c.active = Math.min(at, c.tabs.length - 1);

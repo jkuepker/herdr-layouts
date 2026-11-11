@@ -5,7 +5,7 @@
 // a message (Copy, Fork), of an Inbox card (Rename, Settle, Pin, …), and the question before a revert.
 
 import { div, image } from "gpui-kit";
-import { v_flex, h_flex, InputState, Input, TextareaState, Textarea } from "gpui-base";
+import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, Scrollbar, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
 import { closeOverlay, exec, hc, run, appHome, shared, setShared, readTextFile, notify, spaces } from "herdr";
 import { chatLike, forkChat } from "./agent-acp.js";
 import { toMarkdown } from "./transcript.js";
@@ -17,6 +17,7 @@ import { SURFACES, send, placeOf, activeSpace, surfaceOff, surfacesHere } from "
 import { projectOf, scriptsOf, runScript } from "./scripts.js";
 import { write, wroteLine, Cancelled } from "./gitwrite.js";
 import { discover } from "./servers.js";
+import { readBranches, switchRow, pullFastForward, pickerRows, rowBlocked } from "./branches.js";
 
 export class AddMenu {
   init(p, cx) {
@@ -297,8 +298,17 @@ export class ProjectMenu {
     this.root = null;
     this.machine = this.on ?? "This computer";
     this.editors = null;
-    this.pick = null; // "editor" | "branch": the list that is open
-    this.branches = null;
+    this.pick = null; // "editor" | "branch" | "scripts": the list that is open
+    // The branch picker (BranchPicker.tsx): a filter over the local branches, then the remote-only ones, and a
+    // "Create branch" row for what matches none (branches.js). `at` is the marked row.
+    this.refs = null; // parseRefs
+    this.worktrees = [];
+    this.at = 0;
+    this.listed = false;
+    this.rowsNow = [];
+    this.scroll = VirtualListScrollHandle.new();
+    this.filter = InputState.new({ placeholder: "Search or create a branch…" });
+    this.filter.on("change", (_e, cx) => { this.at = 0; this.scroll.scroll_to_item(0, "top"); cx.notify(); });
     this.branch = space?.branch ?? null;
     this.dirty = null;
     this.changes = null; // { add, del }: lines changed since the last commit
@@ -339,13 +349,7 @@ export class ProjectMenu {
         if (this.root) {
           const b = await exec("git", ["branch", "--show-current"], { cwd: this.root, on: this.on }).catch(() => null);
           this.branch = b?.stdout.trim() || this.branch;
-          // As T3 counts them (GitVcsDriverCore readBranchChangeTotals): lines against the merge base with the default
-          // branch, new files that aren't tracked yet included, through a throwaway index so the real one isn't touched.
-          const count = 'b=$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null); m=; for c in "$b" origin/main origin/master main master; do [ -n "$c" ] && m=$(git merge-base HEAD "$c" 2>/dev/null) && [ -n "$m" ] && break; done; [ -n "$m" ] || m=HEAD; '
-            + 'i=$(mktemp); cp "$(git rev-parse --git-path index)" "$i" 2>/dev/null; GIT_INDEX_FILE="$i" git add -N . 2>/dev/null; GIT_INDEX_FILE="$i" git diff --numstat "$m" 2>/dev/null | awk \'{a+=$1;d+=$2} END{print a+0, d+0}\'; rm -f "$i"';
-          const d = await exec("sh", ["-c", count], { cwd: this.root, on: this.on, timeout: 15000 }).catch(() => null);
-          const [add, del] = (d?.stdout ?? "").trim().split(" ").map(Number);
-          if (d?.code === 0 && Number.isFinite(add) && Number.isFinite(del)) this.changes = { add, del };
+          await this.loadChanges();
           const r = await exec("git", ["remote", "-v"], { cwd: this.root, on: this.on }).catch(() => null);
           this.github = /github/i.test(r?.stdout ?? "");
           await this.status();
@@ -357,6 +361,17 @@ export class ProjectMenu {
       }
       cx.notify();
     });
+  }
+
+  // The lines changed since the branch left the default one, as the Changes row shows them (also after a pull or a switch).
+  async loadChanges() {
+    // As T3 counts them (GitVcsDriverCore readBranchChangeTotals): lines against the merge base with the default
+    // branch, new files that aren't tracked yet included, through a throwaway index so the real one isn't touched.
+    const count = 'b=$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null); m=; for c in "$b" origin/main origin/master main master; do [ -n "$c" ] && m=$(git merge-base HEAD "$c" 2>/dev/null) && [ -n "$m" ] && break; done; [ -n "$m" ] || m=HEAD; '
+      + 'i=$(mktemp); cp "$(git rev-parse --git-path index)" "$i" 2>/dev/null; GIT_INDEX_FILE="$i" git add -N . 2>/dev/null; GIT_INDEX_FILE="$i" git diff --numstat "$m" 2>/dev/null | awk \'{a+=$1;d+=$2} END{print a+0, d+0}\'; rm -f "$i"';
+    const d = await exec("sh", ["-c", count], { cwd: this.root, on: this.on, timeout: 15000 }).catch(() => null);
+    const [add, del] = (d?.stdout ?? "").trim().split(" ").map(Number);
+    if (d?.code === 0 && Number.isFinite(add) && Number.isFinite(del)) this.changes = { add, del };
   }
 
   script(s) {
@@ -437,6 +452,21 @@ export class ProjectMenu {
     if (c === "git:commit") { this.step = this.step === "commit" ? null : "commit"; this.message.focus(); return cx.notify(); }
     if (c.startsWith("git:commit:")) { this.message.set_value(c.slice(11)); return this.commit(cx); }
     if (c === "git:push") return this.push(cx);
+    // git:pull pulls (`git pull --ff-only`). branches opens the branch picker (again: closes it), branch:filter:<text>
+    // types in its filter, branch:<name> switches to that branch (a remote-only one tracked), branch:new:<name> creates
+    // it, key:<up|down|enter|escape> presses a key in the picker.
+    if (c === "git:pull") return this.pull(cx);
+    if (c === "branches") return this.toggleBranches(cx);
+    if (c.startsWith("branch:filter:")) { if (this.pick !== "branch") this.toggleBranches(cx); this.filter.set_value(c.slice(14)); this.at = 0; return cx.notify(); }
+    if (c.startsWith("branch:new:")) return this.choose(cx, { kind: "create", name: c.slice(11), current: false, elsewhere: null });
+    if (c.startsWith("branch:") && this.root) {
+      const name = c.slice(7), pickIt = (cx) => this.choose(cx, pickerRows({ refs: this.refs, worktrees: this.worktrees, root: this.root, query: name }).find((r) => r.kind !== "create" && (r.name === name || r.ref === name)));
+      if (this.refs) return pickIt(cx);
+      return cx.spawn(async (cx) => {
+        try { const r = await readBranches({ cwd: this.root, on: this.on }); this.refs = r.refs; this.worktrees = r.worktrees; pickIt(cx); } catch (e) { this.error = String(e?.message ?? e); cx.notify(); }
+      });
+    }
+    if (c.startsWith("key:") && this.pick === "branch") return this.branchKey(c.slice(4), cx);
     if (c === "git:pr") { this.step = this.step === "pr" ? null : "pr"; return cx.notify(); }
     // scripts opens the project's scripts, script:<n> runs the nth (from 0).
     if (c === "scripts") { this.pick = this.pick === "scripts" ? null : "scripts"; return cx.notify(); }
@@ -559,26 +589,116 @@ export class ProjectMenu {
     });
   }
 
-  loadBranches(cx) {
-    this.pick = this.pick === "branch" ? null : "branch";
-    if (this.pick !== "branch" || this.branches || !this.root) return cx.notify();
+  // Pull (GitActionsControl.tsx): `git pull --ff-only`, where the folder is. Never a merge or a rebase: a branch that has
+  // moved on as well says so with git's message, and nothing changes. What it did shows in plain words.
+  pull(cx) {
+    const g = this.git;
+    if (!g?.upstream || g.detached) return;
+    this.note = null;
     this.run(cx, async () => {
-      const r = await exec("git", ["branch", "--format=%(refname:short)", "--sort=-committerdate"], { cwd: this.root, on: this.on });
-      if (r.code !== 0) throw new Error(r.stderr.trim() || "Cannot list branches");
-      this.branches = r.stdout.split("\n").map((s) => s.trim()).filter(Boolean).slice(0, 200);
+      this.note = await pullFastForward({ cwd: this.root, on: this.on });
+      this.changes = null;
+      await this.status();
+      await this.loadChanges();
     });
   }
 
-  switchTo(cx, name) {
+  // The branch picker: its step opens under the branch row with the filter focused, and reads the branches again each time.
+  toggleBranches(cx) {
+    this.pick = this.pick === "branch" ? null : "branch";
+    if (this.pick !== "branch") return cx.notify();
+    this.filter.set_value("");
+    this.at = 0;
+    this.note = null;
+    this.error = null;
+    this.filter.focus();
+    if (!this.root) return cx.notify();
     this.run(cx, async () => {
-      const r = await exec("git", ["switch", name], { cwd: this.root, on: this.on });
-      if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim().split("\n").slice(0, 3).join(" "));
-      this.branch = name;
+      const r = await readBranches({ cwd: this.root, on: this.on });
+      this.refs = r.refs;
+      this.worktrees = r.worktrees;
+      this.listed = true;
+    });
+  }
+
+  // The rows the filter leaves.
+  branchRows() {
+    return this.refs ? pickerRows({ refs: this.refs, worktrees: this.worktrees, root: this.root, query: this.filter.value() }) : [];
+  }
+
+  // A chat's tab working in a worktree folder: where the "Open chat" of a branch checked out there goes.
+  chatAt(folder) {
+    const progs = shared(`${MOD}.programs`) ?? {}, tabs = new Set(spaces().flatMap((sp) => sp.tabs.map((t) => t.id)));
+    const tab = Object.keys(progs).find((t) => tabs.has(t) && progs[t]?.cwd === folder && (progs[t].machine ?? null) === (this.on ?? null));
+    return tab ?? null;
+  }
+
+  // Enter or a click on a row: the current branch just closes the step; one checked out in another worktree can't be
+  // switched to (git refuses), so the reason shows; the rest switch, remote ones tracked, a new name created.
+  choose(cx, row) {
+    if (!row || this.busy) return;
+    if (row.current) { this.pick = null; return cx.notify(); }
+    const why = rowBlocked(row);
+    if (why) { this.error = `${row.name} is ${why}. Open a chat there, or switch that worktree away first.`; return cx.notify(); }
+    this.note = null;
+    this.run(cx, async () => {
+      this.note = await switchRow({ cwd: this.root, on: this.on }, row);
+      this.branch = row.name;
       this.pick = null;
-      // Commit, Push and Create PR go by the branch that is checked out now.
+      // Commit, Push, Pull and Create PR go by the branch that is checked out now.
       this.changes = null;
       await this.status();
+      await this.loadChanges();
+      this.refs = null;
     });
+  }
+
+  // Keys in the step: up, down, Enter, Esc. `ht3-panels.key:<up|down|enter|escape>` for scripts.
+  branchKey(key, cx) {
+    const rows = this.rowsNow = this.branchRows();
+    if (key === "escape") { this.pick = null; return cx.notify(); }
+    if (key === "enter") return this.choose(cx, rows[this.at]);
+    if (key === "up" || key === "down") {
+      if (!rows.length) return;
+      this.at = (this.at + (key === "down" ? 1 : -1) + rows.length) % rows.length;
+      this.scroll.scroll_to_item(this.at, "center");
+      cx.notify();
+    }
+  }
+
+  // The branch picker's step (BranchPicker.tsx): the filter, then the list: local branches (the current one marked, the
+  // newest commit first), the remote-only ones, and "Create branch <name>" first when what is typed matches none.
+  branchStep(k) {
+    const rows = this.rowsNow = this.branchRows();
+    if (this.at >= rows.length) this.at = Math.max(0, rows.length - 1);
+    const ROW = 28, shown = rows.slice(0, 300);
+    const keyOf = (r) => `${r.kind}:${r.ref ?? r.name}`;
+    const item = (r, i) => {
+      const why = rowBlocked(r), chat = r.elsewhere ? this.chatAt(r.elsewhere) : null, on = this.at === i;
+      const glyph = r.kind === "create" ? "git-branch-plus" : r.kind === "remote" ? "globe" : "git-branch";
+      const dim = (e) => (why ? e.opacity(0.5) : e);
+      let el = h_flex().id(`br-${keyOf(r)}`).h(ROW).px(8).gap(8).items_center().rounded(6).text_size(13).bg(on ? k.accent : "#00000000").cursor_pointer()
+        .child(dim(icon(glyph).size(14).flex_none().text_color(k.muted)))
+        .child(dim(div().flex_1().min_w(0).truncate().child(r.kind === "create" ? `Create branch ${r.name}` : r.kind === "remote" ? r.ref : r.name)));
+      if (r.current) el = el.child(icon("check").size(14).flex_none().text_color(k.muted));
+      else if (r.kind === "remote") el = el.child(div().flex_none().text_size(11).text_color(k.muted).child("remote"));
+      else if (r.elsewhere) {
+        el = el.child(div().flex_none().max_w(110).truncate().text_size(11).text_color(k.muted).child(`worktree ${shortPath(r.elsewhere)}`));
+        if (chat) el = el.child(button(k, `br-chat-${r.name}`, "Open chat", () => { closeOverlay(this.overlay); run("tab.select", { id: chat }); }, { variant: "ghost-muted" }));
+      }
+      return why ? el.tooltip(`${r.name} is ${why}`) : el;
+    };
+    return v_flex().id("ht3-branch-step").mx(4).mb(4).gap(4)
+      .child(div().min_w(0).h(28).px(8).rounded(6).border(1).border_color(k.input).text_size(13).child(Input.new(this.filter)))
+      .child(!this.refs && !this.error ? div().px(8).py(6).text_size(12).text_color(k.muted).child("Loading branches…")
+        : !rows.length ? div().px(8).py(6).text_size(12).text_color(k.muted).child(this.root ? "No branches match." : "Not a git repository.")
+        : v_flex().relative().h(Math.min(rows.length, 8) * ROW).flex_none()
+          .child(v_virtual_list("ht3-branch-list", shown.length, ROW, (i) => keyOf(shown[i]),
+            (range) => shown.slice(range.start, range.end).map((r, j) => item(r, range.start + j)))
+            .track_scroll(this.scroll).size_full()
+            .on_item_click((key, cx) => { const i = shown.findIndex((r) => keyOf(r) === key); if (i >= 0) { this.at = i; this.choose(cx, shown[i]); } }))
+          .child(Scrollbar.vertical("ht3-branch-list").absolute().inset_0()))
+      .when(!!this.error, (e) => e.child(div().px(8).text_size(12).line_height("16px").text_color(k.destructiveText).child(this.error)));
   }
 
   render(_cx) {
@@ -602,6 +722,12 @@ export class ProjectMenu {
       .child(div().flex_1().min_w(0).truncate().child(label))
       .when(active, (e) => e.child(icon("check").size(14).flex_none().text_color(k.muted)));
     return v_flex().id("ht3-project").size_full().p(4).bg(k.popover).text_color(k.foreground).text_size(14).overflow_hidden()
+      // In the branch picker the arrows, Enter and Esc go to its list while the filter keeps the typing.
+      .on_key_down((e, cx) => {
+        if (this.pick !== "branch" || e.modifiers?.platform || e.modifiers?.control || e.modifiers?.alt) return;
+        const key = String(e.key ?? "").toLowerCase();
+        if (["up", "down", "enter", "escape"].includes(key)) { this.branchKey(key, cx); cx.stop_propagation?.(); }
+      })
       .child(row("proj-machine", "monitor", this.machine, {
         detail: this.folder ? shortPath(this.folder) : null,
         trail: local && this.folder ? iconButton(k, "proj-folder", "folder-open", (cx) => { closeOverlay(this.overlay); exec("open", [this.folder]).catch(() => {}); }, { tip: "Show the folder in Finder" }) : null,
@@ -618,12 +744,12 @@ export class ProjectMenu {
       .child(div().mx(4).my(4).h(1).flex_none().bg(k.border))
       .child(this.root || this.branch
         ? row("proj-branch", "git-branch", this.branch ?? "No branch", {
-          onClick: (cx) => this.loadBranches(cx),
+          onClick: (cx) => this.toggleBranches(cx),
           on: this.pick === "branch",
           trail: icon(this.pick === "branch" ? "chevron-up" : "chevron-down").size(14).flex_none().text_color(k.muted),
         })
         : row("proj-nobranch", "git-branch", "Not a git repository"))
-      .when(this.pick === "branch", (el) => el.child(this.branches ? list(this.branches.map((b) => sub(`br-${b}`, b, b === this.branch, (cx) => b === this.branch ? (this.pick = null, cx.notify()) : this.switchTo(cx, b)))) : div().px(8).py(6).text_size(12).text_color(k.muted).child(this.busy ? "Loading branches…" : "No branches.")))
+      .when(this.pick === "branch", (el) => el.child(this.branchStep(k)))
       // T3's card ends with the pull request and the changes; here they open the panel's surfaces.
       .when(!!this.root && this.github, (el) => el.child(row("proj-pr", "git-pull-request", "Pull request", {
         onClick: () => { closeOverlay(this.overlay); send("add:pr:a"); },
@@ -639,10 +765,11 @@ export class ProjectMenu {
         const g = this.git, n = (c, w) => `${c} ${w}${c === 1 ? "" : "s"}`;
         const canPush = !!g.remote && !!this.branch && !g.detached && g.behind === 0 && (g.ahead > 0 || !g.upstream);
         const canPr = this.github && !!this.branch && !g.detached && this.branch !== g.base && g.behind === 0;
-        const act = (id, glyph, label, can, detail, onClick, on) => {
-          const r = row(id, glyph, label, { detail, on, onClick: can && !this.busy ? onClick : null });
+        const act = (id, glyph, label, can, detail, onClick, on, trail = null) => {
+          const r = row(id, glyph, label, { detail, on, onClick: can && !this.busy ? onClick : null, trail });
           return can ? r : r.opacity(0.5);
         };
+        const canPull = !!g.upstream && !g.detached;
         // The agent's part of a step: its button, or "Writing…" with Cancel while it runs, and under it who wrote
         // the text or why none was written.
         const writer = (kind, label) => (this.writing?.kind === kind
@@ -661,7 +788,10 @@ export class ProjectMenu {
               .child(writer("commit", "Write message"))
               .child(div().flex_1())
               .child(button(k, "git-commit-go", this.busy ? "…" : "Commit", (cx) => this.commit(cx)))))))
-          .child(act("git-push", "arrow-up", "Push", canPush, g.behind > 0 ? `${g.behind} behind: pull first` : !g.remote ? "no remote" : g.ahead > 0 ? `${n(g.ahead, "commit")} ahead` : !g.upstream ? "no upstream yet" : "up to date", (cx) => this.push(cx), false))
+          // Pull is there while the branch has an upstream; when Push says it is behind, Pull is offered right in its row too.
+          .when(canPull, (e) => e.child(act("git-pull", "arrow-down", "Pull", !this.busy, g.behind > 0 ? `${g.behind} behind` : "fast-forward only", (cx) => this.pull(cx), false)))
+          .child(act("git-push", "arrow-up", "Push", canPush, g.behind > 0 ? `${g.behind} behind: pull first` : !g.remote ? "no remote" : g.ahead > 0 ? `${n(g.ahead, "commit")} ahead` : !g.upstream ? "no upstream yet" : "up to date", (cx) => this.push(cx), false,
+            g.behind > 0 && canPull ? button(k, "git-push-pull", "Pull", (cx) => this.pull(cx), { variant: "outline", disabled: this.busy }) : null))
           .child(act("git-pr", "git-pull-request-arrow", "Create PR", canPr, !this.github ? "no GitHub remote" : this.branch === g.base ? `on ${g.base}` : null, (cx) => { this.step = this.step === "pr" ? null : "pr"; cx.notify(); }, this.step === "pr"))
           .when(this.step === "pr" && canPr, (e) => e.child(v_flex().mx(8).my(4).gap(6)
             .child(div().min_w(0).h(28).px(8).rounded(6).border(1).border_color(k.input).text_size(13).child(Input.new(this.prTitle)))
@@ -695,7 +825,7 @@ export class ProjectMenu {
             .child(button(k, "wt-no", "Cancel", (cx) => { this.step = null; cx.notify(); }, { variant: "outline" }))
             .child(button(k, "wt-yes", this.busy ? "…" : "Remove", (cx) => this.removeWorktree(cx), { variant: "destructive" }))))))
       .when(!!this.note, (el) => el.child(div().px(8).py(6).text_size(12).line_height("16px").text_color(k.successText).child(this.note)))
-      .when(!!this.error, (el) => el.child(div().px(8).py(6).text_size(12).line_height("16px").text_color(k.destructiveText).child(this.error)))
+      .when(!!this.error && this.pick !== "branch", (el) => el.child(div().px(8).py(6).text_size(12).line_height("16px").text_color(k.destructiveText).child(this.error)))
       .child(div().flex_1())
       .child(div().mx(4).my(4).h(1).flex_none().bg(k.border))
       // The servers started from this folder (servers.js): the row opens their dialog.

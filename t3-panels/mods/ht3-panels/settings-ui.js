@@ -7,7 +7,7 @@
 // For scripts and keys, while the dialog is open: `ht3-panels.ui:agent:<id>` flips an agent,
 // `ui:default:<id>` makes it the default, `ui:models:<id>` opens its models, `ui:model:<id>=<model>`
 // flips one model, `ui:allmodels:<id>` goes back to all, `ui:editor:<id>` flips an editor,
-// `ui:side` flips the side panel's start, `ui:close` closes.
+// `ui:side` flips the side panel's start, `ui:diffws` flips Hide whitespace in Diff, `ui:close` closes.
 
 import { div, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
@@ -17,7 +17,7 @@ import { projectOf, scriptsOf, setScripts, toggleSetup } from "./scripts.js";
 import { tokens, alpha, icon, agentMark, button, iconButton, shortPath, badge } from "./look.js";
 import { AGENTS, detect } from "./agent-acp.js";
 import { EDITORS, editors } from "./menus.js";
-import { prefs, agentOn, modelsOf, knownModels, editorOn, sideStartsHidden, firstAgent, setPref, settingsFile, followUp, checkpointsOn, toastsOn, soundsOn } from "./settings.js";
+import { prefs, agentOn, modelsOf, knownModels, editorOn, sideStartsHidden, firstAgent, setPref, settingsFile, followUp, checkpointsOn, toastsOn, soundsOn, diffHidesWhitespace } from "./settings.js";
 
 export const SETTINGS_SIZE = { width: 640, height: 680 };
 
@@ -58,6 +58,7 @@ export class Settings {
     else if (what === "editor") setPref(`editors.${rest}`, editorOn(rest) ? false : undefined);
     else if (what === "side") this.flipSide();
     else if (what === "steer") setPref("followUp", followUp() === "steer" ? undefined : "steer");
+    else if (what === "diffws") setPref("diffIgnoreWhitespace", diffHidesWhitespace() ? false : undefined);
     else if (what === "checkpoints") setPref("checkpoints", checkpointsOn() ? false : undefined);
     else if (what === "notifications") setPref("notifications", toastsOn() ? false : undefined);
     else if (what === "sounds") setPref("sounds", soundsOn() ? undefined : true);
@@ -254,6 +255,9 @@ export class Settings {
             .child(div().flex_1().min_w(0).h(30).px(8).rounded(8).border(1).border_color(k.input).text_size(13).font_family(k.mono).child(Input.new(this.scriptCommand)))
             .when(this.editing != null, (e) => e.child(button(k, "script-cancel", "Cancel", (cx) => { this.editScript(null); cx.notify(); }, { size: "sm", variant: "outline" })))
             .child(button(k, "script-add", this.editing != null ? "Save" : "Add", (cx) => { this.addScript(); cx.notify(); }, { size: "sm", variant: this.editing != null ? "default" : "outline", disabled: !this.scriptName.value().trim() || !this.scriptCommand.value().trim() }))])))
+        .child(this.section(k, "Diff", "How the Diff surface shows changes.",
+          [this.row(icon("pilcrow").size(16).flex_none().text_color(k.muted), "Hide whitespace changes", "Runs every diff and commit view with -w, so lines that only changed in whitespace don't show. Also the pilcrow button in Diff's header.",
+            [this.toggle(k, "set-diff-ws", diffHidesWhitespace(), "Hide whitespace changes", () => setPref("diffIgnoreWhitespace", diffHidesWhitespace() ? false : undefined))])]))
         .child(this.section(k, "Side panel", "How the right panel comes up.",
           [this.row(icon("panel-right").size(16).flex_none().text_color(k.muted), "Start hidden in new spaces", "A space shown for the first time comes up without the side panel.",
             [this.toggle(k, "set-side", sideStartsHidden(), "Start hidden in new spaces", () => this.flipSide())])])))

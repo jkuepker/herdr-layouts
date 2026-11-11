@@ -90,3 +90,16 @@ export function lineSplitter(onLine) {
     }
   };
 }
+
+// A session's options as the chat shows them: the agent's configOptions, or its older "modes" given the same shape.
+// (session.js keeps its own copy of this for the first session; a fresh one in agent-acp.js uses this.)
+export function configFrom(result) {
+  if (result?.configOptions?.length) return result.configOptions;
+  const modes = result?.modes;
+  if (!modes?.availableModes?.length) return [];
+  return [{
+    id: "mode", name: "Mode", category: "mode", type: "select", legacyMode: true,
+    currentValue: modes.currentModeId,
+    options: modes.availableModes.map((m) => ({ value: m.id, name: m.name, description: m.description })),
+  }];
+}

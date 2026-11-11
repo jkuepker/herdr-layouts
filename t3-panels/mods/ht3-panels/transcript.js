@@ -39,6 +39,29 @@ export function addNotice(t, text, level = "info", more = null) {
   push(t, { kind: "notice", text, level, ...(more ?? {}) });
 }
 
+// A session begun anew in the same chat (`/clear`, agent-acp.js freshSession): "New session" as a divider between what
+// was said before and what comes after. The old messages stay above it; the context the agent reports starts over.
+export function freshSession(t) {
+  push(t, { kind: "notice", level: "info", text: "New session", fresh: true });
+  endTurn(t);
+  t.usage = null;
+  t.usageLog = [];
+}
+
+// What a chat shows above its newest "New session" divider (itself included), for a restart that resumes the
+// agent's session: the agent replays only that session, so the older messages are put back above it (carryHead).
+export function freshHead(t) {
+  const at = (t?.items ?? []).findLastIndex((m) => m.kind === "notice" && m.fresh);
+  return at < 0 ? [] : t.items.slice(0, at + 1);
+}
+export function carryHead(t, head) {
+  if (!head?.length) return;
+  const base = Math.max(0, ...head.map((m) => Number(m.id) || 0));
+  for (const m of t.items) m.id = String(Number(m.id) + base);
+  t.nextId = (t.nextId ?? 1) + base;
+  t.items = [...head, ...t.items];
+}
+
 export function applyUpdate(t, u, now = Date.now()) {
   switch (u.sessionUpdate) {
     case "user_message_chunk":

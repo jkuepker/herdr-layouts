@@ -14,6 +14,7 @@
 // - checkpoints (true): in a Git repository a chat snapshots the files before and after each turn (checkpoint.js).
 // - followUp ("queue"): "steer" makes a message sent while the agent works interrupt it.
 // - notifications (true): a toast when a chat that isn't looked at finishes or needs an approval; sounds (false): a sound then.
+// - diffIgnoreWhitespace (true, as T3's): the Diff surface puts -w on every diff and show it runs; false shows whitespace changes.
 // - sidePanelHiddenInNewSpaces (false): a space shown for the first time starts with the side panel hidden.
 // Anything left out is its default; unknown keys are kept as they are.
 
@@ -44,6 +45,8 @@ export const editorOn = (id) => plain(prefs().editors)[id] !== false;
 export const sideStartsHidden = () => prefs().sidePanelHiddenInNewSpaces === true;
 // "checkpoints": false turns the per-turn snapshots (checkpoint.js) off.
 export const checkpointsOn = () => prefs().checkpoints !== false;
+// "diffIgnoreWhitespace": false shows whitespace changes in the Diff surface; the default hides them (T3's diffIgnoreWhitespace).
+export const diffHidesWhitespace = () => prefs().diffIgnoreWhitespace !== false;
 // "notifications": false: no toast when a chat that isn't looked at ends its turn or asks for an approval.
 // "sounds": true: Herdr's done / blocked sound with it (or alone).
 export const toastsOn = () => prefs().notifications !== false;

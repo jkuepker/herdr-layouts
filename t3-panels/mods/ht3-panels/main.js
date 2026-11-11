@@ -36,9 +36,10 @@ import { Usage, USAGE_SIZE } from "./usage.js";
 import { Search, SEARCH_SIZE, showHit, searchOpen } from "./search.js";
 import { Automations, AUTOMATIONS_SIZE, automationsOpen } from "./automations.js";
 import { loadPrefs, setPref, agentOn } from "./settings.js";
-import { SIDE, read, sideShown, bottomShown, reconcile, keep, toggleMax, toggleBottom, toggleSplit, openSurface, openBottom, closeTab, activate, activeSpace, openScript } from "./side.js";
+import { SIDE, read, sideShown, bottomShown, reconcile, keep, toggleMax, toggleBottom, toggleSplit, openSurface, openBottom, closeTab, activate, activeSpace, openScript, reopenClosed } from "./side.js";
 import { pendingScript } from "./scripts.js";
 import { ServersDialog, openServers, serversOpen } from "./servers.js";
+import { WorktreesDialog, openWorktrees, worktreesOpen } from "./worktrees.js";
 
 export { SIDE };
 
@@ -64,6 +65,7 @@ class Buttons {
   // and the pull request surfaces look at for the shown space; pin: with none goes back to the
   // terminal's), settings (the Settings dialog), set:<path>=<json> (one setting, e.g.
   // set:agents.pi.enabled=false; set:<path> alone goes back to its default), earlier (the earlier chats, to search and reopen).
+  // The open Project popover (menus.js) takes git:pull, branches, branch:<name>, branch:new:<name>, branch:filter:<text>, key:<key>.
   command(c, cx) {
     const [name, a, b] = c.split(":");  // (pin keeps its whole path)
     const fail = (e) => console.log(`ht3-panels.${c}: ${String(e?.message ?? e)}`);
@@ -71,7 +73,8 @@ class Buttons {
     else if (name === "activate") activate(a, b);
     else if (name === "close") cx.spawn(async (cx) => { try { await closeTab(a, b); } catch (e) { fail(e); } cx.notify(); });
     else if (name === "split") cx.spawn(async (cx) => { try { await toggleSplit(); } catch (e) { fail(e); } cx.notify(); });
-    else if (name === "chat") cx.spawn(async (cx) => { const d = await detect(activeSpace()?.machine ?? null); if (agentOn(a)) beginChat(b ?? "a", a, d.found); cx.notify(); });
+    // chat:effort-up and the other composer keys belong to the chat (chat.js), not a side chat start.
+    else if (name === "chat" && !/^(effort-up|effort-down|mode|model)$/.test(a ?? "")) cx.spawn(async (cx) => { const d = await detect(activeSpace()?.machine ?? null); if (agentOn(a)) beginChat(b ?? "a", a, d.found); cx.notify(); });
     else if (name === "settings") openSettings();
     else if (name === "set") {
       const rest = c.slice(4), at = rest.indexOf("=");
@@ -102,6 +105,11 @@ class Buttons {
     // servers: the servers started from the shown space's folder, as a dialog (servers.js); servers:<folder> for that folder.
     // Again while it is open closes it (the dialog does that itself).
     else if (name === "servers") { if (!serversOpen()) openServers(c.slice(8)); }
+    // worktrees: the repository's worktrees to clean up, as a dialog (worktrees.js); worktrees:<folder> for that folder's repository.
+    // Again while it is open closes it (the dialog does that itself).
+    else if (name === "worktrees") { if (!worktreesOpen()) openWorktrees(c.slice(10)); }
+    // reopen-closed: brings back the newest closed side-panel surface, file or chat tab (side.js reopenClosed; T3's mod+shift+t).
+    else if (c === "reopen-closed") cx.spawn(async (cx) => { try { await reopenClosed(cx); } catch (e) { fail(e); } cx.notify(); });
     else if (name === "menu") openOverlay({ mod: MOD, kind: "popup", at: { x: 900, y: 48 }, width: a === "project" ? 344 : ADD_MENU.w, height: a === "project" ? 660 : ADD_MENU.h, props: { menu: a, group: b ?? "a" } });
     cx.notify();
   }
@@ -140,7 +148,7 @@ export default class T3Panels extends View {
   init(_props, cx) {
     const p = props() ?? {};
     this.face = p.overlay
-      ? p.menu === "add" ? new AddMenu() : p.menu === "project" ? new ProjectMenu() : p.menu === "settings" ? new Settings() : p.menu === "usage" ? new Usage() : p.menu === "search" ? new Search() : p.menu === "servers" ? new ServersDialog() : p.menu === "copy" ? new CopyMenu() : p.menu === "thread" ? new ThreadMenu() : p.menu === "revert" ? new RevertMenu() : p.menu === "prchat" ? new PrChatDialog() : p.menu === "automations" ? new Automations() : new Launcher()
+      ? p.menu === "add" ? new AddMenu() : p.menu === "project" ? new ProjectMenu() : p.menu === "settings" ? new Settings() : p.menu === "usage" ? new Usage() : p.menu === "search" ? new Search() : p.menu === "servers" ? new ServersDialog() : p.menu === "worktrees" ? new WorktreesDialog() : p.menu === "copy" ? new CopyMenu() : p.menu === "thread" ? new ThreadMenu() : p.menu === "revert" ? new RevertMenu() : p.menu === "prchat" ? new PrChatDialog() : p.menu === "automations" ? new Automations() : new Launcher()
       : (FACES[p.panel] ?? (() => new ChatPanel()))();
     this.face.init(p, cx);
     // Key commands from keys.json's "mod:ht3-panels" section (save), and "focus" from pane.go.

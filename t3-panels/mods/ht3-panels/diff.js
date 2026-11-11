@@ -2,7 +2,10 @@
 // status, its +/- counts and its hunks, the lines tinted green and red and colored with T3 Code's
 // code colors. Files are collapsible; new (untracked) files show as added. What is compared is the
 // header's choice: Changes (the working tree against the merge base with the default branch),
-// Uncommitted (against HEAD), or one turn of a chat (its two checkpoints).
+// Uncommitted (against HEAD), one turn of a chat (its two checkpoints), or one Commit of this branch
+// (picked from a list of the recent ones shown in the panel itself, with Prev and Next arrows).
+// Hide whitespace (the pilcrow button, setting "diffIgnoreWhitespace", on as T3's is) puts -w on every
+// diff and show the panel runs; a file left with nothing says it was only whitespace.
 //
 // Runs git in the repository of the shown space's folder: `git diff <base or HEAD>`, and for
 // untracked files `git diff --no-index /dev/null <file>`. Reads only. The listing follows the
@@ -17,13 +20,22 @@ import { tokens, alpha, icon, iconButton, button } from "./look.js";
 import { fileIcon } from "./fileicons.js";
 import { activeSpace, placeOf, showing } from "./side.js";
 import { syntax } from "./editor.js";
-import { prefs, setPref } from "./settings.js";
+import { prefs, setPref, diffHidesWhitespace } from "./settings.js";
 
 const MAX_FILES = 200, MAX_LINES_FILE = 1500, MAX_ROWS = 12000, MAX_UNTRACKED = 40;
 // The default branch's ref and the merge base with it, as "<ref> <sha>"; nothing when there is none.
 const BASE = 'b=$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null); for c in "$b" origin/main origin/master main master; do [ -n "$c" ] && m=$(git merge-base HEAD "$c" 2>/dev/null) && [ -n "$m" ] && echo "$c $m" && break; done; true';
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
-const UNTRACKED = `git ls-files -o --exclude-standard | head -n ${MAX_UNTRACKED} | while IFS= read -r f; do [ -f "$f" ] && [ "$(wc -c < "$f")" -lt 200000 ] && git diff --no-index --no-color -U3 -- /dev/null "$f"; done; true`;
+const untracked = (ws) => `git ls-files -o --exclude-standard | head -n ${MAX_UNTRACKED} | while IFS= read -r f; do [ -f "$f" ] && [ "$(wc -c < "$f")" -lt 200000 ] && git diff --no-index --no-color -U3 ${ws ? "-w " : ""}-- /dev/null "$f"; done; true`;
+const COMMITS = 50;
+// The commit list: one commit a line, fields parted by the unit separator (the subject has no newline).
+export const COMMIT_FORMAT = "--format=%H%x1f%h%x1f%s%x1f%an%x1f%ar%x1f%P";
+const GIT = ["--no-optional-locks", "-c", "core.fsmonitor=false"];
+// What the panel runs for a commit (`git show`): no header, a merge against its first parent (a combined diff is
+// not something parseDiff reads), a root commit as everything added. -w when whitespace is hidden.
+export const showArgs = (hash, ws, extra = []) => [...GIT, "show", "--no-color", "--no-ext-diff", "--format=", "--first-parent", "-m", "--find-renames", ...extra, ...(ws ? ["-w"] : []), hash, "--"];
+// Hash or position: "3" is the 4th commit of the list (0 is the newest), anything longer is a hash or a ref.
+export const isIndex = (s) => /^\d{1,3}$/.test(s);
 
 // ---- a unified diff, parsed ----
 
@@ -58,6 +70,27 @@ export function parseDiff(text) {
     }
   }
   return files;
+}
+
+// ---- a commit list, parsed ----
+
+// `git log` in COMMIT_FORMAT: [{ hash, short, subject, author, date, merge }].
+export function parseCommits(text) {
+  const out = [];
+  for (const line of String(text ?? "").split("\n")) {
+    const f = line.split("\x1f");
+    if (f.length < 6 || !/^[0-9a-f]{7,64}$/.test(f[0])) continue;
+    out.push({ hash: f[0], short: f[1], subject: f[2], author: f[3], date: f[4], merge: f[5].trim().split(/\s+/).filter(Boolean).length > 1 });
+  }
+  return out;
+}
+
+// Files `git diff -w` left out of its output because only whitespace changed: the ones the same diff without -w
+// names and the parsed one doesn't, as files with no hunks (marked wsOnly), in path order with the rest.
+export function withWhitespaceOnly(files, names) {
+  const have = new Set(files.map((f) => f.path)), extra = [];
+  for (const path of names) if (path && !have.has(path)) { have.add(path); extra.push({ path, old: null, status: "M", add: 0, del: 0, binary: false, hunks: [], lines: 0, cut: false, wsOnly: true }); }
+  return extra.length ? [...files, ...extra].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)) : files;
 }
 
 // ---- a small highlighter: comments, strings, numbers, keywords, types, calls ----
@@ -145,7 +178,8 @@ export function pickedAt(files, picked, pickedTo = null) {
 const where = (at) => (at.from === at.to ? `line ${at.from}` : `lines ${at.from}-${at.to}`);
 // The picked lines as the block the chat's message box gets: where they are, one fenced diff with each hunk's
 // header before its lines (at most `max` lines), then the comment.
-export function quoteText(at, note = "", max = 80) {
+// `commit` ("abc1234 subject"): the lines are from that commit, not the working tree.
+export function quoteText(at, note = "", max = 80, commit = null) {
   const out = [];
   let left = max;
   for (const part of at.parts) {
@@ -154,11 +188,29 @@ export function quoteText(at, note = "", max = 80) {
     left -= part.lines.length;
   }
   const fence = out.some((l) => l.includes("```")) ? "````" : "```";
-  return [`In \`${at.path}\` (${where(at)}):`, `${fence}diff`, ...out, ...(at.lines.length > max ? [`… ${at.lines.length - max} more lines`] : []), fence, note.trim()].filter((l) => l !== "").join("\n");
+  return [`In \`${at.path}\` (${where(at)}${commit ? `, commit ${commit}` : ""}):`, `${fence}diff`, ...out, ...(at.lines.length > max ? [`… ${at.lines.length - max} more lines`] : []), fence, note.trim()].filter((l) => l !== "").join("\n");
 }
 
 // Narrower than this, Split shows as Unified: two columns of code don't fit.
 export const SPLIT_MIN = 640;
+
+// The picker's list element.
+function list_(commits, k, shown, pick) {
+  return list("ht3-diff-commit-rows", commits.length, (i) => commits[i].hash, (i) => {
+    const c = commits[i], on = c.hash === shown;
+    return h_flex().h(44).w_full().px(16).gap(10).items_center().overflow_hidden().border_b(1).border_color(alpha(k.border, 0.4)).cursor_pointer()
+      .bg(on ? alpha(k.accent, 0.6) : "#00000000").hover((s) => s.bg(k.accent))
+      .child(v_flex().flex_1().min_w(0).gap(2)
+        .child(h_flex().gap(6).items_center().min_w(0)
+          .child(div().min_w(0).truncate().text_size(13).font_medium().child(c.subject || "(no message)"))
+          .when(c.merge, (e) => e.child(div().flex_none().text_size(11).text_color(k.muted).child("merge"))))
+        .child(h_flex().gap(8).items_center().min_w(0).text_size(11).text_color(k.muted)
+          .child(div().flex_none().font_family(k.mono).child(c.short))
+          .child(div().min_w(0).truncate().child(c.author))
+          .child(div().flex_none().child(c.date))))
+      .when(on, (e) => e.child(icon("check").size(14).flex_none().text_color(k.muted)));
+  }).on_item_click((id, cx) => pick(id, cx));
+}
 
 const extOf = (path) => (path.includes(".") ? path.split(".").pop().toLowerCase() : "");
 
@@ -176,6 +228,13 @@ export class DiffPanel {
     // the Project popover counts), "unstaged" its Uncommitted (the working tree against HEAD).
     this.scope = "branch";
     this.base = null; // the ref Changes compares with
+    // Commit scope: the commit shown ({ hash, short, subject, author, date, merge }), the recent commits of this branch
+    // (null until read), and whether the picker (a list of them, in place of the files) is open.
+    this.commit = null;
+    this.commits = null;
+    this.picking = false;
+    this.commitNote = null; // why a commit could not be chosen
+    this.usedSig = null; // what the files shown were run for (scope, commit, whitespace)
     this.pick = false;
     this.watched = null;
     this.more = 0;
@@ -192,12 +251,17 @@ export class DiffPanel {
     this.note.on("change", (_e, cx) => cx.notify());
     this.note.on("submit", (_e, cx) => this.quote(cx));
     this.follow(cx);
-    cx.timer.every(15000, (cx) => this.refresh(cx));
+    cx.timer.every(15000, (cx) => this.refresh(cx, true));
   }
   close() {}
   // `ht3-panels.scope:branch|unstaged`: what the Diff compares, as its header's menu, for scripts and the popover.
   command(c, cx) {
     if (c === "scope:branch" || c === "scope:unstaged" || (c === "scope:turn" && this.turn)) this.setScope(cx, c.slice(6));
+    // commit:<n> shows the nth recent commit of this branch (0 the newest), commit:<hash> any commit (a hash or ref),
+    // commit:prev and commit:next go one older or newer, commit:list opens the picker.
+    // ws:on hides whitespace changes (-w), ws:off shows them, ws:toggle flips it.
+    if (c.startsWith("commit:")) this.commitCommand(cx, c.slice(7));
+    if (c === "ws:on" || c === "ws:off" || c === "ws:toggle") this.setWhitespace(cx, c === "ws:toggle" ? !diffHidesWhitespace() : c === "ws:on");
     // hunk:<n> picks the nth hunk shown (from 0; hunk: lets go of it), comment:<text> sends it to the chat with that comment.
     // diffline:<n> picks the nth diff line shown (from 0, counted as Unified lists them, in either view), as a click on
     // its +; diffline:<a>-<b> picks a and Shift-clicks b (a range, in one file); diffline: lets go.
@@ -248,7 +312,7 @@ export class DiffPanel {
     const at = this.hunkAt(), tab = focused()?.tab, places = shared("ht3-panels.places") ?? {};
     if (!at) return;
     if (!Object.values(places).some((p) => p.tab === tab)) { this.said = "The shown tab isn't a chat: show the chat this is for, then add it."; return cx.notify(); }
-    setShared("ht3-panels.quote", { tab, text: quoteText(at, this.note.value()), at: Date.now() });
+    setShared("ht3-panels.quote", { tab, text: quoteText(at, this.note.value(), 80, this.scope === "commit" && this.commit ? `${this.commit.short} "${this.commit.subject.slice(0, 60)}"` : null), at: Date.now() });
     this.picked = null;
     this.pickedTo = null;
     this.note.set_value("");
@@ -264,8 +328,87 @@ export class DiffPanel {
   }
   setScope(cx, scope) {
     this.pick = false;
-    if (scope !== this.scope) { this.scope = scope; this.files = null; this.refresh(cx); }
+    this.picking = false;
+    if (scope !== this.scope) { this.scope = scope; this.files = null; this.picked = null; this.pickedTo = null; this.refresh(cx); }
     cx.notify();
+  }
+  // The header's Hide whitespace toggle; the setting is on unless it is false. The next render sees the change in
+  // `sig()` and runs the diff again.
+  setWhitespace(cx, hide) {
+    if (hide !== diffHidesWhitespace()) setPref("diffIgnoreWhitespace", hide ? undefined : false);
+    cx.notify();
+  }
+  sig() { return `${this.scope}|${this.scope === "commit" ? this.commit?.hash ?? "" : ""}|${diffHidesWhitespace() ? "w" : ""}`; }
+
+  // ---- Commit scope ----
+  // The recent commits of HEAD's branch, newest first.
+  loadCommits(cx) {
+    const root = this.root, on = this.on;
+    if (!root) return Promise.resolve([]);
+    return exec("git", [...GIT, "log", "-n", String(COMMITS), COMMIT_FORMAT], { cwd: root, on }).then((r) => {
+      if (this.root !== root) return this.commits ?? [];
+      this.commits = r.code === 0 ? parseCommits(r.stdout) : [];
+      if (r.code !== 0) this.commitNote = r.stderr.trim().split("\n")[0] || "git log failed";
+      cx.notify();
+      return this.commits;
+    }).catch((e) => { this.commitNote = String(e?.message ?? e); this.commits = []; cx.notify(); return []; });
+  }
+  // The picker step: the list shows in place of the files, read again each time it opens.
+  openPicker(cx) {
+    this.pick = false;
+    this.picking = true;
+    this.picked = null;
+    this.pickedTo = null;
+    this.commitNote = null;
+    this.loadCommits(cx);
+    cx.notify();
+  }
+  closePicker(cx) { this.picking = false; cx.notify(); }
+  // One commit of the list, or by its hash or ref (an old one the list doesn't reach).
+  async chooseCommit(cx, ref) {
+    ref = String(ref ?? "").trim();
+    this.commitNote = null;
+    if (!ref || ref.startsWith("-")) { this.commitNote = "No such commit."; return cx.notify(); }
+    let info = null;
+    if (isIndex(ref)) {
+      const list = this.commits ?? await this.loadCommits(cx);
+      info = list[Number(ref)] ?? null;
+    } else {
+      info = (this.commits ?? []).find((c) => c.hash.startsWith(ref)) ?? null;
+      if (!info && this.root) {
+        const r = await exec("git", [...GIT, "log", "-n", "1", COMMIT_FORMAT, ref, "--"], { cwd: this.root, on: this.on }).catch(() => null);
+        info = r?.code === 0 ? parseCommits(r.stdout)[0] ?? null : null;
+      }
+    }
+    if (!info) { this.commitNote = `No commit ${ref}.`; return cx.notify(); }
+    this.setCommit(cx, info);
+  }
+  setCommit(cx, info) {
+    const was = this.scope;
+    this.pick = false;
+    this.picking = false;
+    this.commit = info;
+    this.scope = "commit";
+    this.picked = null;
+    this.pickedTo = null;
+    this.said = null;
+    // Another scope's files must not stand in for the commit's; from one commit to the next they stay until it is read.
+    if (was !== "commit") this.files = null;
+    if (!this.commits) this.loadCommits(cx);
+    this.refresh(cx);
+    cx.notify();
+  }
+  // Prev is the older commit (further down the list), Next the newer; null at either end or for a commit the list doesn't hold.
+  neighbour(by) {
+    const i = (this.commits ?? []).findIndex((c) => c.hash === this.commit?.hash);
+    return i < 0 ? null : this.commits[i + by] ?? null;
+  }
+  commitCommand(cx, arg) {
+    if (arg === "list" || arg === "") this.openPicker(cx);
+    else if (arg === "prev" || arg === "next") {
+      const go = () => { const n = this.neighbour(arg === "prev" ? 1 : -1); if (n) this.setCommit(cx, n); };
+      if (this.commits) go(); else this.loadCommits(cx).then(go);
+    } else this.chooseCommit(cx, arg);
   }
 
   // The repository of the shown space's folder.
@@ -276,6 +419,10 @@ export class DiffPanel {
     this.seen = key;
     this.files = null;
     this.error = null;
+    this.commits = null;
+    this.commit = null;
+    this.picking = false;
+    if (this.scope === "commit") this.scope = "branch";
     cx.spawn(async (cx) => {
       const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd: where.cwd, on: where.on }).catch(() => null);
       if (this.seen !== key) return;
@@ -297,25 +444,48 @@ export class DiffPanel {
       try {
         while (this.watched === root) {
           await watchFolder(root);
-          if (this.root === root) this.refresh(cx);
+          if (this.root === root) this.refresh(cx, true);
         }
       } catch { if (this.watched === root) this.watched = null; }
     });
   }
 
   // Runs git only while the tab shows; back in view, at once.
-  refresh(cx) {
+  // `auto`: the timer's or the folder watch's; a commit doesn't change under them, so it isn't read again.
+  refresh(cx, auto = false) {
     if (this.loading || !(this.root || (this.scope === "turn" && this.turn))) return;
+    if (auto && this.scope === "commit" && this.files && this.usedSig === this.sig()) return;
+    if (this.scope === "commit" && !this.commit) return;
     if (!showing(this.group, "diff")) { this.stale = true; return; }
     this.stale = false;
-    const scope = this.scope, turn = scope === "turn" ? this.turn : null;
+    const scope = this.scope, turn = scope === "turn" ? this.turn : null, commit = scope === "commit" ? this.commit : null;
+    const ws = diffHidesWhitespace(), sig = this.sig();
     const root = turn ? turn.root : this.root, on = turn ? turn.on ?? undefined : this.on;
     this.loading = true;
     cx.spawn(async (cx) => {
       // What this run found is dropped when the scope or the folder changed meanwhile: then it runs again.
       let used = false;
       try {
-        const flags = ["--no-optional-locks", "-c", "core.fsmonitor=false", "diff", "--no-color", "--no-ext-diff", "-U3", "--find-renames"];
+        const flags = [...GIT, "diff", "--no-color", "--no-ext-diff", "-U3", "--find-renames", ...(ws ? ["-w"] : [])];
+        // Without -w, the same diff by name: git leaves a file whose only change is whitespace out of the -w one.
+        const names = async (args) => {
+          if (!ws) return [];
+          const n = await exec("git", args, { cwd: root, on }).catch(() => null);
+          return n?.code === 0 ? n.stdout.split("\n").map((x) => x.replace(/\r$/, "")).filter(Boolean) : [];
+        };
+        if (commit) {
+          const r = await exec("git", showArgs(commit.hash, ws, ["-U3"]), { cwd: root, on });
+          if (r.code !== 0) throw new Error(r.stderr.trim().split("\n")[0] || "git show failed");
+          const files = withWhitespaceOnly(parseDiff(r.stdout), await names(showArgs(commit.hash, false, ["--name-only"])));
+          if (this.root === root && this.scope === scope && this.commit?.hash === commit.hash) {
+            this.files = files.slice(0, MAX_FILES);
+            this.more = files.length - this.files.length;
+            this.error = null;
+            this.usedSig = sig;
+            used = true;
+          }
+          return;
+        }
         let from = "HEAD", base = null;
         if (scope === "branch") {
           const b = await exec("sh", ["-c", BASE], { cwd: root, on }).catch(() => null);
@@ -323,11 +493,13 @@ export class DiffPanel {
           if (sha) { from = sha; base = ref; }
         }
         let r = await exec("git", turn ? [...flags, turn.from, turn.to] : [...flags, from], { cwd: root, on });
-        if (r.code !== 0 && !turn) r = await exec("git", [...flags, EMPTY_TREE], { cwd: root, on });
+        let at = turn ? [turn.from, turn.to] : [from];
+        if (r.code !== 0 && !turn) { r = await exec("git", [...flags, EMPTY_TREE], { cwd: root, on }); at = [EMPTY_TREE]; }
         if (r.code !== 0) throw new Error(r.stderr.trim().split("\n")[0] || "git diff failed");
-        const extra = turn ? null : await exec("sh", ["-c", UNTRACKED], { cwd: root, on, timeout: 20000 }).catch(() => null);
-        const files = parseDiff(r.stdout + "\n" + (extra?.stdout ?? ""));
+        const extra = turn ? null : await exec("sh", ["-c", untracked(ws)], { cwd: root, on, timeout: 20000 }).catch(() => null);
+        const files = withWhitespaceOnly(parseDiff(r.stdout + "\n" + (extra?.stdout ?? "")), await names([...GIT, "diff", "--name-only", "--find-renames", ...at]));
         if ((turn ? this.turn === turn : this.root === root) && this.scope === scope) {
+          this.usedSig = sig;
           this.base = base;
           this.files = files.slice(0, MAX_FILES);
           this.more = files.length - this.files.length;
@@ -347,6 +519,7 @@ export class DiffPanel {
       rows.push({ id: `f:${f.path}`, kind: "file", f, open });
       if (!open) continue;
       if (f.binary) rows.push({ id: `b:${f.path}`, kind: "note", text: "Binary file not shown." });
+      else if (!f.hunks.length) rows.push({ id: `e:${f.path}`, kind: "note", text: f.wsOnly ? "Only whitespace changed here, and whitespace changes are hidden." : "No content changes." });
       f.hunks.forEach((h, hi) => {
         rows.push({ id: `h:${f.path}:${hi}`, kind: "hunk", h });
         if (split) pairLines(h.lines).forEach((p, pi) => rows.push({ id: `p:${f.path}:${hi}:${pi}`, kind: "pair", L: p.L, R: p.R, path: f.path, hi, ext: extOf(f.path) }));
@@ -421,6 +594,21 @@ export class DiffPanel {
     return c ? `l:${r.path}:${r.hi}:${c.li}` : null;
   }
 
+  // The commit list, 44px rows: the subject, then the short hash, author and relative date; the shown commit is ticked.
+  commitPicker(k) {
+    const list = this.commits;
+    const head = h_flex().h(32).flex_none().px(16).gap(8).items_center().border_b(1).border_color(alpha(k.border, 0.6)).text_size(12).text_color(k.muted)
+      .child(div().flex_1().min_w(0).truncate().child(list == null ? "Reading the commits…" : list.length ? `The last ${list.length} commit${list.length === 1 ? "" : "s"} on this branch` : "No commits yet."))
+      .child(button(k, "diff-commit-close", "Close", (cx) => this.closePicker(cx), { variant: "ghost-muted" }));
+    const body = !list?.length ? div().flex_1() : v_flex().id("ht3-diff-commits").relative().flex_1().min_h(0)
+      .child(list_(list, k, this.scope === "commit" ? this.commit?.hash : null, (id, cx) => this.chooseCommit(cx, id)))
+      .child(Scrollbar.vertical("ht3-diff-commit-rows").absolute().inset_0());
+    return v_flex().flex_1().min_h(0)
+      .child(head)
+      .when(!!this.commitNote, (el) => el.child(div().px(16).py(4).text_size(11).text_color(k.destructiveText).child(this.commitNote)))
+      .child(body);
+  }
+
   render(cx) {
     this.follow(cx);
     // A chat's "View diff" on a turn (chat.js turnDiff): that turn's two snapshots, as a third scope.
@@ -430,32 +618,36 @@ export class DiffPanel {
       this.turnSeen = turn.at;
       if (Date.now() - turn.at < 15000) { this.turn = turn; this.scope = "turn"; this.files = null; this.stale = true; }
     }
+    if (this.files && this.usedSig && this.usedSig !== this.sig()) this.stale = true; // whitespace was switched elsewhere (Settings, a script)
     if (this.stale) this.refresh(cx);
     const k = tokens(), colors = syntax();
     const root = v_flex().id("ht3-diff").size_full().min_h(0).bg(k.background).text_color(k.foreground).text_size(12)
       .on_size_change((size, cx) => { if (Math.abs((this.width ?? 0) - size.width) >= 1) { this.width = size.width; cx.notify(); } })
       // Esc lets go of what is picked (the comment field has the focus while something is).
-      .on_key_down((e, cx) => { if (e.key === "escape" && this.picked) this.pickHunk(cx, null); })
+      .on_key_down((e, cx) => { if (e.key === "escape" && this.picking) this.closePicker(cx); else if (e.key === "escape" && this.picked) this.pickHunk(cx, null); })
       .on_modifiers_changed((e) => { this.shift = !!e.modifiers?.shift; });
     const say = (text, color = k.muted) => root.child(v_flex().flex_1().items_center().justify_center().px(24).gap(8).text_size(12).text_color(color).child(text));
     if (!this.seen) return say("No folder: focus a terminal to see its changes.");
-    if (this.error && !this.files?.length) return say(this.error);
-    if (!this.files) return say("Looking at the changes…");
-    const files = this.files;
+    if (this.error && !this.files?.length && !this.picking) return say(this.error);
+    if (!this.files && !this.picking) return say(this.scope === "commit" && this.commit ? `Reading ${this.commit.short}…` : "Looking at the changes…");
+    const files = this.files ?? [];
     const add = files.reduce((n, f) => n + f.add, 0), del = files.reduce((n, f) => n + f.del, 0);
     const view = this.view(), split = this.split(), narrow = view === "split" && !split;
     const rows = files.length ? this.rows(split) : [];
     const byId = split ? new Map(rows.filter((r) => r.kind === "pair").map((r) => [r.id, r])) : null;
     const allShut = files.length > 0 && files.every((f) => this.shut.has(f.path));
     const picked = this.hunkAt();
+    const hideWs = diffHidesWhitespace();
+    const scopeLabel = this.scope === "branch" ? "Changes" : this.scope === "turn" ? "This turn" : this.scope === "commit" ? "Commit" : "Uncommitted";
+    const older = this.scope === "commit" ? this.neighbour(1) : null, newer = this.scope === "commit" ? this.neighbour(-1) : null;
     return root
       .child(h_flex().h(40).flex_none().px(16).gap(8).items_center().border_b(1).border_color(alpha(k.border, 0.6))
         .child(icon("file-diff").size(14).flex_none().text_color(k.muted))
         // T3's scope menu: Changes (the branch against its base) or Uncommitted.
         .child(h_flex().id("diff-scope").h(24).px(6).ml(-6).gap(4).flex_none().items_center().rounded(6).font_medium().text_size(13).cursor_pointer()
-          .role("button").accessibility_label(`Showing ${this.scope === "branch" ? "Changes" : this.scope === "turn" ? "This turn" : "Uncommitted"}. Change what is compared`)
+          .role("button").accessibility_label(`Showing ${scopeLabel}. Change what is compared`)
           .hover((s) => s.bg(k.accent)).on_click((_e, cx) => { this.pick = !this.pick; cx.notify(); })
-          .child(this.scope === "branch" ? "Changes" : this.scope === "turn" ? "This turn" : "Uncommitted")
+          .child(scopeLabel)
           .child(icon(this.pick ? "chevron-up" : "chevron-down").size(12).flex_none().text_color(k.muted)))
         .when(this.scope === "turn" && !!this.turn?.label, (el) => el.child(div().flex_none().max_w(160).truncate().text_size(12).text_color(k.muted).tooltip("What the agent changed while it answered this message").child(`“${this.turn.label}”`)))
         .when(this.scope === "branch" && !!this.base, (el) => el.child(div().flex_none().max_w(140).truncate().text_size(12).font_family(k.mono).text_color(k.muted).tooltip(`Compared with the merge base with ${this.base}`).child(this.base)))
@@ -463,6 +655,8 @@ export class DiffPanel {
           .child(files.length ? `${files.length} file${files.length === 1 ? "" : "s"} changed` : "No changes"))
         .when(files.length > 0, (el) => el.child(h_flex().flex_none().gap(6).mr(4).font_family(k.mono).text_size(11)
           .child(div().text_color(k.successText).child(`+${add}`)).child(div().text_color(k.destructiveText).child(`−${del}`))))
+        // T3's Hide whitespace (a pilcrow): -w on every diff the panel runs.
+        .child(iconButton(k, "diff-whitespace", "pilcrow", (cx) => this.setWhitespace(cx, !hideWs), { size: "sm", on: hideWs, tip: hideWs ? "Show whitespace changes" : "Hide whitespace changes" }))
         // T3's layout toggle (its Stacked and Split): one column, or old beside new.
         .child(h_flex().flex_none().gap(2)
           .child(iconButton(k, "diff-unified", "rows-3", (cx) => this.setView(cx, "unified"), { size: "sm", on: view === "unified", tip: "Unified: one column" }))
@@ -474,16 +668,29 @@ export class DiffPanel {
           cx.notify();
         }, { size: "sm", tip: allShut ? "Expand all files" : "Collapse all files" }))
         .child(iconButton(k, "diff-refresh", "refresh-cw", (cx) => this.refresh(cx), { size: "sm", tip: this.loading ? "Refreshing…" : "Refresh" })))
+      // Commit scope: which commit (its subject, hash and where it is in the list), with Prev (older) and Next (newer).
+      .when(this.scope === "commit" && !!this.commit, (el) => el.child(h_flex().h(32).flex_none().px(16).gap(8).items_center().border_b(1).border_color(alpha(k.border, 0.6))
+        .child(icon("git-commit-horizontal").size(14).flex_none().text_color(k.muted))
+        .child(div().id("diff-commit-title").flex_1().min_w(0).truncate().text_size(13).font_medium().cursor_pointer().tooltip(`${this.commit.subject}\n${this.commit.author}, ${this.commit.date}. Pick another commit`)
+          .on_click((_e, cx) => (this.picking ? this.closePicker(cx) : this.openPicker(cx))).child(this.commit.subject))
+        .when(this.commit.merge, (e) => e.child(div().flex_none().text_size(11).text_color(k.muted).tooltip("A merge: shown against its first parent").child("merge")))
+        .child(div().flex_none().text_size(12).font_family(k.mono).text_color(k.muted).tooltip(this.commit.hash).child(this.commit.short))
+        .when(this.loading, (e) => e.child(div().flex_none().text_size(11).text_color(k.muted).child("Loading…")))
+        .child(h_flex().flex_none().gap(2)
+          .child(iconButton(k, "diff-commit-prev", "chevron-left", (cx) => { if (older) this.setCommit(cx, older); }, { size: "sm", tip: older ? `Older: ${older.short} ${older.subject}` : "No older commit in the list" }).when(!older, (e) => e.opacity(0.4)))
+          .child(iconButton(k, "diff-commit-next", "chevron-right", (cx) => { if (newer) this.setCommit(cx, newer); }, { size: "sm", tip: newer ? `Newer: ${newer.short} ${newer.subject}` : "No newer commit in the list" }).when(!newer, (e) => e.opacity(0.4))))))
       .when(this.pick, (el) => el.child(v_flex().mx(10).my(4).p(4).w(200).flex_none().rounded(8).border(1).border_color(k.border).bg(k.popover).shadow_lg()
-        .children([["branch", "Changes", "The branch against its base"], ["unstaged", "Uncommitted", "The working tree against HEAD"], ...(this.turn ? [["turn", "This turn", "What the agent changed in one turn of a chat"]] : [])].map(([id, label, about]) =>
+        .children([["branch", "Changes", "The branch against its base"], ["unstaged", "Uncommitted", "The working tree against HEAD"], ["commit", "Commit…", "One of the recent commits on this branch"], ...(this.turn ? [["turn", "This turn", "What the agent changed in one turn of a chat"]] : [])].map(([id, label, about]) =>
           h_flex().id(`diff-scope-${id}`).h(28).px(8).gap(8).flex_none().items_center().rounded(6).text_size(13).cursor_pointer()
             .role("button").accessibility_label(`${label}: ${about}`).tooltip(about).hover((s) => s.bg(k.accent))
-            .on_click((_e, cx) => this.setScope(cx, id))
+            .on_click((_e, cx) => (id === "commit" ? this.openPicker(cx) : this.setScope(cx, id)))
             .child(div().flex_1().child(label))
             .when(this.scope === id, (e) => e.child(icon("check").size(14).flex_none().text_color(k.muted)))))))
       .when(!!this.error, (el) => el.child(div().px(12).py(4).text_size(11).text_color(k.destructiveText).child(this.error)))
-      .when(!files.length, (el) => el.child(v_flex().flex_1().items_center().justify_center().text_color(k.muted).child(this.scope === "branch" ? `Nothing changed against ${this.base ?? "the base"}.` : this.scope === "turn" ? "That turn changed no files." : "The working tree matches HEAD.")))
-      .when(files.length > 0, (el) => el.child(v_flex().id("ht3-diff-list").relative().flex_1().min_h(0)
+      // The picker step: the recent commits of this branch in place of the files; a click shows one.
+      .when(this.picking, (el) => el.child(this.commitPicker(k)))
+      .when(!files.length && !this.picking, (el) => el.child(v_flex().flex_1().items_center().justify_center().text_color(k.muted).child(this.scope === "branch" ? `Nothing changed against ${this.base ?? "the base"}.` : this.scope === "turn" ? "That turn changed no files." : this.scope === "commit" ? "That commit changed no files." : "The working tree matches HEAD.")))
+      .when(files.length > 0 && !this.picking, (el) => el.child(v_flex().id("ht3-diff-list").relative().flex_1().min_h(0)
         // The list's click handler gets the row only: the press before it says whether Shift is held and, for Split, which half.
         .on_mouse_down("left", (e) => {
           this.shift = !!e.modifiers?.shift;

@@ -44,6 +44,8 @@ const NAMED = [
   ["ht3-panels.search", {}, "T3", "Search in project files…", "find grep text regex content"],
   ["ht3-panels.prChat", {}, "T3", "Start chat from pull request…", "pr github review worktree"],
   ["ht3-panels.servers", {}, "T3", "Servers this project started", "ports listening localhost dev server stop"],
+  ["ht3-panels.worktrees", {}, "T3", "Worktrees: clean up…", "git branch merged dirty remove delete prune checkout"],
+  ["ht3-panels.reopen-closed", {}, "T3", "Reopen closed panel", "undo restore side panel file diff browser chat tab closed"],
   ["ht3-panels.automations", {}, "T3", "Automations of this project…", "schedule cron nightly routine run now luau herdr-automate"],
   ["ht3-panels.settings", {}, "T3", "T3 settings: agents, models, chats", "preferences notifications sound editors"],
   ["tab.new", {}, "Tab", "New tab", "tab agent new task"],

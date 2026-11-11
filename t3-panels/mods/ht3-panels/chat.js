@@ -11,7 +11,7 @@ import { div, list, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, TextView, Scrollbar } from "gpui-base";
 import { run, openOverlay, appHome, home, exec, layout, settings, shared, setShared, notify, focused, panes } from "herdr";
 import { MOD, tokens, alpha, icon, agentMark, button, iconButton, control, badge, workLine, divider, shortPath } from "./look.js";
-import { AcpSource, detect, argvOf, forkChat, agentOf, chatLike, askOnce } from "./agent-acp.js";
+import { AcpSource, AGENTS, detect, argvOf, forkChat, agentOf, chatLike, askOnce } from "./agent-acp.js";
 import { TermSource } from "./agent-term.js";
 import { Reporter, paneIds, tabIds, placeNew } from "./report.js";
 import { fileIcon } from "./fileicons.js";
@@ -94,6 +94,7 @@ const LOCAL_COMMANDS = [
   { name: "send-new", description: "Send this draft as a new chat, and go there", local: true },
   { name: "send-background", description: "Send this draft as a new chat, and stay here", local: true },
   { name: "usage", description: "Tokens and context: this chat and every agent", local: true },
+  { name: "clear", description: "Start a fresh session with your next message", local: true },
 ];
 
 export function openLauncher() {
@@ -238,6 +239,7 @@ const initials = (name) => {
 
 export class ChatPanel {
   init(p, cx) {
+    this.p = p; // kept for Retry, which starts a chat that never got an agent again (begin)
     this.chatId = p.chat ?? null;
     this.source = null;
     this.phase = "loading"; // loading | empty | chat
@@ -251,7 +253,9 @@ export class ChatPanel {
     this.autoAllow = keptOf(this.chatId).allow === true;
     // Messages queued before a reload wait on: they go out when the agent is back and ready.
     const waiting = keptOf(this.chatId).queue;
-    if (Array.isArray(waiting) && waiting.length) this.queue = waiting.map((q) => ({ text: String(q.text ?? ""), blocks: q.blocks ?? [], ...(Array.isArray(q.tokens) ? { tokens: q.tokens } : {}), files: (q.files ?? []).map((a) => ({ ...a, type: a.type ?? IMAGE_TYPES[String(a.name ?? "").split(".").pop().toLowerCase()] ?? null })) }));
+    if (Array.isArray(waiting) && waiting.length) this.queue = waiting.map((q) => ({ text: String(q.text ?? ""), blocks: q.blocks ?? [], ...(q.fresh ? { fresh: true } : {}), ...(Array.isArray(q.tokens) ? { tokens: q.tokens } : {}), files: (q.files ?? []).map((a) => ({ ...a, type: a.type ?? IMAGE_TYPES[String(a.name ?? "").split(".").pop().toLowerCase()] ?? null })) }));
+    // "/clear" is armed: the next message starts a fresh session (armFresh). Kept, so a reload doesn't undo it.
+    this.fresh = keptOf(this.chatId).fresh === true;
     // The prompts sent in this chat, for ↑ in the message box (pushPrompt); kept with the chat, so they outlive a reload.
     const sent = keptOf(this.chatId).history;
     this.history = Array.isArray(sent) ? sent.filter((e) => typeof e?.text === "string" && e.text).slice(-HISTORY_MAX) : [];
@@ -298,21 +302,7 @@ export class ChatPanel {
           this.report();
           return cx.notify();
         }
-        const d = await detect(src.machine);
-        src.target = d.target;
-        src.remoteError = d.error;
-        const argv = argvOf(p.agent, d.found);
-        this.phase = "chat";
-        // A new chat's first message (a `prompt` prop: send as new chat, New chat on this branch) goes the way every
-        // message does, as the first of the queue, sent once the agent is up: so its turn has a checkpoint too.
-        // What was attached and named with "@" in the box it was typed in comes along (`draft`).
-        const first = firstMessage(p);
-        if (argv && first && !this.queue?.length) { this.queue = [first]; this.keepQueue(); }
-        // A chat started from a pull request (pr.js): its text waits in the box, not sent. Only a chat with no saved state.
-        if (argv && !first && p.seed) { this.input.set_value(String(p.seed)); this.hasText = true; }
-        if (argv) src.start(cx, argv, p.cwd ?? d.found.HOME ?? home(), null, p.set ?? null);
-        else src.startError = d.error ?? `${Array.isArray(p.agent) ? p.agent[0] : p.agent ?? "The agent"} isn't installed.`;
-        cx.notify();
+        await this.begin(cx);
       });
     } else {
       this.phase = "empty";
@@ -359,6 +349,49 @@ export class ChatPanel {
       else this.report();
       this.termSync(cx);
     });
+  }
+
+  // A chat with no saved state starts its agent: where it is installed is looked up, a first message goes the way every
+  // message does, and the agent is started. Again from Retry on the banner, after the program was installed or the
+  // machine came back.
+  async begin(cx) {
+    const p = this.p, src = this.source;
+    src.startError = null;
+    src.tried = { argv: Array.isArray(p.agent) ? p.agent : AGENTS.find((a) => a.id === p.agent)?.argv ?? [String(p.agent ?? "the agent")] };
+    const d = await detect(src.machine);
+    src.target = d.target;
+    src.remoteError = d.error;
+    const argv = argvOf(p.agent, d.found);
+    this.phase = "chat";
+    // A new chat's first message (a `prompt` prop: send as new chat, New chat on this branch) goes the way every
+    // message does, as the first of the queue, sent once the agent is up: so its turn has a checkpoint too.
+    // What was attached and named with "@" in the box it was typed in comes along (`draft`).
+    const first = firstMessage(p);
+    if (argv && first && !this.queue?.length) { this.queue = [first]; this.keepQueue(); }
+    // A chat started from a pull request (pr.js): its text waits in the box, not sent. Only a chat with no saved state.
+    if (argv && !first && p.seed && !this.input.value()) { this.input.set_value(String(p.seed)); this.hasText = true; }
+    if (argv) src.start(cx, argv, p.cwd ?? d.found.HOME ?? home(), null, p.set ?? null);
+    else src.startError = d.error ?? `${Array.isArray(p.agent) ? p.agent[0] : p.agent ?? "The agent"} isn't installed.`;
+    cx.notify();
+  }
+
+  // The banner's Retry: the agent is started again where it ran (and, for a chat that never had one, looked for again).
+  retry(cx) {
+    const src = this.source;
+    if (src?.kind !== "acp" || src.alive) return;
+    this.statusHidden = null;
+    if (src.state) src.restart(cx);
+    else cx.spawn(async (cx) => { await this.begin(cx); cx.notify(); });
+    cx.notify();
+  }
+
+  // T3's ComposerFreshSession: "/clear" arms a fresh session for the next message, and its banner takes it back.
+  // Armed or not it is kept with the chat. `on`: arm; off: keep the current session.
+  armFresh(cx, on) {
+    if (this.source?.kind !== "acp") return;
+    this.fresh = on;
+    keep(this.chatId, { fresh: on });
+    cx.notify();
   }
 
   async close(_cx) {
@@ -541,7 +574,7 @@ export class ChatPanel {
       return (near.length >= 5 ? near : out).sort((a, b) => a.rank - b.rank || a.name.length - b.name.length).slice(0, 50);
     }
     const agent = (v.commands ?? []).map((c) => ({ name: c.name, description: c.description ?? "" }));
-    const all = t.kind === "slash" ? [...LOCAL_COMMANDS.filter((c) => c.name !== "model" || v.options.some((o) => (o.category ?? o.id) === "model")), ...agent.filter((c) => !LOCAL_COMMANDS.some((l) => l.name === c.name))]
+    const all = t.kind === "slash" ? [...LOCAL_COMMANDS.filter((c) => (c.name !== "model" || v.options.some((o) => (o.category ?? o.id) === "model")) && (c.name !== "clear" || this.source.kind === "acp")), ...agent.filter((c) => !LOCAL_COMMANDS.some((l) => l.name === c.name))]
       : [...(this.skills ?? []), ...agent.filter((c) => /skill/i.test(c.name) && !(this.skills ?? []).some((s) => s.name === c.name)).map((c) => ({ ...c, skill: true }))];
     const rank = (c) => (c.name.toLowerCase().startsWith(q) ? 0 : c.name.toLowerCase().includes(q) ? 1 : (c.description ?? "").toLowerCase().includes(q) ? 2 : 3);
     return all.filter((c) => !q || rank(c) < 3).sort((a, b) => rank(a) - rank(b)).slice(0, 50);
@@ -566,7 +599,8 @@ export class ChatPanel {
       // The command's word goes; what was typed before it stays, with its "@" chips.
       this.input.set_value({ text: before, tokens: chipsWithin(this.input.content().tokens, before.length) });
       this.hasText = !!before.trim();
-      if (item.name === "model") { const o = this.view?.options.find((x) => (x.category ?? x.id) === "model"); if (o) { this.picker = o.id; this.filter.set_value(""); if (o.choices.length > 8) this.filter.focus(); } }
+      if (item.name === "model") this.openPicker("model", true);
+      if (item.name === "clear") this.armFresh(cx, true);
       if (item.name === "side") run(`${MOD}.add:chat`);
       if (item.name === "new") openLauncher();
       if (item.name === "fork") this.fork(cx);
@@ -689,6 +723,16 @@ export class ChatPanel {
     if (c.startsWith("stash:drop:")) this.dropStash(cx, Number(c.slice(11)));
     // title is "/title": the agent names the thread (retitle).
     if (c === "title") this.retitle(cx);
+    // clear is "/clear": the next message starts a fresh session; keep-session takes it back (the banner's button).
+    // retry, copy-command, open-terminal: the agent status banner's buttons (statusBanner).
+    if (c === "clear") this.armFresh(cx, true);
+    if (c === "keep-session") this.armFresh(cx, false);
+    if (c === "retry") this.retry(cx);
+    if (c === "copy-command") { const pr = this.source.view().problem; if (pr) this.copy(cx, "status-cmd", pr.command); }
+    if (c === "open-terminal" && this.reporter?.pane) this.openTerminal(this.reporter.pane);
+    // chat:effort-up, chat:effort-down, chat:mode (the agent's next mode) and chat:model (its picker): the composer's keys
+    // (keys.json: "ht3-panels.chat:effort-up"). They act on the chat of the focused tab (chatKey).
+    if (c.startsWith("chat:")) this.chatKey(cx, c.slice(5));
     // term: the chat's own terminal under it (toggleTerminal); the layout's key.
     if (c === "term") this.toggleTerminal(cx);
     // send:new and send:background: the draft becomes the first message of a new chat (sendNew); the layout's keys.
@@ -797,8 +841,13 @@ export class ChatPanel {
     // "/rename New name" is T3's own: it names the thread, nothing is sent ("/rename" alone: its first message again).
     const naming = /^\/rename(?:\s+([\s\S]*))?$/.exec(text);
     if (naming) { this.input.set_value(""); this.hasText = false; this.trig = null; return this.rename(cx, naming[1] ?? ""); }
+    // "/clear" is T3's own as well (ComposerFreshSession): the next message starts a fresh session. Not on an agent that is a terminal's.
+    if (/^\/clear$/.test(text) && this.source.kind === "acp") { this.input.set_value(""); this.hasText = false; this.trig = null; return this.armFresh(cx, true); }
     if ((!text && !files.length) || !v?.alive) return;
     const payload = this.boxMessage(v);
+    // Armed by "/clear": this message begins a fresh session, once the agent is ready for it (dispatch). Once it is sent
+    // the next ones are the new session's.
+    if (this.fresh && this.source.kind === "acp") { payload.fresh = true; this.armFresh(cx, false); }
     // A queued message that was being edited goes back to its place; the draft it was set before returns to the box.
     const editing = this.editing, parked = this.parked;
     this.editing = this.parked = this.recall = null;
@@ -813,7 +862,7 @@ export class ChatPanel {
     if (this.source.kind === "acp" && (v.status !== "ready" || this.sending || this.queue?.length || this.source.settingUp)) {
       this.queue ??= [];
       // Steer: into the running turn where the agent takes it, else the turn ends and this is the next message (session.js steer).
-      if (followUp() === "steer" && ["working", "blocked"].includes(v.status) && !this.sending) return this.dispatch(cx, payload, true);
+      if (followUp() === "steer" && ["working", "blocked"].includes(v.status) && !this.sending && !payload.fresh) return this.dispatch(cx, payload, true);
       this.queue.splice(Math.min(editing?.at ?? this.queue.length, this.queue.length), 0, payload);
       this.keepQueue();
       this.drain(cx);
@@ -850,7 +899,7 @@ export class ChatPanel {
   }
 
   keepQueue() {
-    keep(this.chatId, { queue: (this.queue ?? []).map((q) => ({ text: q.text, blocks: q.blocks, ...(Array.isArray(q.tokens) ? { tokens: q.tokens } : {}), files: q.files.map(fileOf) })) });
+    keep(this.chatId, { queue: (this.queue ?? []).map((q) => ({ text: q.text, blocks: q.blocks, ...(q.fresh ? { fresh: true } : {}), ...(Array.isArray(q.tokens) ? { tokens: q.tokens } : {}), files: q.files.map(fileOf) })) });
   }
 
   // A queued message's buttons: steer (it goes in now), up and down (its place), edit (back into the message box), drop.
@@ -950,7 +999,24 @@ export class ChatPanel {
   }
 
   // Sends one message: { text, blocks (ACP blocks for "@" files), files (attachments) }. `steer`: for the turn that is running.
-  dispatch(cx, { text, blocks, files, tokens }, steer = false) {
+  dispatch(cx, msg, steer = false) {
+    const { text, blocks, files, tokens } = msg;
+    // A message that begins a fresh session: the session is made first (agent-acp.js freshSession), then the message
+    // goes on as any other. Nothing else is sent meanwhile (`sending`). When no session could be made the message is
+    // not sent to the old one: it is back in the box, and "/clear" is armed again.
+    if (msg.fresh && this.source.kind === "acp") {
+      this.sending = files ?? [];
+      this.source.freshSession(cx).then((ok) => {
+        this.sending = null;
+        if (ok) this.dispatch(cx, { ...msg, fresh: false });
+        else {
+          if (!this.input.value().trim()) { this.input.set_value(text); this.hasText = !!text.trim(); }
+          this.armFresh(cx, true);
+        }
+        cx.notify();
+      });
+      return cx.notify();
+    }
     // It is remembered for ↑ in the message box, with the chat (kept); a chat with no id remembers it while its pane lives.
     const sent = pushPrompt(this.history, { text, tokens });
     if (sent !== this.history) { this.history = sent; keep(this.chatId, { history: sent }); }
@@ -1089,6 +1155,7 @@ export class ChatPanel {
       // In a tab of the Herdr T3 layout the pane's header draws it (report.js `crumb`): one header, as T3's.
       .when(!this.headed(), (el) => el.child(this.header(k, v)))
       .when(this.finding, (el) => el.child(this.findBar(k)))
+      .when(!!this.problemOf(v), (el) => el.child(this.statusBanner(k, v)))
       .child(lane)
       .when(this.picker != null, (el) => el.child(this.pickerPanel(k, v)))
       // The "/", "$", "@" menu floats over the end of the lane (it is drawn after it), its foot on the message box's top.
@@ -1201,7 +1268,7 @@ export class ChatPanel {
     cx.notify();
   }
   openTerminal(pane) {
-    const cwd = this.view?.cwd ?? this.source.state?.cwd;
+    const cwd = this.view?.cwd ?? this.source.state?.cwd ?? this.p?.cwd;
     run("pane.focus", { pane });
     run("terminal.open", { place: "down", name: "Terminal", ...(cwd ? { folder: cwd } : {}) });
   }
@@ -1685,6 +1752,50 @@ export class ChatPanel {
 
   // The agent's plan mode, when it offers one: its mode control and the choice that plans (Claude Code's "plan",
   // Codex's "Plan"...). T3's composer has this as a one-click toggle beside the mode picker.
+  // Opens one control's choices, or closes them when they are open: by the option's category ("model", "mode",
+  // "thought_level"). `force`: open, as "/model" does. -> whether the agent has that option.
+  openPicker(category, force = false) {
+    const o = (this.view ?? this.source.view()).options.find((x) => (x.category ?? x.id) === category && !x.readonly);
+    if (!o) return false;
+    this.picker = !force && this.picker === o.id ? null : o.id;
+    this.filter.set_value("");
+    if (this.picker && o.choices.length > 8) this.filter.focus();
+    return true;
+  }
+
+  // The composer's effort control: the agent's `thought_level` option, else one named for effort or reasoning.
+  effortOption(v) {
+    const free = v.options.filter((o) => !o.readonly && o.choices.length > 1);
+    return free.find((o) => o.category === "thought_level") ?? free.find((o) => !["model", "mode"].includes(o.category ?? o.id) && /effort|reasoning|thinking/i.test(`${o.id} ${o.name}`)) ?? null;
+  }
+
+  // The next choice of an option, in the order the agent lists them, round to the first at the end (T3 steps its effort so):
+  // a key pressed again before the agent has answered goes on from the choice just made, not from the old one.
+  cycle(o, dir) {
+    const n = o.choices.length, wanted = this.want?.[o.id], base = wanted && Date.now() - wanted.at < 2000 ? wanted.value : o.current;
+    const at = o.choices.findIndex((c) => c.value === base);
+    const next = o.choices[at < 0 ? (dir > 0 ? 0 : n - 1) : (at + dir + n) % n];
+    this.want = { ...this.want, [o.id]: { value: next.value, at: Date.now() } };
+    this.source.setOption(o.id, next.value);
+    return next;
+  }
+
+  // The keys of keys.json for the composer (T3: composer.increaseEffort, composer.decreaseEffort, composer.mode,
+  // modelPicker.toggle). Every shown chat is sent them: the one in the focused tab acts (a side chat has no tab of its
+  // own and always does). A chat whose agent isn't running, or has no such control, says so in a toast.
+  chatKey(cx, key) {
+    const tab = this.reporter?.tab, now = focused()?.tab;
+    if ((tab && now && tab !== now) || this.source.kind !== "acp" || !["effort-up", "effort-down", "mode", "model"].includes(key)) return;
+    const v = this.view ?? this.source.view();
+    const say = (body) => notify({ title: "Chat", body, level: "info", timeout: 2500 });
+    if (!v.alive) return say("The agent isn't running.");
+    if (key === "model") { if (!this.openPicker("model")) say("This agent has no model to switch."); return cx.notify(); }
+    const o = key === "mode" ? v.options.find((x) => (x.category ?? x.id) === "mode" && !x.readonly && x.choices.length > 1) : this.effortOption(v);
+    if (!o) return say(key === "mode" ? "This agent has no modes." : "This agent has no effort setting.");
+    this.cycle(o, key === "effort-down" ? -1 : 1);
+    cx.notify();
+  }
+
   planMode() {
     const o = this.source?.kind === "acp" ? this.view?.options.find((x) => (x.category ?? x.id) === "mode" && !x.readonly) : null;
     const plan = o?.choices.find((c) => /^plan\b/i.test(String(c.value)) || /^plan\b/i.test(String(c.name ?? "")));
@@ -2068,15 +2179,68 @@ export class ChatPanel {
     let say = null;
     if (l?.status === "rejected") say = { bad: true, text: l.text ? `The agent says a limit is reached: ${l.text}` : `The ${kind} is reached${l.resetsAt ? when(l.resetsAt) : ""}`, key: `r${l.type ?? ""}${l.resetsAt ?? l.text ?? ""}` };
     else if (l?.status === "allowed_warning") say = { text: `Near the ${kind}${l.utilization != null ? `: ${Math.round(100 * l.utilization)}% used` : ""}${l.resetsAt ? when(l.resetsAt) : ""}`, key: `w${l.type ?? ""}${Math.round(20 * (l.utilization ?? 0))}` };
-    else if (full >= 0.9) say = { bad: full >= 0.97, text: `Context ${Math.round(100 * full)}% full: the agent may compact or stop soon. A new chat, or /compact where the agent has it, makes room.`, key: `c${full >= 0.97 ? 2 : 1}` };
+    else if (full >= 0.9) say = { bad: full >= 0.97, text: `Context ${Math.round(100 * full)}% full: the agent may compact or stop soon. /compact where the agent has it, or start fresh.`, key: `c${full >= 0.97 ? 2 : 1}`, fresh: true };
     if (!say || this.limitHidden === say.key) return null;
     const c = say.bad ? k.destructiveText : k.warningText;
     return h_flex().id("ht3-limit").mx(12).mb(-1).px(12).h(32).gap(8).items_center().rounded_t(12).border(1).border_color(alpha(c, 0.35)).bg(alpha(c, 0.08)).text_size(12).text_color(c)
       .role("status").accessibility_label(say.text)
       .child(icon(say.bad ? "circle-alert" : "clock").size(13).flex_none())
       .child(div().flex_1().min_w(0).truncate().tooltip(say.text).child(say.text))
+      // ComposerFreshSession: the context is full, so the next message may begin a fresh session instead.
+      .when(!!say.fresh && !this.fresh && this.source.kind === "acp" && v.alive, (el) => el.child(button(k, "limit-fresh", "Start fresh", (cx) => this.armFresh(cx, true), { variant: "ghost", glyph: "eraser" })))
       .child(h_flex().id("limit-hide").size(20).flex_none().items_center().justify_center().rounded(5).cursor_pointer().role("button").accessibility_label("Hide this notice").tooltip("Hide")
         .hover((st) => st.bg(alpha(c, 0.15))).on_click((_e, cx) => { this.limitHidden = say.key; cx.notify(); }).child(icon("x").size(12)));
+  }
+
+  // chat/ComposerFreshSession.tsx: over the box while "/clear" is armed. Its button keeps the current session.
+  freshBanner(k) {
+    if (!this.fresh || this.source.kind !== "acp") return null;
+    const c = k.info;
+    return h_flex().id("ht3-fresh").mx(22).px(16).py(8).gap(10).items_center().rounded_t(16).border(1).border_color(alpha(c, 0.32)).bg(k.card)
+      .role("status").accessibility_label("Your next message starts a fresh session")
+      .child(icon("eraser").size(16).flex_none().text_color(c))
+      .child(v_flex().flex_1().min_w(0)
+        .child(div().text_size(13).font_medium().child("Your next message starts a fresh session"))
+        .child(div().text_size(12).text_color(k.muted).child("The agent won't see earlier messages in this thread.")))
+      .child(button(k, "fresh-keep", "Keep the current session", (cx) => this.armFresh(cx, false), { variant: "outline" }));
+  }
+
+  // The problem to show for an agent that isn't running (agent-acp.js diagnose), unless it was dismissed (×) until it changes.
+  problemOf(v) {
+    const pr = this.source.kind === "acp" ? v.problem : null;
+    return pr && this.statusHidden !== `${pr.kind}:${pr.title}:${pr.detail.slice(-40)}` ? pr : null;
+  }
+
+  // chat/ProviderStatusBanner.tsx: when the agent can't be there, a banner at the top of the chat that says in plain
+  // words what is wrong, the command Herdr tried, and what to do: Retry, Copy command, a terminal in the chat's folder.
+  statusBanner(k, v) {
+    const pr = this.problemOf(v);
+    if (!pr) return null;
+    const c = k.destructiveText, shown = (what) => (this.copied === what ? "Copied" : null);
+    const printed = pr.detail.split("\n").slice(-8).join("\n");
+    const where = v.machine ? `on ${v.machine}` : v.cwd ? `in ${shortPath(v.cwd)}` : null;
+    const canTerm = !!this.reporter?.pane && !v.machine;
+    return h_flex().id("ht3-agent-status").w_full().flex_none().justify_center().px(16).pt(12)
+      .child(v_flex().w_full().max_w(LANE).p(12).gap(8).rounded(12).border(1).border_color(alpha(c, 0.35)).bg(alpha(c, k.dark ? 0.08 : 0.05)).role("alert").accessibility_label(`${pr.title}. ${pr.message}`)
+        .child(h_flex().gap(8).items_start()
+          .child(icon(pr.kind === "auth" ? "key-round" : "triangle-alert").size(16).mt(2).flex_none().text_color(c))
+          .child(v_flex().flex_1().min_w(0).gap(2)
+            .child(div().text_size(14).font_medium().text_color(c).child(pr.title))
+            .child(div().text_size(13).line_height("19px").text_color(alpha(k.foreground, 0.85)).child(pr.message)))
+          .child(h_flex().id("status-hide").size(20).flex_none().items_center().justify_center().rounded(5).cursor_pointer().role("button").accessibility_label("Dismiss").tooltip("Dismiss")
+            .hover((st) => st.bg(alpha(c, 0.15))).on_click((_e, cx) => { this.statusHidden = `${pr.kind}:${pr.title}:${pr.detail.slice(-40)}`; cx.notify(); }).child(icon("x").size(12))))
+        .when(pr.kind !== "remote", (el) => el.child(v_flex().gap(3)
+          .child(div().text_size(11).text_color(k.muted).child(where ? `Command tried, ${where}` : "Command tried"))
+          .child(div().px(8).py(6).rounded(8).border(1).border_color(alpha(k.border, 0.8)).bg(k.card).text_size(12).font_family(k.mono).child(pr.command))))
+        .when(!!printed, (el) => el.child(v_flex().gap(3)
+          .child(div().text_size(11).text_color(k.muted).child("What it printed"))
+          .child(div().px(8).py(6).rounded(8).border(1).border_color(alpha(k.border, 0.8)).bg(k.card).text_size(11).line_height("16px").font_family(k.mono).text_color(alpha(k.foreground, 0.8)).child(printed))))
+        .child(h_flex().gap(6).flex_wrap().justify_end()
+          .child(button(k, "status-settings", "Settings", () => run(`${MOD}.settings`), { variant: "ghost-muted" }))
+          .when(canTerm, (el) => el.child(button(k, "status-terminal", "Open a terminal here", () => this.openTerminal(this.reporter.pane), { variant: "outline", glyph: "square-terminal" })))
+          .when(!!pr.install, (el) => el.child(button(k, "status-install", shown("status-install") ?? "Copy install command", (cx) => this.copy(cx, "status-install", pr.install), { variant: "outline", glyph: "copy" })))
+          .when(pr.kind !== "remote", (el) => el.child(button(k, "status-copy", shown("status-cmd") ?? "Copy command", (cx) => this.copy(cx, "status-cmd", pr.command), { variant: "outline", glyph: "copy" })))
+          .child(button(k, "status-retry", "Retry", (cx) => this.retry(cx), { variant: "default", glyph: "rotate-ccw" }))));
   }
 
   // chat/ComposerSurface.tsx and ComposerPrimaryActions.tsx.
@@ -2102,7 +2266,7 @@ export class ChatPanel {
       drawer = h_flex().mx(22).px(16).h(32).gap(6).items_center().rounded_t(16).border(1).border_color(line).bg(k.card).text_size(12).text_color(k.muted)
         .child(icon("shield-off").size(12).flex_none().text_color(k.warning)).child(div().flex_1().min_w(0).truncate().child("Approvals are allowed automatically this session"))
         .child(button(k, "perm-ask-again", "Ask again", (cx) => { this.allow(false); cx.notify(); }, { variant: "ghost-muted" }));
-    } else if (!v.alive && v.status !== "starting") {
+    } else if (!v.alive && v.status !== "starting" && !this.problemOf(v)) {
       drawer = v_flex().mx(22).px(16).pt(8).pb(10).gap(8).rounded_t(16).border(1).border_color(alpha(k.destructive, 0.32)).bg(k.card)
         .when(!!v.error, (el) => el.child(div().text_size(12).line_height("18px").text_color(k.destructiveText).child(String(v.error).slice(0, 1200))))
         .child(h_flex().gap(6).justify_end()
@@ -2227,7 +2391,8 @@ export class ChatPanel {
         .child(div().w(6).flex_none())
         .child(action));
     const limit = this.limitLine(k, v), subs = this.subBar(k, v), srv = v.cwd ? serversStrip(k, this.servers.at({ cwd: v.cwd, on: v.machine ?? null })) : null;
-    const box = drawer || limit || subs || srv ? v_flex().when(!!limit, (el) => el.child(limit)).when(!!srv, (el) => el.child(srv)).when(!!subs, (el) => el.child(subs)).when(!!drawer, (el) => el.child(drawer)).child(card) : card;
+    const fresh = this.freshBanner(k);
+    const box = drawer || limit || subs || srv || fresh ? v_flex().when(!!limit, (el) => el.child(limit)).when(!!srv, (el) => el.child(srv)).when(!!subs, (el) => el.child(subs)).when(!!fresh, (el) => el.child(fresh)).when(!!drawer, (el) => el.child(drawer)).child(card) : card;
     // While a queued message is in the box: what it is, where a draft went, and the way back.
     const editLine = this.editing ? h_flex().w_full().justify_end().items_center().gap(6).pb(6).text_size(11).text_color(k.muted)
       .child(div().min_w(0).truncate().child(this.parked ? "Editing a queued message · your draft comes back when it is sent" : "Editing a queued message"))

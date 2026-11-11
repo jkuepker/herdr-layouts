@@ -15,6 +15,8 @@ const spawn = (...args) => {
 };
 import * as fs from "fs/promises";
 import { ChatSession } from "./session.js";
+import { configFrom } from "./acp.js";
+import { addNotice, freshSession, freshHead, carryHead } from "./transcript.js";
 
 // Agents that speak ACP over stdio. `argv[0]` is looked up on PATH. `icon`: Herdr's own for that agent
 // (~/.config/herdr-app/icons, as its program table has it), `tint` for a one-color glyph.
@@ -31,13 +33,65 @@ export const AGENTS = [
 export const agentOf = (argv) => AGENTS.find((a) => a.argv[0] === String(argv?.[0] ?? "").split("/").pop()) ?? null;
 
 // Why an agent that ended before it had a session didn't start: its program is missing (the shell's
-// 127, or its "not found"), or it gave up by itself.
-export function startFailure(argv, exit, machine) {
+// 127, or its "not found"), or it gave up by itself. `said`: what the agent answered to its handshake, when it did
+// (session.js start: "The agent didn't start a session: Authentication required"); it is kept, as the exit that
+// follows would hide it.
+export function startFailure(argv, exit, machine, said = null) {
   const name = String(argv?.[0] ?? "the agent").split("/").pop(), on = machine ? ` on ${machine}` : "";
-  const err = String(exit?.stderr ?? "").trim().slice(-2000);
-  if (exit?.code === 127 || /not found|no such file or directory/i.test(err.split("\n").pop() ?? ""))
+  const err = cleanStderr(exit?.stderr);
+  if (exit?.code === 127 || SHELL_MISSING.test(err))
     return `Couldn't start ${name}: not found${on}. Pick another agent with New chat, or see which are on in Settings.`;
+  if (said) return String(said) + (err ? `\n\n${err}` : "");
   return `${name} ended before it started a session (${exit?.code == null ? "a signal" : `code ${exit.code}`}).` + (err ? `\n\n${err}` : "");
+}
+
+// What the login shell the agent is started under says when its program isn't there ("zsh:1: command not found: x",
+// "sh: exec: x: not found", "bash: x: No such file or directory"): a line of the shell's own, not of the agent's.
+const SHELL_MISSING = /^(?:-?(?:ba|z|da|k|fi)?sh)(?::\d+)?: .*(?:command not found|not found|no such file or directory)/im;
+// The end of what an agent printed to stderr, without the interactive shell's own remarks about having no terminal.
+export const cleanStderr = (text) => String(text ?? "").split("\n").filter((l) => !/no job control in this shell|cannot set terminal process group|Inappropriate ioctl for device/i.test(l)).join("\n").trim().slice(-2000);
+
+// An argv as the shell line that starts it, to read and to paste into a terminal.
+export const commandLine = (argv) => (argv ?? []).map((x) => (/^[\w@%+=:,./-]+$/.test(String(x)) ? String(x) : shq(x))).join(" ");
+
+// What to do about an agent that is signed out, as that agent has it (the words are a hint: each agent's own CLI says it).
+const LOGIN = {
+  claude: "Run `claude` in a terminal and sign in, or set ANTHROPIC_API_KEY",
+  codex: "Run `codex login` in a terminal, or set OPENAI_API_KEY",
+  gemini: "Run `gemini` in a terminal and sign in, or set GEMINI_API_KEY",
+  opencode: "Run `opencode auth login` in a terminal",
+  pi: "Set the API key of the model's provider (see `pi --help`)",
+  omp: "Set the API key of the model's provider, or log in with `omp`",
+};
+const MISSING = /^Couldn't start [^\n]*: not found|isn'?t installed|\(code 127\)/i;
+const SIGNED_OUT = /not logged in|log ?in required|login required|please (?:log ?in|sign ?in|run[^\n]*log ?in)|sign ?in (?:required|again)|authenticat|unauthori[sz]ed|\b401\b|api[ _-]?key|invalid[ _-]?(?:key|token|credentials)|expired (?:token|session)|credentials|oauth/i;
+
+// Why an agent that isn't running isn't, in words for the banner over the chat (ProviderStatusBanner.tsx): from the
+// chat's error text (session.js, startFailure: the first line is what happened, after a blank line what the program
+// printed). Pure, so it also reads an error saved with the chat. -> { kind: "missing" | "auth" | "remote" | "start"
+// | "crashed" | "other", title, message, detail (what the program printed), command, program, where, hint, install }.
+export function diagnose({ argv, error, machine = null }) {
+  const text = String(error ?? "").trim(), head = text.split("\n")[0] ?? "", detail = text.split("\n\n").slice(1).join("\n\n").trim().slice(-800);
+  const program = String(argv?.[0] ?? "the agent").split("/").pop(), a = agentOf(argv), name = a?.name ?? program, on = machine ? ` on ${machine}` : "";
+  const code = /\((code \d+|a signal)\)/.exec(head)?.[1] ?? null;
+  const kind = /^Couldn't reach|^Herdr (?:doesn't list|reaches)|^Couldn't find how to reach/.test(head) ? "remote"
+    : MISSING.test(head) ? "missing"
+    : SIGNED_OUT.test(text) ? "auth"
+    : /ended before it started|didn't start a session/.test(head) ? "start"
+    : /^The agent exited/.test(head) ? "crashed" : "other";
+  const hint = a?.hint ?? null;
+  const message = {
+    missing: `Herdr looked for "${program}"${on} and didn't find it. ${hint ? `Install it with: ${hint}` : "Install it, or pick another agent."} Then retry.`,
+    auth: `${name} says it isn't signed in, or its API key is missing or wrong. ${LOGIN[a?.id] ?? "Sign in with the agent's own CLI in a terminal, or set its API key"}, then retry.`,
+    remote: head,
+    start: `${name} started${on} and ended before it was ready${code ? ` (${code})` : ""}. What it printed is below; retry once that is fixed.`,
+    crashed: `${name} stopped${code ? ` (${code})` : ""}. The messages above are kept; retry starts it again.`,
+    other: head || "The agent isn't running.",
+  }[kind];
+  const title = { missing: `${name} isn't installed${on}`, auth: `${name} needs you to sign in`, remote: `Can't reach ${machine ?? "that machine"}`,
+    start: `${name} didn't start`, crashed: `${name} stopped`, other: `${name} isn't running` }[kind];
+  return { kind, title, message, detail, command: commandLine(argv?.length ? argv : a?.argv ?? [program]), program, where: machine, hint,
+    install: hint && /^npm /.test(hint) ? hint : null };
 }
 
 const SAVE_EVERY_MS = 1000;
@@ -204,6 +258,7 @@ export class AcpSource {
     this.target = null;
     this.remoteError = null;
     this.startError = null;
+    this.tried = null; // { argv }: what a chat that never got an agent tried to start (chat.js), for the banner's command
   }
 
   // The chat as it was saved. -> whether there was one.
@@ -261,6 +316,9 @@ export class AcpSource {
     this.proc = proc;
     this.alive = true;
     this.startError = null;
+    // A chat that began a session anew (`/clear`) and resumes the agent's newest one: the agent replays that session
+    // only, so the messages above its "New session" divider are put back above it once it is up.
+    const head = freshHead(this.state?.transcript), resumedFrom = this.state?.sessionId ?? null;
     cx.spawn(async (cx) => {
       // Asked now, so killing it later can't lose the answer.
       const exited = processExited(proc);
@@ -277,7 +335,12 @@ export class AcpSource {
       // While a new chat's options are being set the session already says "ready": `settingUp` tells the chat to hold
       // its messages until they are, so the first one goes to the model that was asked for.
       this.settingUp = Object.keys(set ?? {}).length > 0;
+      // What the agent answered to its handshake, if it refused it (a sign-in it wants): the exit that follows hides it.
+      let said = null;
       started.then(async (ok) => {
+        // ("agent exited" is only the connection closing under the request: what the exit says is told by startFailure.)
+        if (!ok && !/: agent exited$/.test(session.state.error ?? "")) said = session.state.error;
+        if (ok && head.length && resumedFrom && session.state.sessionId === resumedFrom) carryHead(session.state.transcript, head);
         if (ok) for (const [id, value] of Object.entries(set ?? {})) await session.setConfig(id, value);
         const held = this.settingUp;
         if (this.proc === proc) this.settingUp = false;
@@ -289,14 +352,15 @@ export class AcpSource {
       const exit = await exited;
       if (this.proc !== proc || this.closing) return;
       this.alive = false;
-      session.exited(exit.code == null ? "a signal" : `code ${exit.code}`, exit.stderr.slice(-2000));
+      session.exited(exit.code == null ? "a signal" : `code ${exit.code}`, cleanStderr(exit.stderr));
       // It ended before it had a session: say why (session.js only knows "agent exited").
-      if (!(await started.catch(() => false)) && session.state.status !== "stopped") session.failed(startFailure(argv, exit, this.machine));
+      if (!(await started.catch(() => false)) && session.state.status !== "stopped") session.failed(startFailure(argv, exit, this.machine, said));
     });
   }
 
   // Same agent and folder; the session resumes the agent's own when it can.
   restart(cx) {
+    if (!this.state) return false;
     cx.spawn(async (cx) => {
       if (this.machine && !this.target) {
         this.remoteError = null;
@@ -304,6 +368,45 @@ export class AcpSource {
       }
       this.start(cx, this.state.agentArgv, this.state.cwd);
     });
+    return true;
+  }
+
+  // `/clear`: the next message starts a new session on the agent that is running (ACP lets one agent hold several), in
+  // the same chat: the old messages stay above a "New session" divider, and the model, mode and effort chosen carry
+  // over (a new session starts on the agent's defaults). Nothing is sent here. -> whether it began; when it didn't
+  // the chat says why and goes on in the old session.
+  async freshSession(cx) {
+    const s = this.session, st = this.state;
+    if (!s || !this.alive || st.status !== "ready") return false;
+    const had = (st.configOptions ?? []).filter((o) => o.type === "select").map((o) => [o.id, o.currentValue]);
+    // Held like a new chat's first options (`settingUp`): nothing goes to the old session meanwhile.
+    this.settingUp = true;
+    try {
+      const r = await Promise.race([
+        s.conn.request("session/new", { cwd: st.cwd, mcpServers: [] }),
+        new Promise((_, no) => cx.timer.after(20000, () => no(new Error("the agent didn't answer in time")))),
+      ]);
+      if (!r?.sessionId) throw new Error("it gave no session");
+      st.sessionId = r.sessionId;
+      st.configOptions = configFrom(r);
+      st.handoff = false;
+      freshSession(st.transcript);
+      s.changed(true);
+    } catch (e) {
+      addNotice(st.transcript, `Couldn't start a fresh session: ${String(e?.message ?? e)}. The chat goes on in the current one.`, "error");
+      s.changed(true);
+      this.settingUp = false;
+      return false;
+    }
+    try {
+      for (const [id, value] of had) {
+        const o = st.configOptions.find((x) => x.id === id && x.type === "select");
+        if (o && o.currentValue !== value && o.options.some((c) => c.value === value)) await s.setConfig(id, value);
+      }
+    } finally {
+      this.settingUp = false;
+    }
+    return true;
   }
 
   // Saves at most every SAVE_EVERY_MS, at once when urgent; the view throttles its own drawing.
@@ -341,10 +444,18 @@ export class AcpSource {
     return this.alive ? s.status : s.status === "stopped" ? "stopped" : "exited";
   }
 
+  // Why the agent isn't running, for the banner over the chat (diagnose): null while it runs, starts, or was stopped by you.
+  problem() {
+    const s = this.state;
+    if (this.alive || this.word() !== "exited") return null;
+    return diagnose({ argv: s?.agentArgv ?? this.tried?.argv, error: s?.error ?? this.startError, machine: this.machine });
+  }
+
   view() {
     const s = this.state;
-    if (!s) return { name: "Agent", status: this.startError ? "exited" : "starting", error: this.startError, items: [], dropped: 0, usage: null, options: [], permission: null, alive: false };
+    if (!s) return { name: "Agent", status: this.startError ? "exited" : "starting", error: this.startError, problem: this.problem(), items: [], dropped: 0, usage: null, options: [], permission: null, alive: false };
     return {
+      problem: this.problem(),
       name: s.agentInfo?.title ?? s.agentInfo?.name ?? s.agentArgv?.[0]?.split("/").pop() ?? "Agent",
       status: this.word(),
       error: s.error,
