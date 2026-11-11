@@ -1,3 +1,4 @@
+// Changed from herdr-t3 (github.com/JinJieBeWater/herdr-t3, Apache-2.0) for T3 Panels: see NOTICE.
 import { div, svg } from "gpui-kit";
 import { v_flex, h_flex, Popover, Input } from "gpui-base";
 import { spaces, machines, shared, run, props, openOverlay } from "herdr";
@@ -6,6 +7,7 @@ import { glow, tip } from "./tip.js";
 import { stop, pressed, justClosed } from "./focus.js";
 import { step, scrollList } from "./list.js";
 import { FIRST } from "./row-model.js";
+import { GROUPS } from "./chips.js";
 
 // The space filter's rows, flush as T3's, and how many show before the list scrolls: the whole rows T3's 23rem holds.
 const SCOPE_ROW = 32, SCOPE_SHOWN = 9;
@@ -116,6 +118,36 @@ export function inboxTop(view, t, model) {
     // The layout passes its own menu; docked alone, the shipped one.
     .child(tool("inbox-new-tab", "New tab", "square-pen", (_e, cx) => { view.hot = null; const menu = props()?.newMenu ?? "new-menu"; if (!justClosed(view, `${menu}.closed`)) run("mod.open", { name: menu }); cx.notify(); })));
 
+  // The filter chips under it (chips.js): status always, machines and projects once the cards come from more than one.
+  // T3's small outline pill: 22 high, 11px medium; on, it takes the accent's wash and the foreground. Each is a tab stop
+  // after the top row's buttons, so Tab walks on from Search into them and Enter or Space toggles.
+  const { options, active, on } = model.chips;
+  const marks = {
+    status: () => null,
+    machine: (o, color) => svg(`mods/ht3-inbox/icons/${o.key ? "server" : "laptop"}.svg`).size(12).flex_none().text_color(color),
+    project: (o) => avatar(o.space, o.label, 12),
+  };
+  const chip = (group, o) => {
+    const id = `chip-${group}-${o.key}`, chosen = active[group].includes(o.key), color = chosen || view.hot === id ? t.foreground : t.dim, mark = marks[group](o, color);
+    return stop(view, t, id, h_flex().id(id).h(22).max_w(132).px(7).gap(4).flex_none().items_center().rounded(6).border_1()
+      .border_color(chosen ? t.accent + "80" : t.border).when(chosen, (el) => el.bg(t.accent + "26"))
+      .text_size(11).font_medium().text_color(color)
+      .hover((s) => s.bg(chosen ? t.accent + "40" : t.hover)).on_hover(glow(view, id))
+      .role("button").accessibility_label(`Filter by ${group}: ${o.label}${chosen ? ", on" : ""}`)
+      .on_click((_e, cx) => view.toggleChip(group, o.key, cx))
+      .when(Boolean(mark), (el) => el.child(mark))
+      .child(div().min_w(0).truncate().child(o.label)), 6);
+  };
+  // With no chip left under the pointer's ×, it goes, and a gone element hears no pointer-leave.
+  if (!on && view.hot === "chips-clear") view.hot = null;
+  const clear = on && tip(view, t, "chips-clear", "Clear filters", stop(view, t, "chips-clear", h_flex().id("chips-clear").size(22).flex_none().items_center().justify_center().rounded(6)
+    .text_size(14).text_color(lit("chips-clear", t.dim)).hover((s) => s.bg(t.hover)).on_hover(glow(view, "chips-clear"))
+    .role("button").accessibility_label("Clear filters")
+    .on_click((_e, cx) => { view.hot = null; view.clearChips(cx); })
+    .child("×"), 6), { below: true });
+  const chips = h_flex().id("inbox-chips").px(8).pt(6).gap(4).flex_none().flex_wrap().items_center()
+    .children(GROUPS.flatMap((g) => options[g].map((o) => chip(g, o))))
+    .when(Boolean(clear), (el) => el.child(clear));
 
-  return top;
+  return v_flex().id("inbox-head").flex_none().child(top).child(chips);
 }

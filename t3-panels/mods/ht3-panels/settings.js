@@ -11,6 +11,8 @@
 // - agents.<id>.models (absent: all): the models that agent's chats list in their model picker.
 // - defaultAgent (absent: the first installed): the agent those two come up with.
 // - editors.<id> (true): whether the Project popover lists that editor (ids: menus.js EDITORS).
+// - checkpoints (true): in a Git repository a chat snapshots the files before and after each turn (checkpoint.js).
+// - followUp ("queue"): "steer" makes a message sent while the agent works interrupt it.
 // - notifications (true): a toast when a chat that isn't looked at finishes or needs an approval; sounds (false): a sound then.
 // - sidePanelHiddenInNewSpaces (false): a space shown for the first time starts with the side panel hidden.
 // Anything left out is its default; unknown keys are kept as they are.

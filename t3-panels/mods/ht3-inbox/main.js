@@ -22,6 +22,7 @@ import { stopsInit, stopsEnd, focusRoot, enter } from "./focus.js";
 import { FIRST, trackInboxRows, inboxInView, inboxFields, inboxSections } from "./row-model.js";
 import { DAY, initCustom, customView } from "./snooze.js";
 import { inboxMatches, pickInboxSpace } from "./filter.js";
+import { readChips, cardFacts, chipOptions, activeChips, chipsOn, chipKeeps, toggleChip, clearChips } from "./chips.js";
 import { inboxActions } from "./actions.js";
 import { inboxDrag } from "./drag.js";
 import { inboxRowView } from "./row-view.js";
@@ -65,6 +66,8 @@ export default class Inbox extends View {
     // The spaces shown, as T3 scopes threads to projects; none: all of them.
     this.scope = JSON.parse(localStorage.getItem("scope") ?? "[]");
     this.scopeOpen = false;
+    // The filter chips chosen under Search (chips.js): { status, machine, project }, kept as the space filter is.
+    this.chips = readChips(localStorage.getItem("chips"));
     this.scopeAt = 0;
     this.search = InputState.new({ placeholder: "Search spaces…" });
     this.search.on("change", (_e, cx) => { this.scopeAt = 0; cx.notify(); });
@@ -103,6 +106,13 @@ export default class Inbox extends View {
           const [field, key] = { working: ["workOpen", "working-open"], snoozed: ["napOpen", "snoozed-open"], settled: ["open", "open"] }[command.slice(6)] ?? [];
           if (field) { this[field] = !this[field]; localStorage.setItem(key, String(this[field])); }
         }
+        // `ht3-inbox.chip:<status|machine|project>:<key>` turns a filter chip on or off, as a click on it; `ht3-inbox.chip:clear` is its ×.
+        // Keys: needs, working, done, settled; a machine's name (`local`: this computer); a project's name.
+        else if (command.startsWith("chip:")) {
+          const [group, ...rest] = command.slice(5).split(":");
+          if (group === "clear") this.clearChips(cx);
+          else this.toggleChip(group, group === "machine" && rest.join(":") === "local" ? "" : group === "project" ? rest.join(":").trim().toLowerCase() : rest.join(":"), cx);
+        }
         // pane.go onto this list (mod.json's "focusable"): the keyboard starts at Search.
         else if (command === "focus") enter(this, cx, "inbox-search");
         cx.notify();
@@ -113,6 +123,28 @@ export default class Inbox extends View {
   matches() { return inboxMatches(this); }
 
   pick(s, shift, cx) { pickInboxSpace(this, s, shift, cx); }
+
+  // A chip turned on or off. A status that lives on a folded shelf opens that shelf, or the chip would show its header alone.
+  toggleChip(group, key, cx) {
+    this.chips = toggleChip(this.chips, group, key);
+    if (group === "status" && this.chips.status.includes(key)) {
+      if (key === "working" && !this.workOpen) { this.workOpen = true; localStorage.setItem("working-open", "true"); }
+      if (key === "settled" && !this.open) { this.open = true; localStorage.setItem("open", "true"); }
+    }
+    this.saveChips(cx);
+  }
+
+  clearChips(cx) {
+    this.chips = clearChips(this.chips, this.chipOptions ?? { status: [], machine: [], project: [] });
+    this.saveChips(cx);
+  }
+
+  saveChips(cx) {
+    localStorage.setItem("chips", JSON.stringify(this.chips));
+    // A new filter starts the settled tail over, as a new scope does.
+    this.limit = FIRST;
+    cx.notify();
+  }
 
   track(list, all, now, cx) {
     const { changes, waits, dirty } = trackInboxRows(this.changed, list, all, now);
@@ -244,9 +276,9 @@ export default class Inbox extends View {
       if (/** @type {any} */ (a).mod && a.program?.keep) term.set(a.address, { address: a.address, state: "live", status: a.status,
         labels: cardLabels[/** @type {any} */ (a).pane] ?? {}, turn: shared(`${/** @type {any} */ (a).mod}.turns`)?.[a.tab] ?? 0 });
     }
-    // The key reports an explicit return; a label cleared by Undo, even in another window, keeps its place.
+    // The key reports an explicit return, a kept card's too (its stand-in is in `term`); a label cleared by Undo, even in another window, keeps its place.
     const unsettled = shared("ht3-inbox.unsettled") ?? {};
-    const returned = new Set(all.filter((k) => unsettled[k.address] !== undefined && unsettled[k.address] !== this.unsettledBefore[k.address]
+    const returned = new Set([...term.values()].filter((k) => unsettled[k.address] !== undefined && unsettled[k.address] !== this.unsettledBefore[k.address]
       && !k.labels?.settled && this.pending.settled[k.address] === undefined).map((k) => k.address));
     for (const addr of returned) this.unsettledBefore[addr] = unsettled[addr];
     for (const [key, of] of Object.entries(this.pending)) {
@@ -282,7 +314,13 @@ export default class Inbox extends View {
       // shortcut: a tab's time is its latest agent's, so two agents changing in one hidden tab both read the later; fine until agents() gives each its own.
       changed: state(a) === ownStatus(a.status, a.address, all) ? tabs.get(a.tab)?.changed_at : null,
     })), all, now, cx);
-    const sections = inboxSections(every.map((a) => ({ a, address: a.address, settledAt: settledAt(a), hidden: hidden(a),
+    // The filter chips: offered for the cards the space filter leaves, and only the offered ones count.
+    const spaceOf = new Map(sp.map((s) => [s.id, s]));
+    const facts = new Map(every.map((a) => [a.address, cardFacts(a, { settled: Boolean(settledAt(a)), blocked: state(a) === "blocked", working: working(a), space: spaceOf.get(a.space) })]));
+    const options = this.chipOptions = chipOptions(every.filter((a) => !scope.length || scope.includes(a.space)).map((a) => facts.get(a.address)));
+    const active = activeChips(this.chips, options), keeps = chipKeeps(active);
+    const chips = { options, active, on: chipsOn(active) };
+    const sections = inboxSections(every.map((a) => ({ a, address: a.address, kept: keeps(facts.get(a.address)), settledAt: settledAt(a), hidden: hidden(a),
       working: working(a), viewing: viewing(a), since: since(a), begun: begun(a), napUntil: napUntil(a) })),
       { scope, pins, workOpen: this.workOpen, napOpen: this.napOpen, open: this.open, limit: this.limit });
     const { pinned, out, work, nap, put, busyRows, napRows, rows, next } = sections;
@@ -296,7 +334,7 @@ export default class Inbox extends View {
     }
     if (publish) this.publishRows([...pinned, ...out, ...busyRows, ...napRows, ...rows], inView,
       [...pinned, ...out, ...work, ...nap, ...put]);
-    return { now, all, ps, sp, f, every, inView, scope, term, pins, wake, ...fields, ...sections };
+    return { now, all, ps, sp, f, every, inView, scope, term, pins, wake, chips, ...fields, ...sections };
   }
 
   publishRows(rows, view, ordered = rows) {

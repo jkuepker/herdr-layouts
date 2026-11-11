@@ -1,4 +1,5 @@
-// node t3-panels/dashboards/test.mjs: the Dashboard surface's data steps, and that every shipped dashboard reads.
+// node t3-panels/dashboards/test.mjs: the Dashboard surface's data steps, its edit and source paths with Herdr
+// stubbed, and that every shipped dashboard reads.
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -158,6 +159,120 @@ const fl = xg.fleetLayout(live.projects, 1000);
 assert.deepEqual(fl.regions.map((r) => [r.project, r.empty, r.minis.length]), [["p", false, 3], ["q", true, 0]]);
 assert.throws(() => xd.normalize({}), /no projects list/);
 
+// ---- the surface itself and its sources, with Herdr stubbed: "herdr", "gpui-kit", "gpui-base", look.js and side.js
+// resolve to the stub below (elements that swallow every call, a disk in a Map, an exec the test answers) ----
+const STUB = String.raw`const g = globalThis.__h ??= { disk: new Map(), execs: [], reads: [], sharedv: {} };
+const chain = () => new Proxy(function () {}, { get: (_t, p) => (p === "then" ? undefined : chain()), apply: () => chain() });
+export const div = chain(), v_flex = chain(), h_flex = chain(), icon = chain(), button = chain(), iconButton = chain(), alpha = () => "#000", tokens = () => ({}), agentMark = chain(), shortPath = (p) => p, PathBuilder = chain(), TextView = chain(), Input = chain(), Textarea = chain();
+class St { constructor(o) { this.v = o?.value ?? ""; } static new(o) { return new St(o); } value() { return this.v; } set_value(v) { this.v = v; } set_auto_grow() {} on() {} focus() {} release() {} }
+export const InputState = St, TextareaState = St;
+export const MOD = "ht3-panels", send = () => {}, showing = () => true, openScript = async () => null, activate = () => {}, ensureShown = () => {};
+export const home = () => "/home/u", appHome = () => "/app", spaces = () => [], focused = () => null, run = () => {}, notify = () => {}, hc = async () => ({ code: 1, stdout: "", stderr: "" });
+export const shared = (k) => g.sharedv[k], setShared = (k, v) => { g.sharedv[k] = v; };
+export const exec = async (cmd, args, o) => { g.execs.push([cmd, args, o]); return g.onExec ? g.onExec(cmd, args, o) : { code: 0, stdout: "", stderr: "" }; };
+export const readTextFile = async (p, o) => (g.reads.push([p, o]), g.disk.has(p) ? g.disk.get(p) : null);
+export const writeTextFile = async (p, text, expected) => { const now = g.disk.has(p) ? g.disk.get(p) : null; if (now !== expected) throw new Error("stale snapshot"); g.writes = (g.writes ?? 0) + 1; g.disk.set(p, text); return null; };
+`;
+const stubUrl = "data:text/javascript," + encodeURIComponent(STUB);
+const isStub = (spec) => ["herdr", "gpui-kit", "gpui-base"].includes(spec) || /\/(look|side)\.js$/.test(spec);
+const nodeModule = await import("node:module");
+if (nodeModule.registerHooks) nodeModule.registerHooks({ resolve: (spec, ctx, next) => (isStub(spec) ? { url: stubUrl, shortCircuit: true } : next(spec, ctx)) });
+else nodeModule.register("data:text/javascript," + encodeURIComponent(`const isStub = ${isStub}; export async function resolve(spec, ctx, next) { return isStub(spec) ? { url: ${JSON.stringify(stubUrl)}, shortCircuit: true } : next(spec, ctx); }`));
+const M = join(here, "../mods/ht3-panels/");
+const { DashboardPanel } = await import(M + "dashboard.js");
+const g = globalThis.__h;
+{
+const tasks = [];
+const cx = { notify() {}, spawn(f) { const p = f(cx); tasks.push(p); return p; }, timer: { every() {}, after() {} } };
+const settle = async () => { while (tasks.length) await tasks.shift(); await new Promise((r) => setTimeout(r, 5)); if (tasks.length) await settle(); };
+const P = "/app/data/ht3-dashboards/d.json";
+const mk = (n) => ({ type: "stat", title: n, w: 1, source: { type: "static", data: 1 } });
+const orig = JSON.stringify({ title: "D", widgets: [mk("a"), mk("b"), mk("c")] });
+g.disk.set(P, orig);
+g.onExec = (cmd, args) => (cmd === "sh" && args[1].includes("ls -1") ? { code: 0, stdout: "d.json\n", stderr: "" } : { code: 0, stdout: "", stderr: "" });
+const p = new DashboardPanel(); p.init({ group: "a" }, cx); await settle();
+assert.equal(p.current().dash.widgets.length, 3);
+p.setEditing(cx, true); await settle();
+const titles = () => JSON.parse(g.disk.get(P)).widgets.map((w) => w.title).join("");
+// no-ops write nothing
+g.writes = 0;
+p.change(cx, { move: 0, by: -1 }); p.change(cx, { move: 2, by: 1 }); p.change(cx, { width: 0, w: 0 }); p.change(cx, { width: 0, w: 1 }); await settle();
+assert.equal(g.writes, 0); assert.equal(g.disk.get(P), orig); assert.equal(p.editError, null); assert.ok(!g.disk.has(P + ".bak"));
+// the form follows its widget
+p.openForm(cx, 2); assert.equal(p.form.inputs.get("title").value(), "c");
+p.change(cx, { move: 2, by: -1 }); await settle();
+assert.equal(titles(), "acb"); assert.equal(p.form.i, 1); assert.equal(g.disk.get(P + ".bak"), orig);
+p.change(cx, { move: 0, by: 1 }); await settle();
+assert.equal(titles(), "cab"); assert.equal(p.form.i, 0);
+p.setField("title", "C2"); p.applyForm(cx); await settle();
+assert.equal(titles(), "C2ab"); assert.equal(p.form.top, "Saved.");
+const before = g.writes; p.applyForm(cx); await settle(); assert.equal(g.writes, before); assert.equal(p.form.top, "Saved.");
+// a change while one is being saved says so
+p.change(cx, { width: 1, w: 3 }); p.change(cx, { width: 2, w: 4 }); assert.match(p.editError, /Still saving/); await settle();
+assert.deepEqual(JSON.parse(g.disk.get(P)).widgets.map((w) => w.w), [1, 3, 1]);
+// changed on disk: not overwritten, the .bak not marked taken; a reload closes the form and drops state
+const other = JSON.stringify({ title: "D", widgets: [mk("z")] });
+g.disk.set(P, other); p.backed.clear(); g.disk.delete(P + ".bak");
+p.change(cx, { width: 0, w: 2 }); await settle();
+assert.match(p.editError, /changed on disk/); assert.equal(g.disk.get(P), other); assert.ok(!p.backed.has("d"));
+assert.ok(p.form); p.loadFiles(cx, true); p.loadFiles(cx, true); await settle(); assert.equal(p.form, null); assert.equal(p.current().dash.widgets.length, 1);
+p.change(cx, { width: 0, w: 2 }); await settle(); assert.equal(g.disk.get(P + ".bak"), other); assert.equal(p.editError, null);
+// confirm doesn't carry to another dashboard
+p.removeWidget(cx, 0); assert.ok(p.confirm); p.choose(cx, "d"); assert.equal(p.confirm, null);
+// a new dashboard whose file is there already isn't kept in the list
+g.disk.set("/app/data/ht3-dashboards/fresh.json", "{}"); p.newDashboard(cx, "Fresh"); await settle();
+assert.ok(!p.files.some((f) => f.name === "fresh")); assert.ok(p.editError);
+p.newDashboard(cx, "Other one"); await settle(); assert.ok(g.disk.has("/app/data/ht3-dashboards/other-one.json")); assert.equal(p.current().name, "other-one"); p.choose(cx, "d");
+// dash-set without "="
+p.openForm(cx, 0); p.editCommand("dash-set:title", cx); assert.equal(p.form.inputs.get("title").value(), "z"); p.editCommand("dash-set:title=q=1", cx); assert.equal(p.form.inputs.get("title").value(), "q=1");
+// a slow source is asked once
+let n = 0, done; g.onExec = (cmd) => { if (cmd === "slow") { n++; return new Promise((r) => { done = () => r({ code: 0, stdout: "1", stderr: "" }); }); } return { code: 0, stdout: "", stderr: "" }; };
+const src = { type: "command", run: "slow" }, a1 = p.ask(src, {}); p.answers.get(JSON.stringify(src)).at -= 60000; const a2 = p.ask(src, {});
+assert.equal(a1, a2); await new Promise((r) => setTimeout(r, 5)); assert.equal(n, 1); done(); assert.equal(await a1, 1);
+p.answers.get(JSON.stringify(src)).at -= 60000; p.ask(src, {}); await new Promise((r) => setTimeout(r, 5)); assert.equal(n, 2); done();
+// sources
+const { fetchSource } = await import(M + "dash-sources.js");
+g.execs.length = 0; g.onExec = () => ({ code: 0, stdout: JSON.stringify({ status: "success", data: { resultType: "vector", result: [{ metric: { host: "a" }, value: [1, "2"] }] } }), stderr: "" });
+assert.deepEqual((await fetchSource({ type: "prometheus", query: "up" }, { prometheus: "localhost:9090/" }))[0].value, 2);
+assert.equal(g.execs[0][1].at(-1), "http://localhost:9090/api/v1/query"); assert.ok(g.execs[0][1].includes("-g"));
+await assert.rejects(fetchSource({ type: "prometheus", query: "up", url: "file:///etc/passwd" }, {}), /starts with http/);
+g.execs.length = 0; await fetchSource({ type: "prometheus", query: "up", url: "-o /x" }, {}); assert.ok(g.execs[0][1].at(-1).startsWith("http://-o"));
+g.onExec = () => ({ code: 0, stdout: "not json", stderr: "" });
+await assert.rejects(fetchSource({ type: "fleetq" }), /isn't JSON: not json/);
+
+// "~/" is the home of the machine a path is used on: the local one as before, a remote one asked once per machine.
+const ok = (stdout) => ({ code: 0, stdout, stderr: "" });
+g.execs.length = 0; g.reads.length = 0; g.disk.set("/home/u/a.json", '{"a":1}'); g.disk.set("/remote/home/a.json", '{"a":2}');
+g.onExec = (cmd, args, o) => (o?.on === "box" && cmd === "sh" && args[1].includes("$HOME") ? ok("/remote/home\n") : ok("1"));
+assert.deepEqual(await fetchSource({ type: "file", path: "~/a.json" }), { a: 1 });
+assert.equal(g.execs.length, 0); assert.deepEqual(g.reads[0], ["/home/u/a.json", { on: null }]);
+assert.deepEqual(await fetchSource({ type: "file", path: "~/a.json", on: "box" }), { a: 2 });
+assert.deepEqual(g.reads[1], ["/remote/home/a.json", { on: "box" }]);
+await fetchSource({ type: "command", run: "x", cwd: "~/work", on: "box" }); await fetchSource({ type: "command", run: "x", cwd: "~", on: "box" });
+await fetchSource({ type: "command", run: "x", cwd: "~/work" }); await fetchSource({ type: "command", run: "x", cwd: "/abs", on: "box" }); await fetchSource({ type: "command", run: "x", on: "box" });
+const ran = g.execs.filter((x) => x[0] === "x").map((x) => x[2].cwd);
+assert.deepEqual(ran, ["/remote/home/work", "/remote/home", "/home/u/work", "/abs", undefined]);
+assert.equal(g.execs.filter((x) => x[0] === "sh").length, 1); // the remote home was asked once
+// A machine that doesn't answer is an error, and is asked again the next time.
+let homeAsks = 0; g.onExec = (cmd, args, o) => { if (o?.on === "far" && cmd === "sh") { homeAsks++; return homeAsks === 1 ? { code: 255, stdout: "", stderr: "no route" } : ok("/far/home"); } return ok("1"); };
+await assert.rejects(fetchSource({ type: "file", path: "~/a.json", on: "far" }), /far didn't say where its home folder is: no route/);
+await assert.rejects(fetchSource({ type: "file", path: "~/a.json", on: "far" }), /no such file/); assert.equal(homeAsks, 2); assert.equal(g.reads.at(-1)[0], "/far/home/a.json");
+// projects: an extra folder's ~/ is its machine's too; a machine that can't be asked still gets its row.
+g.onExec = (cmd, args, o) => { if (o?.on === "dead") throw new Error("unreachable"); return ok(args?.[1]?.includes("$HOME") && args.length === 2 ? "/remote/home" : "git=0\n"); };
+const rows = await fetchSource({ type: "projects", gh: false, extra: [{ path: "~/code/x", on: "box" }, { path: "~/code/y" }, { path: "~/code/z", on: "dead" }] });
+assert.deepEqual(rows.map((x) => [x.name, x.path, x.note]), [["x", "/remote/home/code/x", "Not a git repository"], ["y", "/home/u/code/y", "Not a git repository"], ["z", "~/code/z", "dead can't be reached"]]);
+// fleetq: "classes" names each host's class; without it there is none, and the old `spark` stays.
+const status = JSON.stringify({ hosts: [{ name: "gpu-1", capacity_gb: 100, free_gb: 40 }, { name: "mini", machine: "Mac-Studio" }, { name: "spark-a" }] });
+g.onExec = () => ok(status);
+let fq = await fetchSource({ type: "fleetq", classes: { gpu: "^gpu", mac: "STUDIO|mini" } });
+assert.deepEqual(fq.hosts.map((h) => h.class), ["gpu", "mac", null]); assert.equal(fq.hosts[0].used, 60);
+fq = await fetchSource({ type: "fleetq" });
+assert.ok(fq.hosts.every((h) => !("class" in h))); assert.deepEqual(fq.hosts.map((h) => h.spark), [false, false, true]);
+await assert.rejects(fetchSource({ type: "fleetq", classes: { gpu: "(" } }), /isn't a regular expression/);
+await assert.rejects(fetchSource({ type: "fleetq", classes: ["gpu"] }), /"classes" is/);
+assert.deepEqual(e.applyForm({ type: "stat", source: { type: "fleetq" } }, "fleetq", { "source.classes": '{"gpu":"^gpu"}' }).widget.source, { type: "fleetq", classes: { gpu: "^gpu" } });
+}
+
 // Every shipped dashboard reads, names known widget types, and its paths parse.
 let files = 0;
 for (const f of readdirSync(here).filter((x) => x.endsWith(".json"))) {
@@ -171,4 +286,4 @@ for (const f of readdirSync(here).filter((x) => x.endsWith(".json"))) {
     for (const p of paths) if (typeof p === "string") { if (d.isPath(p)) d.pick({}, p); else for (const m of p.matchAll(/\{([^{}]+)\}/g)) d.pick({}, m[1].trim()); }
   }
 }
-console.log(`ok: data steps, ${files} shipped dashboard${files === 1 ? "" : "s"}`);
+console.log(`ok: data steps, the surface with Herdr stubbed, ${files} shipped dashboard${files === 1 ? "" : "s"}`);

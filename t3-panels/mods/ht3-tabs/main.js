@@ -142,7 +142,11 @@ export default class Tabs extends View {
       // and can be undone, as an agent's.
       if (programOf(p).keep) {
         const address = `pane:${p.pane}`, own = shared("ht3-inbox.cards")?.[p.pane] ?? {};
-        if (own.settled) this.writeCard(p.pane, { settled: "" });
+        if (own.settled) {
+          this.writeCard(p.pane, { settled: "" });
+          // Brought back by the key, it is news: the Inbox puts it on top, as it does a terminal agent.
+          this.returned(address, all, ps);
+        }
         else if (!busy) {
           this.writeCard(p.pane, { settled: `${Date.now()}:${shared(`${p.mod}.turns`)?.[p.tab] ?? 0}`, snoozed: "" });
           const pins = shared("agents.pins") ?? [];
@@ -162,11 +166,7 @@ export default class Tabs extends View {
     const kids = subAgents(every, all)(address), own = ownStatus(a.status, address, all);
     if ([own, ...kids].some(s => s === "working" || s === "blocked")) return;
     if (stillSettled(k, own, kids)) {
-      if (await this.writeLabel(address, "settled", "")) {
-        // Kept for live terminals only, so the record doesn't grow with every agent ever brought back.
-        const unsettled = Object.fromEntries(Object.entries(shared("ht3-inbox.unsettled") ?? {}).filter(([at]) => all.some(t => t.address === at)));
-        setShared("ht3-inbox.unsettled", { ...unsettled, [address]: Math.max(Date.now(), (unsettled[address] ?? 0) + 1) });
-      }
+      if (await this.writeLabel(address, "settled", "")) this.returned(address, all, panes());
       return;
     }
     const snoozed = k?.labels?.snoozed ?? "";
@@ -177,6 +177,14 @@ export default class Tabs extends View {
     this.remember("Settled", { address, snoozed, pins }, cx);
     const current = focused();
     if (["space", "tab", "pane", "terminal", "agent"].every(key => current?.[key] === f[key])) run("ht3-tabs.home");
+  }
+
+  // Tells the Inbox an agent or a kept card (`pane:<id>`) came back by the key (shared "ht3-inbox.unsettled": address -> when).
+  // Kept for live terminals and panes only, so the record doesn't grow with everything ever brought back.
+  returned(address, all, ps) {
+    const live = (at) => at.startsWith("pane:") ? ps.some(p => p.pane === at.slice(5)) : all.some(t => t.address === at);
+    const unsettled = Object.fromEntries(Object.entries(shared("ht3-inbox.unsettled") ?? {}).filter(([at]) => live(at)));
+    setShared("ht3-inbox.unsettled", { ...unsettled, [address]: Math.max(Date.now(), (unsettled[address] ?? 0) + 1) });
   }
 
   unpin(address, cx) {

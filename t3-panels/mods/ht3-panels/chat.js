@@ -15,7 +15,7 @@ import { AcpSource, detect, argvOf, forkChat, agentOf, chatLike, askOnce } from 
 import { TermSource } from "./agent-term.js";
 import { Reporter } from "./report.js";
 import { fileIcon } from "./fileicons.js";
-import { snapshot, turnStat } from "./checkpoint.js";
+import { snapshot, turnStat, undoRevert, prune, chatsWithRefs, safe as refName, KEEP } from "./checkpoint.js";
 import { checkpointsOn, followUp, limitModels, rememberModels } from "./settings.js";
 import { addNotice, toMarkdown } from "./transcript.js";
 import { repoOf } from "./launcher.js";
@@ -122,6 +122,31 @@ function keep(id, patch) {
   if (JSON.stringify(all) !== JSON.stringify(shared(KEPT) ?? {})) setShared(KEPT, all);
 }
 
+// Where each chat's checkpoints are, so a chat deleted from Earlier chats can have its refs dropped in the repository
+// they are in: shared("ht3-panels.cps") = { <chat id>: { cwd, on } }. Looked through at most every SWEEP_EVERY_MS a pane.
+const CPS = `${MOD}.cps`, SWEEP_EVERY_MS = 10 * 60 * 1000;
+
+// A queued message's "@" files as the message box's chips: the spans it was typed with, where they still fit its
+// text; for one kept by an older build (no spans), each linked file's "@path" found in the text again.
+function chipsOf(q, cwd) {
+  const text = String(q.text ?? "");
+  const fits = (t) => t?.token?.id && Number.isInteger(t.range?.start) && t.range.start >= 0 && t.range.end <= text.length && text.slice(t.range.start, t.range.end) === t.token.text;
+  if (Array.isArray(q.tokens)) return q.tokens.filter(fits);
+  const out = [], root = String(cwd ?? "").replace(/\/$/, "");
+  for (const b of q.blocks ?? []) {
+    if (b.type !== "resource_link" || !String(b.uri ?? "").startsWith("file://")) continue;
+    let abs; try { abs = decodeURI(b.uri.slice(7)); } catch { continue; }
+    const rel = root && abs.startsWith(root + "/") ? abs.slice(root.length + 1) : abs;
+    for (let at = text.indexOf(`@${rel}`); at >= 0; at = text.indexOf(`@${rel}`, at + 1)) {
+      const end = at + rel.length + 1;
+      // A whole word only: "@src/a.js" is not a chip inside "@src/a.json".
+      if ((at === 0 || /\s/.test(text[at - 1])) && (end === text.length || /\s/.test(text[end])) && !out.some((t) => t.range.start < end && at < t.range.end))
+        out.push({ range: { start: at, end }, token: { id: rel, text: `@${rel}`, label: rel.split("/").pop() } });
+    }
+  }
+  return out.sort((a, b) => a.range.start - b.range.start);
+}
+
 // The prompt stash (T3's ComposerStashMenu): drafts parked to come back to, per project.
 // shared("ht3-panels.stash"): { "<machine or empty>:<project folder>": [{ text, at }] }, newest first, at most 20.
 const STASH = `${MOD}.stash`;
@@ -147,7 +172,7 @@ export class ChatPanel {
     this.autoAllow = keptOf(this.chatId).allow === true;
     // Messages queued before a reload wait on: they go out when the agent is back and ready.
     const waiting = keptOf(this.chatId).queue;
-    if (Array.isArray(waiting) && waiting.length) this.queue = waiting.map((q) => ({ text: String(q.text ?? ""), blocks: q.blocks ?? [], files: (q.files ?? []).map((a) => ({ ...a, type: a.type ?? IMAGE_TYPES[String(a.name ?? "").split(".").pop().toLowerCase()] ?? null })) }));
+    if (Array.isArray(waiting) && waiting.length) this.queue = waiting.map((q) => ({ text: String(q.text ?? ""), blocks: q.blocks ?? [], ...(Array.isArray(q.tokens) ? { tokens: q.tokens } : {}), files: (q.files ?? []).map((a) => ({ ...a, type: a.type ?? IMAGE_TYPES[String(a.name ?? "").split(".").pop().toLowerCase()] ?? null })) }));
     // A chat tab's agent has no terminal: it tells the layout's lists how it is itself (report.js).
     // A side chat is no tab, and a terminal agent's chat has its terminal to speak for it.
     this.reporter = this.chatId && !p.terminal && !p.side ? new Reporter(this.chatId) : null;
@@ -189,7 +214,10 @@ export class ChatPanel {
         src.remoteError = d.error;
         const argv = argvOf(p.agent, d.found);
         this.phase = "chat";
-        if (argv) src.start(cx, argv, p.cwd ?? d.found.HOME ?? home(), p.prompt ?? null, p.set ?? null);
+        // A new chat's first message (a `prompt` prop: send as new chat, New chat on this branch) goes the way every
+        // message does, as the first of the queue, sent once the agent is up: so its turn has a checkpoint too.
+        if (argv && p.prompt && !this.queue?.length) { this.queue = [{ text: String(p.prompt), blocks: [], files: [], tokens: [] }]; this.keepQueue(); }
+        if (argv) src.start(cx, argv, p.cwd ?? d.found.HOME ?? home(), null, p.set ?? null);
         else src.startError = d.error ?? `${Array.isArray(p.agent) ? p.agent[0] : p.agent ?? "The agent"} isn't installed.`;
         cx.notify();
       });
@@ -206,7 +234,10 @@ export class ChatPanel {
         const first = this.revertSeen === undefined && Date.now() - rv.at > 5000;
         this.revertSeen = rv.at;
         if (!first && this.source?.kind === "acp" && this.source.state) {
-          addNotice(this.source.state.transcript, rv.ok ? `Files are back as they were before "${rv.label}". What was there is kept as checkpoint ${String(rv.undo ?? "").slice(0, 8)}. The agent still remembers what it did.` : `Couldn't revert: ${rv.error}`, rv.ok ? "info" : "error");
+          // Only the newest revert can be undone: an older one's files are no longer what it left.
+          const t = this.source.state.transcript, undo = rv.ok && /^[0-9a-f]{40,64}$/.test(String(rv.undo ?? "")) ? rv.undo : null;
+          if (rv.ok) for (const m of t.items) if (m.undo) delete m.undo;
+          addNotice(t, rv.ok ? `Files are back as they were before "${rv.label}". What was there is kept as checkpoint ${String(rv.undo ?? "").slice(0, 8)}. The agent still remembers what it did.` : `Couldn't revert: ${rv.error}`, rv.ok ? "info" : "error", undo ? { undo } : null);
           this.source.changed?.(cx, true);
         }
       }
@@ -296,6 +327,8 @@ export class ChatPanel {
     this.input.on("change", (_e, cx) => {
       const has = this.input.value().trim().length > 0;
       const changed = this.typed(cx);
+      // A queued message being edited that was emptied, with no draft to return to, is no edit any more.
+      if (this.editing && !this.parked && !has && !this.attached?.length) { this.editing = null; cx.notify(); }
       if (has !== this.hasText || changed) { this.hasText = has; cx.notify(); }
     });
   }
@@ -598,9 +631,13 @@ export class ChatPanel {
     if (c === "send") this.send(cx);
     // hover:<item id>: as the pointer over that message (its copy icon shows); hover: alone, off.
     if (c.startsWith("hover:")) this.over = c.slice(6) || null;
-    // queue:<steer|up|down|edit|drop>:<n>: a queued message's buttons (n from 0, or "last").
-    if (c.startsWith("queue:")) { const [, what, n] = c.split(":"); this.queued(cx, what, n === "last" ? (this.queue?.length ?? 1) - 1 : Number(n) || 0); }
+    // queue:<steer|up|down|edit|drop>:<n>: a queued message's buttons (n from 0, or "last"). queue:back: the message
+    // being edited goes back to the queue and the draft it took the place of returns (backToDraft).
+    if (c === "queue:back") this.backToDraft(cx);
+    else if (c.startsWith("queue:")) { const [, what, n] = c.split(":"); this.queued(cx, what, n === "last" ? (this.queue?.length ?? 1) - 1 : Number(n) || 0); }
     // turn-diff:<last|item id> and revert:<last|item id>: "View diff" and "Revert" of a turn that changed files.
+    // undo-revert: the Undo of the last revert's note.
+    if (c === "undo-revert") this.undoRevert(cx, this.source.state?.transcript?.items.findLast((m) => m.undo));
     if (c.startsWith("turn-diff:") || c.startsWith("revert:")) {
       const w = c.slice(c.indexOf(":") + 1);
       const m = [...(this.view?.items ?? [])].reverse().find((x) => x.kind === "user" && x.cp?.after && x.cp.files > 0 && (w === "last" || String(x.id) === w));
@@ -659,44 +696,59 @@ export class ChatPanel {
     const naming = /^\/rename(?:\s+([\s\S]*))?$/.exec(text);
     if (naming) { this.input.set_value(""); this.hasText = false; this.trig = null; return this.rename(cx, naming[1] ?? ""); }
     if ((!text && !files.length) || !v?.alive) return;
+    const payload = this.boxMessage(v);
+    // A queued message that was being edited goes back to its place; the draft it was set before returns to the box.
+    const editing = this.editing, parked = this.parked;
+    this.editing = this.parked = null;
+    this.input.set_value(parked?.content ?? "");
+    this.hasText = !!parked?.content.text.trim();
+    this.trig = null;
+    this.follow = true;
+    this.attached = parked?.files ?? [];
+    // An ACP agent takes one message per turn. One sent while it works waits in a queue for the turn to end
+    // (QueuedRunsControl.tsx), or, with "Steer instead of queue" on, interrupts it and goes in at once.
+    // A new chat still setting its model holds its messages too (agent-acp.js `settingUp`).
+    if (this.source.kind === "acp" && (v.status !== "ready" || this.sending || this.queue?.length || this.source.settingUp)) {
+      this.queue ??= [];
+      // Steer: into the running turn where the agent takes it, else the turn ends and this is the next message (session.js steer).
+      if (followUp() === "steer" && ["working", "blocked"].includes(v.status) && !this.sending) return this.dispatch(cx, payload, true);
+      this.queue.splice(Math.min(editing?.at ?? this.queue.length, this.queue.length), 0, payload);
+      this.keepQueue();
+      this.drain(cx);
+      return cx.notify();
+    }
+    this.dispatch(cx, payload);
+  }
+
+  // What the message box holds, as a message: { text, blocks, files, tokens }.
+  boxMessage(v) {
+    const raw = this.input.value(), text = raw.trim(), lead = raw.length - raw.trimStart().length;
+    const acp = this.source.kind === "acp", spans = acp ? this.input.tokens() : [];
     // Each file named with "@" goes along as an ACP resource link (the text keeps its "@path").
     const seen = new Set(), blocks = [];
-    for (const s of this.source.kind === "acp" ? this.input.tokens() : []) {
+    for (const s of spans) {
       const path = s.token.id;
       if (seen.has(path)) continue;
       seen.add(path);
       const abs = path.startsWith("/") ? path : `${String(v.cwd ?? "").replace(/\/$/, "")}/${path}`;
       blocks.push({ type: "resource_link", uri: `file://${encodeURI(abs)}`, name: path.split("/").pop() });
     }
-    this.input.set_value("");
-    this.hasText = false;
-    this.trig = null;
-    this.follow = true;
-    this.attached = [];
-    const payload = { text, blocks, files };
-    // An ACP agent takes one message per turn. One sent while it works waits in a queue for the turn to end
-    // (QueuedRunsControl.tsx), or, with "Steer instead of queue" on, interrupts it and goes in at once.
-    if (this.source.kind === "acp" && (v.status !== "ready" || this.sending || this.queue?.length)) {
-      this.queue ??= [];
-      // Steer: into the running turn where the agent takes it, else the turn ends and this is the next message (session.js steer).
-      if (followUp() === "steer" && ["working", "blocked"].includes(v.status) && !this.sending) return this.dispatch(cx, payload, true);
-      this.queue.push(payload);
-      this.keepQueue();
-      return cx.notify();
-    }
-    this.dispatch(cx, payload);
+    // Where the chips sit in the trimmed text, so a queued message edited again gets them back (chipsOf).
+    const tokens = spans.map((s) => ({ range: { start: s.range.start - lead, end: s.range.end - lead }, token: { id: s.token.id, text: s.token.text, ...(s.token.label ? { label: s.token.label } : {}) } }))
+      .filter((s) => s.range.start >= 0 && s.range.end <= text.length);
+    return { text, blocks, files: acp ? [...(this.attached ?? [])] : [], tokens };
   }
 
   // The next queued message goes out once the agent is ready for one.
   drain(cx) {
-    if (!this.queue?.length || this.sending || this.source.kind !== "acp" || !this.source.alive || this.source.word() !== "ready") return;
+    if (!this.queue?.length || this.sending || this.source.kind !== "acp" || !this.source.alive || this.source.word() !== "ready" || this.source.settingUp) return;
     const next = this.queue.shift();
     this.keepQueue();
     this.dispatch(cx, next);
   }
 
   keepQueue() {
-    keep(this.chatId, { queue: (this.queue ?? []).map((q) => ({ text: q.text, blocks: q.blocks, files: q.files.map((a) => ({ name: a.name, path: a.path, image: a.image, type: a.type ?? null, thumb: a.thumb })) })) });
+    keep(this.chatId, { queue: (this.queue ?? []).map((q) => ({ text: q.text, blocks: q.blocks, ...(Array.isArray(q.tokens) ? { tokens: q.tokens } : {}), files: q.files.map((a) => ({ name: a.name, path: a.path, image: a.image, type: a.type ?? null, thumb: a.thumb })) })) });
   }
 
   // A queued message's buttons: steer (it goes in now), up and down (its place), edit (back into the message box), drop.
@@ -708,15 +760,46 @@ export class ChatPanel {
     if (what === "steer") { if (this.source.word() !== "working" || this.sending) { this.queue.unshift(q); this.drain(cx); } else this.dispatch(cx, q, true); }
     // up and down: its place in the queue.
     if (what === "up" || what === "down") this.queue.splice(Math.max(0, Math.min(this.queue.length, i + (what === "up" ? -1 : 1))), 0, q);
-    if (what === "edit") { this.input.set_value(q.text); this.hasText = !!q.text.trim(); this.attached = [...(this.attached ?? []), ...q.files]; this.input.focus(); }
+    if (what === "edit") {
+      const now = this.input.content(), files = this.attached ?? [], has = !!now.text.trim() || files.length > 0;
+      // The box is not empty. If it holds another queued message being edited, that one goes back to the queue, where
+      // this one was. Else it is a draft: it is set aside, whole (its "@" files and attachments), and comes back
+      // when this message is sent or put back (backToDraft).
+      if (has && this.editing) this.queue.splice(Math.min(i, this.queue.length), 0, this.boxMessage(this.view ?? this.source.view()));
+      else if (has) this.parked = { content: { text: now.text, tokens: now.tokens ?? [] }, files };
+      this.editing = { at: i };
+      this.attached = [...q.files];
+      // Its "@" files come back as chips, so sending it again links them again.
+      this.input.set_value({ text: q.text, tokens: chipsOf(q, (this.view ?? this.source.view()).cwd) });
+      this.hasText = !!q.text.trim();
+      this.trig = null;
+      this.input.focus();
+    }
     this.keepQueue();
+    cx.notify();
+  }
+
+  // "Back to draft" over the message box while a queued message is being edited: the message goes back to the queue
+  // where it was (an emptied box drops it), and the draft that was set aside returns.
+  backToDraft(cx) {
+    if (!this.editing) return;
+    const msg = this.boxMessage(this.view ?? this.source.view()), parked = this.parked;
+    if (msg.text || msg.files.length) { this.queue ??= []; this.queue.splice(Math.min(this.editing.at, this.queue.length), 0, msg); }
+    this.editing = this.parked = null;
+    this.attached = parked?.files ?? [];
+    this.input.set_value(parked?.content ?? "");
+    this.hasText = !!parked?.content.text.trim();
+    this.trig = null;
+    this.keepQueue();
+    this.drain(cx);
     cx.notify();
   }
 
   // Sends one message: { text, blocks (ACP blocks for "@" files), files (attachments) }. `steer`: for the turn that is running.
   dispatch(cx, { text, blocks, files }, steer = false) {
     const out = (...args) => (steer && this.source.steer ? this.source.steer(...args) : this.source.send(...args));
-    const v = this.view ?? this.source.view();
+    // The chat as it is now, not as last drawn: a new chat's first message may go out before its pane was drawn with a folder.
+    const v = this.source.view();
     this.follow = true;
     const att = files.length ? files.map((a) => ({ name: a.name, path: a.path, image: a.image, thumb: a.thumb })) : null;
     // A steering message is part of the turn it goes into: that turn's checkpoint stays the open one.
@@ -733,6 +816,9 @@ export class ChatPanel {
       out(cx, text, [...blocks, ...more], att);
       const mine = [...(this.source.state?.transcript?.items ?? [])].reverse().find((m) => m.kind === "user");
       if (before && mine && !mine.cp) { mine.cp = { before, n }; this.cpOpen = { item: mine, where }; }
+      // Where this chat's checkpoints are, for the day it is deleted (tidy).
+      const known = shared(CPS) ?? {};
+      if (before && this.chatId && (known[this.chatId]?.cwd !== where.cwd || (known[this.chatId]?.on ?? null) !== (where.on ?? null))) setShared(CPS, { ...known, [this.chatId]: { cwd: where.cwd, on: where.on ?? null } });
       cx.notify();
     });
     cx.notify();
@@ -750,6 +836,57 @@ export class ChatPanel {
         if (after) Object.assign(open.item.cp, { after, ...(await turnStat(open.where, open.item.cp.before, after)), cwd: open.where.cwd, on: open.where.on ?? null });
         this.source.changed?.(cx, true);
       } finally { this.cpBusy = false; cx.notify(); }
+      // A short turn that ended while this one's snapshot was taken found it busy: its own is taken now.
+      this.turnEnded(cx);
+      // Not waited for: a message sent now takes its own snapshot beside it.
+      this.tidy(open.where).catch(() => {});
+    });
+  }
+
+  // Old checkpoints go when a turn has ended, the quiet moment: this chat keeps its newest KEEP refs, and chats
+  // deleted from Earlier chats lose theirs. Nothing waits on it.
+  async tidy(where) {
+    if (!this.chatId) return;
+    await prune(where, this.chatId, KEEP);
+    if (Date.now() - (this.sweptAt ?? 0) < SWEEP_EVERY_MS) return;
+    this.sweptAt = Date.now();
+    const r = await exec("/bin/sh", ["-c", "cd \"$1\" && ls -1", "sh", `${appHome()}/data/${MOD}/chats`]).catch(() => null);
+    const here = new Set(String(r?.stdout ?? "").split("\n").filter(Boolean).map(refName));
+    // A listing that failed, or one without this very chat in it, proves nothing: no ref is dropped on its word.
+    if (r?.code !== 0 || !here.has(refName(this.chatId))) return;
+    // The deleted chats this app took checkpoints for, each in its own repository, a few at a time. One whose
+    // machine can't be reached now stays on the list for a later turn.
+    const known = shared(CPS) ?? {}, done = [];
+    for (const id of Object.keys(known).filter((id) => !here.has(refName(id))).slice(0, 8))
+      if (await prune({ cwd: known[id]?.cwd, on: known[id]?.on ?? undefined }, id, 0)) done.push(id);
+    if (done.length) { const next = { ...(shared(CPS) ?? {}) }; for (const id of done) delete next[id]; setShared(CPS, next); }
+    // Chats from before that list was kept: those with refs in this repository and no folder any more. On this
+    // computer only: a repository on another machine may hold the chats of that machine's own Herdr.
+    if (!where.on) {
+      const stale = ((await chatsWithRefs(where)) ?? []).filter((id) => !here.has(id));
+      if (stale.length) await prune(where, stale, 0);
+    }
+  }
+
+  // "Undo" on a revert's note: the files go back to what the revert replaced (its undo-<time> snapshot). Git refuses
+  // when anything changed since the revert, and then nothing is touched.
+  undoRevert(cx, m) {
+    const s = this.source.kind === "acp" ? this.source.state : null;
+    if (!m?.undo || !s?.cwd || this.undoing) return;
+    this.undoing = true;
+    cx.notify();
+    cx.spawn(async (cx) => {
+      try {
+        const r = await undoRevert({ cwd: s.cwd, on: s.machine ?? undefined }, m.undo), kept = String(m.undo).slice(0, 8);
+        // The Undo stays while it may still work: after "files changed" they can be put back by hand and Undo pressed again.
+        if (r.ok || r.gone) delete m.undo;
+        if (r.ok) addNotice(s.transcript, "Revert undone: the files are as they were before it.");
+        else if (r.changed) addNotice(s.transcript, `Couldn't undo the revert: files changed since it, and undoing would lose those changes. Nothing was touched.\nWhat the revert replaced is still kept as checkpoint ${kept}.`, "warn");
+        else addNotice(s.transcript, `Couldn't undo the revert: ${r.error}`, "error");
+      } finally {
+        this.undoing = false;
+        this.source.changed?.(cx, true);
+      }
     });
   }
 
@@ -1490,6 +1627,13 @@ export class ChatPanel {
           .when(this.planMode()?.on === true && this.view?.status === "ready" && this.source.state?.transcript.items.findLast((i) => i.kind === "plan")?.entries === m.entries, (el) => el
             .child(h_flex().justify_end().child(button(k, "plan-implement", "Implement this plan", (cx) => this.implementPlan(cx), { variant: "default", size: "sm", glyph: "hammer" })))), 16);
       case "notice":
+        // A revert's note, while it can be undone: its words and Undo, as the changed-files row it answers.
+        if (m.undo) return lane(h_flex().min_h(40).pl(12).pr(6).py(8).gap(8).items_center().rounded(12).border(1).border_color(alpha(k.border, 0.7)).bg(alpha(k.card, 0.6)).text_size(13)
+          .child(icon("rotate-ccw").size(14).flex_none().text_color(k.muted))
+          .child(div().flex_1().min_w(0).line_height("18px").text_color(alpha(k.foreground, 0.8)).child(m.text))
+          .child(div().id(`undo-revert-${m.id}`).h(28).px(8).flex().flex_none().items_center().rounded(6).text_size(13).text_color(k.muted).cursor_pointer().role("button")
+            .accessibility_label("Undo the revert").tooltip("Put the files back as they were before the revert. Refused if files changed since.")
+            .hover((s) => s.bg(k.accent).text_color(k.foreground)).on_mouse_down("left", (_e, cx) => this.undoRevert(cx, m)).child(this.undoing ? "Undoing…" : "Undo")), 12);
         if (m.level === "info") return lane(divider(k, m.text), 0);
         return lane(v_flex()
           .child(workLine(k, "circle-alert", m.text.split("\n")[0], { color: m.level === "error" ? k.destructive : k.warning, bold: true }))
@@ -1749,6 +1893,10 @@ export class ChatPanel {
         .child(action));
     const limit = this.limitLine(k, v);
     const box = drawer || limit ? v_flex().when(!!limit, (el) => el.child(limit)).when(!!drawer, (el) => el.child(drawer)).child(card) : card;
-    return lane(queue.length ? v_flex().child(queueRows).child(box) : box);
+    // While a queued message is in the box: what it is, where a draft went, and the way back.
+    const editLine = this.editing ? h_flex().w_full().justify_end().items_center().gap(6).pb(6).text_size(11).text_color(k.muted)
+      .child(div().min_w(0).truncate().child(this.parked ? "Editing a queued message · your draft comes back when it is sent" : "Editing a queued message"))
+      .child(button(k, "q-back", this.parked ? "Back to draft" : "Put it back", (cx) => this.backToDraft(cx), { variant: "ghost-muted" })) : null;
+    return lane(queue.length || editLine ? v_flex().when(queue.length > 0, (el) => el.child(queueRows)).when(!!editLine, (el) => el.child(editLine)).child(box) : box);
   }
 }

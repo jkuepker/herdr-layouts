@@ -34,8 +34,9 @@ export function handoffText(t, max = 60000) {
   return text;
 }
 
-export function addNotice(t, text, level = "info") {
-  push(t, { kind: "notice", text, level });
+// `more`: what a notice carries besides its words, e.g. { undo: <commit> } on a revert's (chat.js draws its Undo).
+export function addNotice(t, text, level = "info", more = null) {
+  push(t, { kind: "notice", text, level, ...(more ?? {}) });
 }
 
 export function applyUpdate(t, u) {

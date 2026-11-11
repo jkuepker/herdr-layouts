@@ -1,22 +1,23 @@
 {
   "title": "Fleet (example: needs fleetq)",
   "refresh": 20,
+  "sources": { "fleet": { "type": "fleetq", "classes": { "gpu": "^gpu" } } },
   "widgets": [
     { "type": "status", "title": "Boxes", "w": 2,
-      "source": { "type": "fleetq" }, "pick": ".hosts[]",
+      "source": "fleet", "pick": ".hosts[]",
       "label": ".name", "state": ".state", "sub": "{.free} GB free" },
     { "type": "stat", "title": "Jobs running", "w": 1,
-      "source": { "type": "fleetq" }, "pick": ".jobs", "filter": { "path": ".state", "match": "^running$" },
+      "source": "fleet", "pick": ".jobs", "filter": { "path": ".state", "match": "^running$" },
       "count": true, "thresholds": { "warn": 1 } },
     { "type": "stat", "title": "fleetq's last look", "w": 1,
-      "source": { "type": "fleetq" }, "value": ".probe_age_s", "format": "age", "sub": "ago",
+      "source": "fleet", "value": ".probe_age_s", "format": "age", "sub": "ago",
       "thresholds": { "warn": 120, "bad": 600 } },
     { "type": "table", "title": "Memory, GPU, services, jobs", "w": 4,
-      "source": { "type": "fleetq" }, "pick": ".hosts[]",
+      "source": "fleet", "pick": ".hosts[]",
       "columns": [
         { "title": "Box", "value": ".name" },
         { "title": "Free", "value": ".free", "unit": "GB", "decimals": 0, "w": 64,
-          "thresholds": { "below": true, "warn": 20, "bad": 10, "when": { "path": ".name", "match": "^gpu" } } },
+          "thresholds": { "below": true, "warn": 20, "bad": 10, "when": { "path": ".class", "match": "^gpu$" } } },
         { "title": "Used", "value": ".used", "unit": "GB", "decimals": 0, "w": 64 },
         { "title": "Of", "value": ".capacity_gb", "unit": "GB", "decimals": 0, "w": 64 },
         { "title": "GPU busy", "value": ".gpu_pct", "unit": "%", "w": 64 },
@@ -26,18 +27,18 @@
         { "title": "Queued", "value": ".queued_n", "w": 52, "thresholds": { "warn": 1 } }
       ] },
     { "type": "bars", "title": "Memory used", "w": 2,
-      "source": { "type": "fleetq" }, "pick": ".hosts[]",
+      "source": "fleet", "pick": ".hosts[]",
       "label": ".name", "value": ".used", "max": ".capacity_gb", "unit": "GB", "decimals": 0, "labelWidth": 110,
-      "of": ".free", "thresholds": { "below": true, "warn": 20, "bad": 10, "when": { "path": ".name", "match": "^gpu" } } },
+      "of": ".free", "thresholds": { "below": true, "warn": 20, "bad": 10, "when": { "path": ".class", "match": "^gpu$" } } },
     { "type": "status", "title": "Services", "w": 2,
-      "source": { "type": "fleetq" }, "pick": ".services",
+      "source": "fleet", "pick": ".services",
       "label": ".name", "state": ".state", "sub": ".host",
       "thresholds": { "ok": ["up"], "warn": ["held", "warn"] } },
     { "type": "list", "title": "Jobs, running and queued", "w": 2,
-      "source": { "type": "fleetq" }, "pick": ".jobs",
+      "source": "fleet", "pick": ".jobs",
       "text": "#{.id} {.label}", "sub": "{.on} · {.when}", "state": ".state",
       "thresholds": { "ok": ["running"], "warn": ["queued"] }, "empty": "Nothing running or queued" },
     { "type": "list", "title": "Warnings", "w": 2,
-      "source": { "type": "fleetq" }, "pick": ".warnings", "empty": "No warnings" }
+      "source": "fleet", "pick": ".warnings", "empty": "No warnings" }
   ]
 }

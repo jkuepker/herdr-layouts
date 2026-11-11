@@ -267,10 +267,16 @@ export class AcpSource {
       this.state = session.state;
       cx.notify();
       const started = session.start();
+      // While a new chat's options are being set the session already says "ready": `settingUp` tells the chat to hold
+      // its messages until they are, so the first one goes to the model that was asked for.
+      this.settingUp = Object.keys(set ?? {}).length > 0;
       started.then(async (ok) => {
+        if (ok) for (const [id, value] of Object.entries(set ?? {})) await session.setConfig(id, value);
+        const held = this.settingUp;
+        if (this.proc === proc) this.settingUp = false;
         if (!ok) return;
-        for (const [id, value] of Object.entries(set ?? {})) await session.setConfig(id, value);
         if (first) session.handle({ type: "prompt", text: first });
+        else if (held && this.proc === proc) this.changed(cx, true);
       });
       for (let line; (line = await processNextLine(proc)) != null;) session.feed(line);
       const exit = await exited;

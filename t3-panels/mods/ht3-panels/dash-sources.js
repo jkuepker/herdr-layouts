@@ -6,7 +6,26 @@ import { exec, readTextFile, home, spaces } from "herdr";
 import { promRows, joinBy, seconds, parse, ciOf } from "./dash-data.js";
 
 const first = (text) => String(text ?? "").trim().split("\n")[0].slice(0, 200);
-const tilde = (p) => (String(p).startsWith("~/") ? home() + String(p).slice(1) : String(p));
+// "~/…" is the home folder of the machine the path is used on: this computer's, or (with `on`) that machine's own,
+// asked of it once and kept (a machine that didn't answer is asked again next time).
+const homes = new Map();
+function homeOn(on) {
+  if (!on) return Promise.resolve(home());
+  if (!homes.has(on)) {
+    const asked = exec("sh", ["-c", 'printf %s "$HOME"'], { on, timeout: 15000 }).then((r) => {
+      const h = String(r.stdout ?? "").trim().replace(/\/+$/, "");
+      if (r.code !== 0 || !h.startsWith("/")) throw new Error(`${on} didn't say where its home folder is${first(r.stderr) ? `: ${first(r.stderr)}` : ""}`);
+      return h;
+    });
+    asked.catch(() => { if (homes.get(on) === asked) homes.delete(on); });
+    homes.set(on, asked);
+  }
+  return homes.get(on);
+}
+async function tilde(p, on = null) {
+  const t = String(p);
+  return t === "~" || t.startsWith("~/") ? (await homeOn(on)) + t.slice(1) : t;
+}
 
 // "static": the data is in the file itself ({ data }). For trying a widget out.
 async function fromStatic(s) {
@@ -51,8 +70,9 @@ async function fromPrometheus(s, ctx) {
 async function fromCommand(s) {
   const cmd = s.shell != null ? "sh" : s.run, args = s.shell != null ? ["-c", String(s.shell)] : (s.args ?? []).map(String);
   if (!cmd) throw new Error('A "command" source needs "run" or "shell"');
+  const cwd = s.cwd ? await tilde(s.cwd, s.on ?? null) : null;
   let r;
-  try { r = await exec(String(cmd), args, { on: s.on ?? null, ...(s.cwd ? { cwd: tilde(s.cwd) } : {}), timeout: Math.min(120, Math.max(1, seconds(s.timeout, 20))) * 1000 }); }
+  try { r = await exec(String(cmd), args, { on: s.on ?? null, ...(cwd ? { cwd } : {}), timeout: Math.min(120, Math.max(1, seconds(s.timeout, 20))) * 1000 }); }
   catch (e) { if (/No such file or directory|not found/i.test(String(e?.message ?? e))) throw new Error(`Needs ${cmd}, which isn't installed here`); throw e; }
   // A program the shell didn't find (also the first of a pipe, which then prints nothing) is a missing program, said as one.
   const lacks = (r.code !== 0 || !String(r.stdout ?? "").trim()) && /(?:^|: )([\w.-]+): (?:command )?not found/m.exec(r.stderr ?? "")?.[1];
@@ -73,20 +93,33 @@ async function fromHttp(s) {
   return parse(r.stdout, s.parse);
 }
 
-// "file": { path (~/ is the home folder), on, parse }. Up to 1 MiB.
+// "file": { path (~/ is the home folder, of the machine `on` names when there is one), on, parse }. Up to 1 MiB.
 async function fromFile(s) {
   if (!s.path) throw new Error('A "file" source needs "path"');
-  const text = await readTextFile(tilde(s.path), { on: s.on ?? null });
+  const text = await readTextFile(await tilde(s.path, s.on ?? null), { on: s.on ?? null });
   if (text == null) throw new Error(`${s.path}: no such file (or over 1 MiB)`);
   return parse(text, s.parse);
 }
 
 // "fleetq": `fleetq status --json`, as the `fleet` mod reads it, with what a widget would otherwise have to work
 // out added: per host `free` (the measured free memory when the box reports it, else fleetq's sum), `used`,
-// `gpu_pct`, `spark`, `services_n`, `up` and `down` (services), `running_n`, `queued_n`, `state` ("online" | "offline"); and at
+// `gpu_pct`, `class`, `services_n`, `up` and `down` (services), `running_n`, `queued_n`, `state` ("online" | "offline"); and at
 // the top `services` and `jobs`, every host's in one list (a job on several boxes once, with `on`).
+// `class` is for telling kinds of box apart: { classes: { "gpu": "^gpu", "mac": "mini|studio" } } gives each host the
+// name of the first pattern (a regular expression, any case) its name or machine matches, else null. Without
+// `classes` there is no `class`. (`spark`, true for a host named like one, is the field's old form and stays
+// for files that use it.)
+function classOf(classes) {
+  if (classes == null) return null;
+  if (typeof classes !== "object" || Array.isArray(classes)) throw new Error('A "fleetq" source\'s "classes" is { "name": "pattern", … }');
+  const list = Object.entries(classes).map(([name, pattern]) => {
+    try { return [name, new RegExp(String(pattern), "i")]; } catch { throw new Error(`"classes": "${String(pattern).slice(0, 60)}" (for ${name}) isn't a regular expression`); }
+  });
+  return (text) => list.find(([, re]) => re.test(text))?.[0] ?? null;
+}
 const fleetqPaths = () => ["fleetq", `${home()}/.local/bin/fleetq`];
-async function fromFleetq() {
+async function fromFleetq(s) {
+  const cls = classOf(s.classes);
   let r = null, missing = 0;
   for (const bin of fleetqPaths()) {
     try { r = await exec(bin, ["status", "--json"], { timeout: 20000 }); } catch { missing++; continue; }
@@ -101,7 +134,7 @@ async function fromFleetq() {
   const now = d.now ?? Date.now() / 1000;
   const jobs = new Map(), services = [];
   const hosts = (d.hosts ?? []).map((h) => {
-    const free = h.actual_free_gb ?? h.free_gb ?? null, list = h.services ?? [];
+    const free = h.actual_free_gb ?? h.free_gb ?? null, list = h.services ?? [], named = `${h.name} ${h.machine ?? ""}`;
     for (const s of list) services.push({ ...s, host: h.name, state: s.warn ? "warn" : s.status });
     for (const j of [...(h.running ?? []), ...(h.queued ?? [])]) {
       const left = j.state === "running" ? (j.deadline_in_s ?? (j.started_at && j.expect_s ? j.started_at + j.expect_s - now : null)) : j.start_in_s ?? null;
@@ -110,7 +143,7 @@ async function fromFleetq() {
       else jobs.set(j.id, { ...j, on: h.name, left_s: left, when: j.state === "running" ? (left == null ? "running" : left < 0 ? "over its time" : "running") : "queued" });
     }
     return { ...h, free, used: h.capacity_gb != null && free != null ? Math.max(0, h.capacity_gb - free) : null,
-      gpu_pct: h.gpu_util != null ? Math.round(h.gpu_util * 100) : null, spark: /spark/i.test(`${h.name} ${h.machine ?? ""}`),
+      gpu_pct: h.gpu_util != null ? Math.round(h.gpu_util * 100) : null, ...(cls ? { class: cls(named) } : {}), spark: /spark/i.test(named),
       services_n: list.length, up: list.filter((s) => s.status === "up").length, down: list.filter((s) => s.status !== "up" && s.status !== "held").length,
       running_n: (h.running ?? []).length, queued_n: (h.queued ?? []).length, state: h.online ? "online" : "offline" };
   });
@@ -162,7 +195,10 @@ async function fromProjects(s) {
   const all = new Map();
   const add = (p) => { const key = `${p.on ?? ""}|${p.path}`; if (p.path && !all.has(key) && all.size < 40) all.set(key, p); };
   if (s.spaces !== false) for (const sp of spaces()) add({ name: sp.name, space: sp.id, path: String(sp.folder || "").replace(/\/+$/, ""), on: sp.machine ?? null });
-  for (const e of s.extra ?? []) if (e?.path) { const path = tilde(e.path).replace(/\/+$/, ""); add({ name: e.name ?? path.split("/").pop(), space: null, path, on: e.on ?? null }); }
+  for (const e of s.extra ?? []) if (e?.path) {
+    // A machine that can't say where its home is still gets its row (with why, from oneProject).
+    const path = (await tilde(e.path, e.on ?? null).catch(() => String(e.path))).replace(/\/+$/, ""); add({ name: e.name ?? path.split("/").pop(), space: null, path, on: e.on ?? null });
+  }
   return Promise.all([...all.values()].map((p) => oneProject(p, s.gh !== false)));
 }
 

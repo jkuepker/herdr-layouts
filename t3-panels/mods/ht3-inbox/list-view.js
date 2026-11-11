@@ -1,3 +1,4 @@
+// Changed from herdr-t3 (github.com/JinJieBeWater/herdr-t3, Apache-2.0) for T3 Panels: see NOTICE.
 import { div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { settings, layout, props, openOverlay } from "herdr";
@@ -180,6 +181,7 @@ export function inboxList(view, t, model, actions, drag, draw, cx) {
       // As T3's: only a list with nothing in it says so; Active alone being empty stays blank.
       .when(list.length === 0, (el) => el.child(fly("m:empty", "marker", div().px(8).py(24).text_center().text_size(12).line_height("16px").text_color(t.dim)
         .child(!every.length ? "Nothing here yet. Agents and panes that report a status show up here."
+          : model.chips?.on ? "Nothing matches the filters."
           : scoped.length > 1 ? "Nothing in these spaces yet" : `Nothing in ${scoped[0].name} yet`))))
       // While dragging, Settled shows even empty: it's where a drop settles.
       // The free space above the shelves pushes them to the bottom; a drag over it lands in Active, as T3's

@@ -57,11 +57,11 @@ const SOURCE_FIELDS = {
     { key: "source.parse", label: "Read as", kind: "choice", options: PARSE },
   ],
   file: [
-    { key: "source.path", label: "Path", kind: "text", hint: "~/ is the home folder" },
+    { key: "source.path", label: "Path", kind: "text", hint: "~/ is the home folder, on the machine below when one is named" },
     { key: "source.on", label: "Machine", kind: "text" },
     { key: "source.parse", label: "Read as", kind: "choice", options: PARSE },
   ],
-  fleetq: [],
+  fleetq: [{ key: "source.classes", label: "Host classes", kind: "json", shape: "object", hint: '{ "gpu": "^gpu" }: each host gets class, the first name whose pattern its name matches' }],
   projects: [
     { key: "source.extra", label: "More folders", kind: "json", shape: "array", hint: '[{ "path": "~/code/x", "name": "x", "on": null }]' },
     { key: "source.gh", label: "Ask GitHub", kind: "choice", options: ["true", "false"], json: true },
