@@ -9,12 +9,14 @@
 // - as an overlay (`mod.open {"name": "ht3-panels"}`): the New chat dialog (launcher.js), or with
 //   props.menu "add" / "project", the side panel's popups, "copy" / "thread" / "revert", the chat's
 //   and the lists' menus (all menus.js), "settings", the Settings dialog (settings-ui.js), or
-//   "usage", the Usage dialog (usage.js), or "search", the project content search (search.js).
+//   "usage", the Usage dialog (usage.js), or "search", the project content search (search.js), or "servers", the
+//   servers started from the folder (servers.js).
 // The panel's state and the code that makes the layout match it are in side.js.
 
 import { View } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { props, nextCommand, run, openOverlay, shared, setShared } from "herdr";
+// Also an overlay: "automations", the project's Herdr automations (automations.js).
 import { MOD, tokens, iconButton } from "./look.js";
 import { ChatPanel, openLauncher } from "./chat.js";
 import { FilePanel } from "./editor.js";
@@ -32,9 +34,11 @@ import { announce, prune } from "./report.js";
 import { Settings, SETTINGS_SIZE } from "./settings-ui.js";
 import { Usage, USAGE_SIZE } from "./usage.js";
 import { Search, SEARCH_SIZE, showHit, searchOpen } from "./search.js";
+import { Automations, AUTOMATIONS_SIZE, automationsOpen } from "./automations.js";
 import { loadPrefs, setPref, agentOn } from "./settings.js";
 import { SIDE, read, sideShown, bottomShown, reconcile, keep, toggleMax, toggleBottom, toggleSplit, openSurface, openBottom, closeTab, activate, activeSpace, openScript } from "./side.js";
 import { pendingScript } from "./scripts.js";
+import { ServersDialog, openServers, serversOpen } from "./servers.js";
 
 export { SIDE };
 
@@ -92,6 +96,12 @@ class Buttons {
     else if (name === "script") { const s = pendingScript(); if (s && Date.now() - s.at < 10000) cx.spawn(async (cx) => { try { await openScript(s); } catch (e) { fail(e); } cx.notify(); }); }
     // prChat: Start chat from PR (pr.js). Alone it asks for the number or the address; prChat:<number or address> starts at once.
     else if (name === "prChat") prChatCommand(c.slice(7));
+    // automations: the project's Herdr automations (automations.js); again while it is open closes it (the dialog does that
+    // itself). automations:all opens it on every automation of the machine.
+    else if (name === "automations") { if (!automationsOpen()) openOverlay({ mod: MOD, kind: "dialog", ...AUTOMATIONS_SIZE, props: { menu: "automations", all: a === "all" } }); }
+    // servers: the servers started from the shown space's folder, as a dialog (servers.js); servers:<folder> for that folder.
+    // Again while it is open closes it (the dialog does that itself).
+    else if (name === "servers") { if (!serversOpen()) openServers(c.slice(8)); }
     else if (name === "menu") openOverlay({ mod: MOD, kind: "popup", at: { x: 900, y: 48 }, width: a === "project" ? 344 : ADD_MENU.w, height: a === "project" ? 660 : ADD_MENU.h, props: { menu: a, group: b ?? "a" } });
     cx.notify();
   }
@@ -130,7 +140,7 @@ export default class T3Panels extends View {
   init(_props, cx) {
     const p = props() ?? {};
     this.face = p.overlay
-      ? p.menu === "add" ? new AddMenu() : p.menu === "project" ? new ProjectMenu() : p.menu === "settings" ? new Settings() : p.menu === "usage" ? new Usage() : p.menu === "search" ? new Search() : p.menu === "copy" ? new CopyMenu() : p.menu === "thread" ? new ThreadMenu() : p.menu === "revert" ? new RevertMenu() : p.menu === "prchat" ? new PrChatDialog() : new Launcher()
+      ? p.menu === "add" ? new AddMenu() : p.menu === "project" ? new ProjectMenu() : p.menu === "settings" ? new Settings() : p.menu === "usage" ? new Usage() : p.menu === "search" ? new Search() : p.menu === "servers" ? new ServersDialog() : p.menu === "copy" ? new CopyMenu() : p.menu === "thread" ? new ThreadMenu() : p.menu === "revert" ? new RevertMenu() : p.menu === "prchat" ? new PrChatDialog() : p.menu === "automations" ? new Automations() : new Launcher()
       : (FACES[p.panel] ?? (() => new ChatPanel()))();
     this.face.init(p, cx);
     // Key commands from keys.json's "mod:ht3-panels" section (save), and "focus" from pane.go.

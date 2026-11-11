@@ -18,8 +18,9 @@ import { fileIcon } from "./fileicons.js";
 import { snapshot, turnStat, undoRevert, prune, chatsWithRefs, safe as refName, KEEP } from "./checkpoint.js";
 import { checkpointsOn, followUp, limitModels, rememberModels, prefs } from "./settings.js";
 import { Diagrams, isMermaid, fit, INSTALL } from "./mermaid.js";
-import { addNotice, toMarkdown } from "./transcript.js";
+import { addNotice, toMarkdown, subagents } from "./transcript.js";
 import { repoOf } from "./launcher.js";
+import { ServerWatch, serversStrip } from "./servers.js";
 
 const LANE = 736; // --chat-content-max-width: 46rem
 const DRAW_EVERY_MS = 80;
@@ -127,6 +128,29 @@ function keep(id, patch) {
 // they are in: shared("ht3-panels.cps") = { <chat id>: { cwd, on } }. Looked through at most every SWEEP_EVERY_MS a pane.
 const CPS = `${MOD}.cps`, SWEEP_EVERY_MS = 10 * 60 * 1000;
 
+// A reply as a quoted block for the message box (T3's AssistantSelectionToolbar cites the selected text; Herdr's
+// text says nothing of a selection, so it is the reply, from its start): each line after "> ", at most `max` lines,
+// then "> …". A code fence the cut falls in is closed first, so what you type after it is not code. "" for no text.
+export const QUOTE_LINES = 40;
+export function replyQuote(text, max = QUOTE_LINES) {
+  const lines = String(text ?? "").replace(/\r\n?/g, "\n").trim().split("\n");
+  if (lines.length === 1 && !lines[0]) return "";
+  const cut = lines.length > max, out = [];
+  let fence = null; // the fence that is open: its mark, "```" or longer, or "~~~"
+  for (const ln of cut ? lines.slice(0, max) : lines) {
+    const f = /^\s{0,3}(`{3,}|~{3,})(.*)$/.exec(ln);
+    if (f && !fence) fence = f[1];
+    else if (f && fence && f[1][0] === fence[0] && f[1].length >= fence.length && !f[2].trim()) fence = null;
+    out.push(ln.trim() ? `> ${ln.replace(/\s+$/, "")}` : ">");
+  }
+  if (cut) {
+    while (out.at(-1) === ">") out.pop();
+    if (fence) out.push(`> ${fence}`);
+    out.push("> …");
+  }
+  return out.join("\n");
+}
+
 // The three functions below are pure (no gpui, no panel), so a node test can run them as they are.
 // Prompt history (T3's composerPromptHistory.ts): ↑ and ↓ in the message box walk one line of messages, oldest to
 // newest: the prompts sent in this chat, then the messages still queued, then the draft that was in the box.
@@ -222,6 +246,7 @@ export class ChatPanel {
     this.picker = null; // option id whose choices are open
     this.since = null; // when the running turn was first seen
     this.hasText = false;
+    this.servers = new ServerWatch({ toast: true }).start(cx); // servers this chat's folder started, over the box
     // "Always allow this session" stays on over a reload (it is the person's word, not the agent's).
     this.autoAllow = keptOf(this.chatId).allow === true;
     // Messages queued before a reload wait on: they go out when the agent is back and ready.
@@ -315,12 +340,7 @@ export class ChatPanel {
       if (qt && qt.at !== this.quoteSeen) {
         this.quoteSeen = qt.at;
         if (qt.tab && qt.tab === this.reporter?.tab && Date.now() - qt.at < 10000) {
-          // What is in the box stays as it is, its "@" chips too: the block goes after it.
-          const had = this.input.content(), now = String(had.text ?? "").replace(/\s+$/, "");
-          this.input.set_value({ text: `${now ? `${now}\n\n` : ""}${qt.text}\n`, tokens: chipsWithin(had.tokens, now.length) });
-          this.hasText = true;
-          this.input.focus();
-          cx.notify();
+          this.quoteIn(cx, qt.text);
         }
       }
       // "Regenerate title" in the card's menu (menus.js) asks this chat to name itself.
@@ -332,7 +352,8 @@ export class ChatPanel {
       }
       // A name given elsewhere (the Inbox's thread menu) shows here and in the lists.
       if (this.named() !== (this.wasNamed ?? null)) { this.wasNamed = this.named(); this.report(); cx.notify(); }
-      if (this.since != null || this.fitHint()) cx.notify();
+      // The subagent bar counts seconds too, and lets go of a finished one a moment after the turn's end.
+      if (this.since != null || this.fitHint() || this.subN) cx.notify();
       // A finished turn nobody saw is "done" until its tab is looked at.
       if (this.reporter?.tab) this.reporter.seen();
       else this.report();
@@ -698,6 +719,13 @@ export class ChatPanel {
       if (text != null && c.startsWith("ctx:")) this.copyMenu({ x: 600, y: 300 }, text, m.id);
       else if (text != null) this.copy(cx, `${m.id}:cp`, text);
     }
+    // quote:last and quote:<item id>: a reply's Quote. subagent:<n>: a click on the nth subagent in the bar (from 0).
+    if (c.startsWith("quote:")) {
+      const items = this.view?.items ?? [], w = c.slice(6);
+      const m = w === "last" ? [...items].reverse().find((x) => x.kind === "agent") : items.find((x) => x.kind === "agent" && String(x.id) === w);
+      if (m?.text) this.quoteReply(cx, `${m.id}:cp`, m.text);
+    }
+    if (c.startsWith("subagent:")) { const s = subagents(this.view?.items ?? [])[Number(c.slice(9)) || 0]; if (s) this.subJump(cx, s.id); }
     // For scripts: type:<text> (as if typed into the message box), take:<n> (the open menu's nth row, from 0), send (the Send button),
     // menu-key:<up|down|enter|escape>.
     if (c.startsWith("type:")) { this.input.set_value(c.slice(5)); this.hasText = !!c.slice(5).trim(); this.typed(cx); }
@@ -1402,7 +1430,8 @@ export class ChatPanel {
           if (g.code) out.push({ id: `${m.id}:h${i}`, kind: diagram ? "diaghead" : "codehead", lang: g.lang, text: g.text, seg: `${m.id}:s${i}` });
           out.push({ id: `${m.id}:s${i}`, kind: "seg", code: g.code, lang: g.lang, text: g.text, whole: m.text, ...(diagram ? { diagram } : {}) });
         });
-        if (m.text && !(busy && m === lastItem)) out.push({ id: `${m.id}:cp`, kind: "copy", text: m.text });
+        // A reply's row has Quote beside Copy: two buttons, so the row itself takes no click.
+        if (m.text && !(busy && m === lastItem)) out.push({ id: `${m.id}:cp`, kind: "copy", text: m.text, quote: true });
       } else if (m.kind === "user") {
         out.push(m);
         if (!m.pending) out.push({ id: `${m.id}:cp`, kind: "copy", text: m.text, right: true });
@@ -1464,6 +1493,7 @@ export class ChatPanel {
     const off = this.follow ? 0 : (this.off ?? 0);
     const click = (m, cx) => {
       if (m.kind === "earlier") return this.source.earlier?.(cx);
+      if (m.kind === "copy" && m.quote) return;
       if (m.kind === "copy" || m.kind === "codehead") return this.copy(cx, m.id, m.text);
       if (m.kind === "fold") { this.expanded[m.id] = !this.expanded[m.id]; return cx.notify(); }
       if (m.kind !== "tool" && m.kind !== "thought") return;
@@ -1500,7 +1530,7 @@ export class ChatPanel {
             this.over = over ? of : null;
             cx.notify();
           }))
-          .when(CLICKS.includes(m.kind), (e) => e.on_click((_e, cx) => click(m, cx)));
+          .when(CLICKS.includes(m.kind) && !m.quote, (e) => e.on_click((_e, cx) => click(m, cx)));
       }));
     return v_flex().id("ht3-chat-lane").relative().flex_1().min_h(0).overflow_hidden()
       .on_size_change((size, cx) => {
@@ -1561,6 +1591,70 @@ export class ChatPanel {
     this.off = off;
     this.follow = off <= 0;
     cx.notify();
+  }
+
+  // A quoted block onto the end of the message box, the caret after it: a hunk or lines from Diff and Files
+  // (shared "ht3-panels.quote"), a reply's Quote. What is in the box stays as it is, its "@" chips too.
+  quoteIn(cx, text) {
+    const had = this.input.content(), now = String(had.text ?? "").replace(/\s+$/, "");
+    this.input.set_value({ text: `${now ? `${now}\n\n` : ""}${text}\n`, tokens: chipsWithin(had.tokens, now.length) });
+    this.hasText = true;
+    this.input.focus();
+    try { const n = this.input.value().length; this.input.set_selected_range({ start: n, end: n }); } catch {}
+    cx.notify();
+  }
+
+  // Quote, beside a reply's Copy: the reply into the message box as a "> " block (replyQuote), an empty line after
+  // it to answer on. The button shows a check for a moment, as Copy does.
+  quoteReply(cx, id, text) {
+    const q = replyQuote(text);
+    if (!q) return;
+    this.quoteIn(cx, `${q}\n`);
+    this.copied = `${id}:q`;
+    cx.timer.after(1500, (cx) => { if (this.copied === `${id}:q`) { this.copied = null; cx.notify(); } });
+  }
+  quoteMark(k, id, shown = true) {
+    const done = this.copied === `${id}:q`;
+    return h_flex().h(20).px(4).gap(4).flex_none().items_center().rounded(4).cursor_pointer().text_size(12).text_color(done ? k.successText : alpha(k.muted, 0.8))
+      .when(!shown && !done, (el) => el.opacity(0))
+      .hover((s) => s.bg(k.accent).text_color(done ? k.successText : k.foreground))
+      .child(icon(done ? "check" : "quote").size(12).flex_none()).when(done, (el) => el.child("Quoted"));
+  }
+
+  // The lane goes to a subagent's tool call (a click in the bar over the message box). Its turn's work is opened
+  // when it has folded under "Worked for …".
+  subJump(cx, id) {
+    const items = this.view?.items ?? [], at = items.findIndex((m) => m.id === id);
+    if (at < 0) return;
+    let u = at;
+    while (u >= 0 && items[u].kind !== "user") u--;
+    const busy = this.view.status === "working" || this.view.status === "blocked", last = !items.slice(at).some((m) => m.kind === "user");
+    if (!(busy && last)) this.expanded[u >= 0 ? `__worked-${items[u].id}` : "__startup"] = true;
+    this.goTo(id);
+    cx.notify();
+  }
+
+  // T3's ProviderSubagentBar, as a slim list tucked on the message box: the subagents at work (Claude Code's Task
+  // and Agent calls: transcript.js `subagents`), each a turning arc, what it is for, what it runs now, and its time;
+  // one that ended stays a moment with a check. A click goes to its tool call. -> an element, or null with none.
+  subBar(k, v) {
+    const subs = this.source?.kind === "acp" ? subagents(v.items) : [];
+    this.subN = subs.length;
+    if (!subs.length) return null;
+    const MAX = 3, live = subs.filter((s) => s.running).length, shown = subs.slice(0, MAX);
+    const line = alpha(k.foreground, k.dark ? 0.1 : 0.08);
+    return v_flex().id("ht3-subagents").mx(12).mb(-1).px(6).py(3).rounded_t(12).border(1).border_color(line).bg(alpha(k.card, 0.7)).text_size(12)
+      .role("status").accessibility_label(live ? `${live} subagent${live === 1 ? "" : "s"} running` : "Subagents finished")
+      .children(shown.map((s) => h_flex().id(`sub-${s.toolCallId ?? s.id}`).h(24).px(6).gap(8).items_center().rounded(6).cursor_pointer().role("button")
+        .accessibility_label(`${s.title}: ${s.running ? "running" : s.failed ? "failed" : "finished"}. Show it in the thread`).tooltip("Show in the thread")
+        .hover((st) => st.bg(k.accent)).on_click((_e, cx) => this.subJump(cx, s.id))
+        .child(h_flex().size(14).flex_none().items_center().justify_center().text_color(s.running ? k.muted : s.failed ? k.destructiveText : k.successText)
+          .child(s.running ? icon("loader-circle").size(13).flex_none().spin(1000) : icon(s.failed ? "x" : "check").size(13).flex_none()))
+        .child(div().flex_none().max_w("55%").truncate().text_color(alpha(k.foreground, s.running ? 0.9 : 0.6)).child(s.title))
+        .child(div().flex_1().min_w(0).truncate().text_color(k.muted).child(s.running ? s.doing ?? "" : s.failed ? "Failed" : "Done"))
+        // A fixed width, so the seconds going by move nothing.
+        .child(h_flex().w(56).flex_none().justify_end().font_family(k.mono).text_size(11).text_color(k.muted).child(seconds(s.ms)))))
+      .when(subs.length > MAX, (el) => el.child(div().h(20).px(6).flex().items_center().text_size(11).text_color(k.muted).child(`and ${subs.length - MAX} more`)));
   }
 
   // Copies, and the button that did shows a check for a moment (chat/MessageCopyButton.tsx).
@@ -1820,6 +1914,13 @@ export class ChatPanel {
       }
       case "copy":
         // chat/MessageCopyButton.tsx, under the message: its right edge for yours, its left for a reply.
+        if (m.quote) {
+          const shown = m.always || this.over === String(m.id).split(":")[0];
+          return lane(h_flex().w_full().px(2).gap(2)
+            .child(div().id(`cp-${m.id}`).flex_none().role("button").accessibility_label("Copy this reply").on_click((_e, cx) => this.copy(cx, m.id, m.text)).child(this.copyMark(k, m.id, null, shown)))
+            .child(div().id(`qt-${m.id}`).flex_none().role("button").accessibility_label("Quote this reply in the message box").tooltip("Quote in the message box")
+              .on_click((_e, cx) => this.quoteReply(cx, m.id, m.text)).child(this.quoteMark(k, m.id, shown))), 12);
+        }
         return lane(h_flex().w_full().px(m.right ? 0 : 2).when(!!m.right, (el) => el.justify_end()).child(this.copyMark(k, m.id, null, m.always || this.over === String(m.id).split(":")[0])), 12);
       case "thought": {
         const found = this.hitAt.has(m.id), open = this.expanded[m.id] || found;
@@ -2125,8 +2226,8 @@ export class ChatPanel {
         .children(controls)
         .child(div().w(6).flex_none())
         .child(action));
-    const limit = this.limitLine(k, v);
-    const box = drawer || limit ? v_flex().when(!!limit, (el) => el.child(limit)).when(!!drawer, (el) => el.child(drawer)).child(card) : card;
+    const limit = this.limitLine(k, v), subs = this.subBar(k, v), srv = v.cwd ? serversStrip(k, this.servers.at({ cwd: v.cwd, on: v.machine ?? null })) : null;
+    const box = drawer || limit || subs || srv ? v_flex().when(!!limit, (el) => el.child(limit)).when(!!srv, (el) => el.child(srv)).when(!!subs, (el) => el.child(subs)).when(!!drawer, (el) => el.child(drawer)).child(card) : card;
     // While a queued message is in the box: what it is, where a draft went, and the way back.
     const editLine = this.editing ? h_flex().w_full().justify_end().items_center().gap(6).pb(6).text_size(11).text_color(k.muted)
       .child(div().min_w(0).truncate().child(this.parked ? "Editing a queued message · your draft comes back when it is sent" : "Editing a queued message"))

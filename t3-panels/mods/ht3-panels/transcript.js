@@ -39,7 +39,7 @@ export function addNotice(t, text, level = "info", more = null) {
   push(t, { kind: "notice", text, level, ...(more ?? {}) });
 }
 
-export function applyUpdate(t, u) {
+export function applyUpdate(t, u, now = Date.now()) {
   switch (u.sessionUpdate) {
     case "user_message_chunk":
       return appendText(t, "user", u);
@@ -48,9 +48,9 @@ export function applyUpdate(t, u) {
     case "agent_thought_chunk":
       return appendText(t, "thought", u);
     case "tool_call":
-      return upsertTool(t, u, true);
+      return upsertTool(t, u, true, now);
     case "tool_call_update":
-      return upsertTool(t, u, false);
+      return upsertTool(t, u, false, now);
     case "plan": {
       const plan = find(t, (i) => i.kind === "plan" && i.open);
       const entries = (u.entries ?? []).map((e) => ({ content: e.content, status: e.status }));
@@ -146,17 +146,54 @@ function diffText(oldText, newText) {
   return [...a.map((l) => "- " + l), ...b.map((l) => "+ " + l)].join("\n");
 }
 
-function upsertTool(t, u, isNew) {
+// A subagent is a tool call too. Claude Code's adapter names the tool that starts one (`_meta.claudeCode.toolName`:
+// "Task", "Agent" in newer versions) and stamps what the subagent itself runs with its parent's id
+// (`_meta.claudeCode.parentToolUseId`). -> item.sub on the call that is a subagent, item.parent on its children's;
+// startedAt and endedAt (ms) are when the call came and when it ended, for the bar over the message box (subagents).
+const SUB_TOOLS = ["Task", "Agent"];
+const ENDED = ["completed", "failed", "cancelled"];
+function upsertTool(t, u, isNew, now = Date.now()) {
   let item = find(t, (i) => i.kind === "tool" && i.toolCallId === u.toolCallId);
   if (!item) {
     if (!isNew && u.title == null) return;
-    push(t, { kind: "tool", toolCallId: u.toolCallId, title: "", status: "pending", toolKind: "other", detail: null });
+    push(t, { kind: "tool", toolCallId: u.toolCallId, title: "", status: "pending", toolKind: "other", detail: null, startedAt: now });
     item = t.items[t.items.length - 1];
+  }
+  const cc = u._meta?.claudeCode;
+  if (SUB_TOOLS.includes(cc?.toolName)) item.sub = true;
+  if (typeof cc?.parentToolUseId === "string" && cc.parentToolUseId && cc.parentToolUseId !== item.toolCallId) {
+    item.parent = cc.parentToolUseId;
+    const parent = find(t, (i) => i.kind === "tool" && i.toolCallId === item.parent);
+    if (parent) parent.sub = true;
   }
   if (u.title != null) item.title = u.title;
   if (u.status != null) item.status = u.status;
+  if (ENDED.includes(item.status)) item.endedAt ??= now; else delete item.endedAt;
   if (u.kind != null) item.toolKind = u.kind;
   const detail = toolDetail(u.content);
   if (detail != null) item.detail = detail;
   if (u.locations?.length && !item.detail) item.detail = u.locations.map((l) => l.path).join("\n");
+}
+
+// The subagents of the turn that is running, for the bar over the message box (chat.js subBar): the ones at work,
+// and for `linger` ms the ones that just ended. -> [{ id (the item's, to scroll to), toolCallId, title, running,
+// failed, ms (how long it ran, or has run), doing (what it runs now: its newest unfinished tool call's title) }].
+export const SUB_LINGER_MS = 4000;
+export function subagents(items, now = Date.now(), linger = SUB_LINGER_MS) {
+  const all = items ?? [];
+  // A message steered into the turn starts no turn of its own.
+  let from = all.length;
+  while (from > 0 && (all[from - 1].kind !== "user" || all[from - 1].steered)) from--;
+  const out = [];
+  for (let i = from; i < all.length; i++) {
+    const m = all[i];
+    if (m.kind !== "tool" || !m.sub) continue;
+    const running = m.open !== false && !ENDED.includes(m.status);
+    if (!running && !(m.endedAt != null && now - m.endedAt < linger)) continue;
+    let doing = null;
+    if (running) for (let j = all.length - 1; j > i && doing == null; j--) if (all[j].kind === "tool" && all[j].parent === m.toolCallId && !ENDED.includes(all[j].status)) doing = String(all[j].title ?? "").split("\n")[0].trim() || null;
+    out.push({ id: m.id, toolCallId: m.toolCallId, title: String(m.title ?? "").split("\n")[0].trim() || "Subagent", running, failed: m.status === "failed",
+      ms: Math.max(0, (running ? now : m.endedAt) - (m.startedAt ?? now)), doing });
+  }
+  return out;
 }

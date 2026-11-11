@@ -16,6 +16,7 @@ import { editorOn } from "./settings.js";
 import { SURFACES, send, placeOf, activeSpace, surfaceOff, surfacesHere } from "./side.js";
 import { projectOf, scriptsOf, runScript } from "./scripts.js";
 import { write, wroteLine, Cancelled } from "./gitwrite.js";
+import { discover } from "./servers.js";
 
 export class AddMenu {
   init(p, cx) {
@@ -320,6 +321,9 @@ export class ProjectMenu {
     this.writing = null; // { kind: "commit" | "pr", stop, was }: an agent is writing that text
     this.wrote = null; // { kind, text }: who wrote what is in the field, from what
     this.writeError = null; // { kind, text }: why nothing was written
+    // The servers started from the folder (servers.js): counted once, for the Servers row.
+    this.servers = null;
+    if (this.folder) cx.spawn(async (cx) => { this.servers = await discover({ cwd: this.folder, on: this.on }).catch(() => null); cx.notify(); });
     cx.spawn(async (cx) => {
       if (!this.on) {
         const n = await exec("scutil", ["--get", "ComputerName"]).catch(() => null);
@@ -694,6 +698,9 @@ export class ProjectMenu {
       .when(!!this.error, (el) => el.child(div().px(8).py(6).text_size(12).line_height("16px").text_color(k.destructiveText).child(this.error)))
       .child(div().flex_1())
       .child(div().mx(4).my(4).h(1).flex_none().bg(k.border))
+      // The servers started from this folder (servers.js): the row opens their dialog.
+      .when(!!this.folder, (el) => el.child(row("proj-servers", "server", "Servers", { detail: this.servers == null ? null : this.servers.length ? this.servers.map((s) => `:${s.port}`).join(" ") : "none running",
+        onClick: () => { closeOverlay(this.overlay); run(`${MOD}.servers`); } })))
       .child(row("proj-settings", "settings-2", "Settings", { detail: "Agents, models, editors", onClick: () => { closeOverlay(this.overlay); run(`${MOD}.settings`); } }));
   }
 }
