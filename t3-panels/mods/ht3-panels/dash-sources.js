@@ -48,8 +48,11 @@ async function fromPrometheus(s, ctx) {
 async function fromCommand(s) {
   const cmd = s.shell != null ? "sh" : s.run, args = s.shell != null ? ["-c", String(s.shell)] : (s.args ?? []).map(String);
   if (!cmd) throw new Error('A "command" source needs "run" or "shell"');
-  const r = await exec(String(cmd), args, { on: s.on ?? null, ...(s.cwd ? { cwd: tilde(s.cwd) } : {}), timeout: Math.min(120, Math.max(1, seconds(s.timeout, 20))) * 1000 });
-  const lacks = r.code !== 0 && /(?:^|: )([\w.-]+): (?:command )?not found/m.exec(r.stderr ?? "")?.[1];
+  let r;
+  try { r = await exec(String(cmd), args, { on: s.on ?? null, ...(s.cwd ? { cwd: tilde(s.cwd) } : {}), timeout: Math.min(120, Math.max(1, seconds(s.timeout, 20))) * 1000 }); }
+  catch (e) { if (/No such file or directory|not found/i.test(String(e?.message ?? e))) throw new Error(`Needs ${cmd}, which isn't installed here`); throw e; }
+  // A program the shell didn't find (also the first of a pipe, which then prints nothing) is a missing program, said as one.
+  const lacks = (r.code !== 0 || !String(r.stdout ?? "").trim()) && /(?:^|: )([\w.-]+): (?:command )?not found/m.exec(r.stderr ?? "")?.[1];
   if (lacks || (r.code === 127 && s.shell == null)) throw new Error(`Needs ${lacks || cmd}, which isn't installed here`);
   if (r.code !== 0) throw new Error(`${s.shell != null ? "The command" : cmd} exited ${r.code}: ${first(r.stderr) || first(r.stdout) || "no output"}`);
   return parse(r.stdout, s.parse);

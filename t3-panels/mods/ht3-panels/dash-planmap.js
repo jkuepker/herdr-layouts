@@ -13,7 +13,7 @@
 
 import { div, PathBuilder } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { exec, home, run, shared, spaces, focused } from "herdr";
+import { appHome, exec, home, notify, readTextFile, run, shared, spaces, focused } from "herdr";
 import { alpha, icon } from "./look.js";
 import { fleetLayout, projectLayout, CARD_HEAD, TASK_ROW, MAX_TASKS, CHIP_ROW, REGION_W, REGION_GAP } from "./planmap-graph.js";
 import { normalize, joinLive, counts, taskMark, edgeLook } from "./planmap-data.js";
@@ -55,7 +55,11 @@ export const planmap = {
     const project = arg || (w.view === "project" ? w.project : null) || null, name = project ? `Plan map · ${project}` : "Plan map";
     const here = spaces().find((s) => s.id === focused()?.space), had = here?.tabs.find((t) => t.name === name);
     if (had) return run("tab.select", { id: had.id });
-    run("tab.new", { name, mod: "xo-map", ...(project ? { props: { project } } : {}) });
+    // The full map is the xo-map mod's; without it there is nothing to open (a tab of a missing mod is an error page).
+    readTextFile(`${appHome()}/mods/xo-map/mod.json`).then((text) => {
+      if (text === null) notify({ title: "The full map needs the xo-map mod", body: "It isn't in this Herdr's mods folder. The card shows the same plan, read-only." });
+      else run("tab.new", { name, mod: "xo-map", ...(project ? { props: { project } } : {}) });
+    }).catch(() => {});
   },
 
   "draw_plan-map"(k, w, st) {
