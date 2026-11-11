@@ -7,6 +7,7 @@
 // and calls feed(line) for each stdout line, and exited() when the agent ends.
 
 import { AcpConnection, PROTOCOL_VERSION } from "./acp.js";
+import { addUsage } from "./token-budget.js";
 import { emptyTranscript, addUser, addNotice, applyUpdate, endTurn, trim, handoffText, noteLimit, limitText } from "./transcript.js";
 
 export class ChatSession {
@@ -244,11 +245,7 @@ export class ChatSession {
       else if (r?.stopReason && r.stopReason !== "end_turn") addNotice(state.transcript, stopNote(r.stopReason), "warn");
       // The turn's tokens, when the agent sends them with its answer: added up per chat for the Usage dialog.
       const u = r?.usage;
-      if (u && typeof u === "object") {
-        const n = (...keys) => keys.map((key) => Number(u[key])).find((v) => Number.isFinite(v)) ?? 0, t = (state.transcript.tokens ??= { input: 0, output: 0, total: 0, turns: 0 });
-        const input = n("inputTokens", "input_tokens"), output = n("outputTokens", "output_tokens");
-        t.input += input; t.output += output; t.total += n("totalTokens", "total_tokens") || input + output; t.turns += 1;
-      }
+      if (u && typeof u === "object") state.transcript.tokens = addUsage(state.transcript.tokens, u) ?? state.transcript.tokens;
     } catch (e) {
       addNotice(state.transcript, e.message, "error");
       // A refusal for a limit (rate, usage, credits) is also kept as the chat's limit, for the line over the message box.

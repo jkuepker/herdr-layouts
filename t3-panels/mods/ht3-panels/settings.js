@@ -18,6 +18,10 @@
 // - commitStyle ("plain"): what "Write message" asks the agent for: "plain" (a short imperative subject), "conventional"
 //   (type(scope): subject), or "template" (the repository's commit.template or .gitmessage as the format). The Commit step
 //   warns, without blocking, when a typed message's first line isn't Conventional Commits and the style is "conventional".
+// - mdPreviewDefault (true): a Markdown file (.md, .mdx, .markdown) opens in the Files editor as its rendered preview;
+//   false opens it as text. The Preview button still switches one file, and the choice is kept for the session.
+// - chatTokenBudget (0 = off; 100000, 250000, 500000, 1000000 or 2000000): a chat whose reported input + output tokens reach
+//   80% of it gets a warning line over the message box, and at 100% the line offers Stop and New session (token-budget.js).
 // - sidePanelHiddenInNewSpaces (false): a space shown for the first time starts with the side panel hidden.
 // Anything left out is its default; unknown keys are kept as they are.
 
@@ -25,6 +29,7 @@ import { shared, setShared, appHome, readTextFile } from "herdr";
 import * as fs from "fs/promises";
 import { MOD } from "./look.js";
 import { AGENTS } from "./agent-acp.js";
+import { cleanBudget } from "./token-budget.js";
 
 const KEY = `${MOD}.settings`, MODELS = `${MOD}.models`;
 export const settingsFile = () => `${appHome()}/data/ht3-settings.json`;
@@ -57,6 +62,10 @@ export const soundsOn = () => prefs().sounds === true;
 // "commitStyle": "plain" | "conventional" | "template" (see the header); anything else is "plain".
 export const COMMIT_STYLES = ["plain", "conventional", "template"];
 export const commitStyle = () => (COMMIT_STYLES.includes(prefs().commitStyle) ? prefs().commitStyle : "plain");
+// "mdPreviewDefault": false opens Markdown files as text; the default opens them as the rendered preview.
+export const mdPreviewDefault = () => prefs().mdPreviewDefault !== false;
+// "chatTokenBudget": the per-chat token budget, 0 when off.
+export const chatTokenBudget = () => cleanBudget(prefs().chatTokenBudget);
 // "followUp": "steer" makes a message sent while the agent works interrupt it; the default queues it.
 export const followUp = () => (prefs().followUp === "steer" ? "steer" : "queue");
 

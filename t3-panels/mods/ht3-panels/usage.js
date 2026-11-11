@@ -6,6 +6,8 @@
 // - Claude Code writes every answer's tokens to its own logs (~/.claude/projects/<folder>/<session>.jsonl): a chat
 //   of Claude Code is summed from its session's log, read only, each answer counted once (the log repeats it);
 // - cost: shown only when the agent sends one (`usage_update`'s `cost`). Nothing is estimated from prices.
+// - a chat's row names its token total (in + out) where the data has it, and against the chat token budget (Settings,
+//   `chatTokenBudget`, token-budget.js) when one is set.
 // Opened with `ht3-panels.usage`, "/usage" in a chat, or the palette.
 
 import { div } from "gpui-kit";
@@ -14,6 +16,8 @@ import { exec, closeOverlay, appHome, home, shared, focused, readTextFile } from
 import { MOD, tokens, alpha, icon, agentMark, iconButton, shortPath } from "./look.js";
 import { agentOf } from "./agent-acp.js";
 import { agentName } from "./report.js";
+import { chatTokenBudget } from "./settings.js";
+import { budgetLabel } from "./token-budget.js";
 
 export const USAGE_SIZE = { width: 680, height: 660 };
 
@@ -162,11 +166,11 @@ export class Usage {
       .when(anyCost, (el) => el.child(cell(a.costs ? `${a.cost.toFixed(a.cost < 1 ? 4 : 2)} ${a.currency ?? ""}` : "", 84, k.foreground))));
 
     const chatRows = chats.slice(0, 40).map((c) => {
-      const s = share(c.usage), tk = this.tokensOf(c);
+      const s = share(c.usage), tk = this.tokensOf(c), sum = tk ? (tk.total ?? (tk.input ?? 0) + (tk.output ?? 0)) : 0, budget = chatTokenBudget();
       return h_flex().h(40).px(12).gap(10).items_center().when(c.id === this.here, (el) => el.bg(alpha(k.accent, 0.6)))
         .child(v_flex().flex_1().min_w(0)
           .child(div().truncate().text_size(13).child(c.title))
-          .child(div().truncate().text_size(11).text_color(k.muted).child(`${c.agent} · ${c.machine ? `${c.machine}:` : ""}${shortPath(c.cwd) || "~"} · ${ago(c.at)}`)))
+          .child(div().truncate().text_size(11).text_color(k.muted).child(`${c.agent} · ${c.machine ? `${c.machine}:` : ""}${shortPath(c.cwd) || "~"} · ${ago(c.at)}${sum > 0 ? ` · ${short(sum)} tokens${budget ? ` of ${budgetLabel(budget)}` : ""}` : ""}`)))
         .child(cell(`${c.turns} turn${c.turns === 1 ? "" : "s"}`, 56))
         .child(cell(tk ? `${short(tk.input ?? tk.total)} / ${short(tk.output)}` : "–", 84, tk ? k.foreground : k.muted))
         .child(meter(s))
