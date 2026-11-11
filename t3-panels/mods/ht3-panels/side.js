@@ -7,7 +7,7 @@
 //
 // State is one shared value, `ht3-side.state`, kept by Herdr across reloads:
 //   { v: 1, max: false, spaces: { <space id>: { split, w (the panel's px), ha (the first group's px), a: { tabs, active }, b: { tabs, active }, bottom } } }
-// A tab is { id, kind, addr?, n?, at?, chat? }: kind is files, diff, pr, prs, browser, dashboard, chat or terminal
+// A tab is { id, kind, addr?, n?, at?, chat? }: kind is files, diff, pr, prs, browser, dashboard, checks, tasks, logs, chat or terminal
 // (addr: the terminal's address, n: its number, at: when it started). `bottom` is the address of the
 // space's bottom-panel terminal, or null.
 //
@@ -37,6 +37,9 @@ export const SURFACES = [
   { kind: "dashboard", label: "Dashboard", glyph: "layout-dashboard", key: "g" },
   // Also this layout's own: the project's test, typecheck, lint and build commands and their problems (checks.js).
   { kind: "checks", label: "Checks", glyph: "list-checks", key: "c" },
+  // Also this layout's own: a per-project task backlog that hands work to agents, and notes per folder (tasks.js); a log file followed, filtered and sent to the chat (logs.js).
+  { kind: "tasks", label: "Tasks", glyph: "list-todo", key: "k" },
+  { kind: "logs", label: "Logs", glyph: "scroll-text", key: "o" },
 ];
 export const surface = (kind) => SURFACES.find((s) => s.kind === kind);
 

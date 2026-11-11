@@ -315,6 +315,28 @@
                           }
                         },
                         {
+                          "id": "ht3-a-tasks",
+                          "type": "block",
+                          "content": {
+                            "mod": "ht3-panels",
+                            "props": {
+                              "panel": "tasks",
+                              "group": "a"
+                            }
+                          }
+                        },
+                        {
+                          "id": "ht3-a-logs",
+                          "type": "block",
+                          "content": {
+                            "mod": "ht3-panels",
+                            "props": {
+                              "panel": "logs",
+                              "group": "a"
+                            }
+                          }
+                        },
+                        {
                           "id": "ht3-a-browser",
                           "type": "block",
                           "content": {
@@ -437,6 +459,28 @@
                             "mod": "ht3-panels",
                             "props": {
                               "panel": "checks",
+                              "group": "b"
+                            }
+                          }
+                        },
+                        {
+                          "id": "ht3-b-tasks",
+                          "type": "block",
+                          "content": {
+                            "mod": "ht3-panels",
+                            "props": {
+                              "panel": "tasks",
+                              "group": "b"
+                            }
+                          }
+                        },
+                        {
+                          "id": "ht3-b-logs",
+                          "type": "block",
+                          "content": {
+                            "mod": "ht3-panels",
+                            "props": {
+                              "panel": "logs",
                               "group": "b"
                             }
                           }

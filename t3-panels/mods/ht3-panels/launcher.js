@@ -23,7 +23,7 @@ const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2
 const REPO = 'c=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || exit 1; case "$c" in */.git) printf %s "${c%/.git}";; *) git rev-parse --show-toplevel | tr -d "\\n";; esac';
 const ADD = 'r="$1"; b="$2"; cd "$r" || exit 1; git check-ref-format --branch "$b" >/dev/null 2>&1 || { echo "Not a branch name: $b" >&2; exit 2; }\n'
   + 'git check-ignore -q .worktrees/x || { f=$(git rev-parse --git-path info/exclude) && mkdir -p "$(dirname "$f")" && printf "\\n.worktrees/\\n" >> "$f" || exit 3; }\n'
-  + 'git worktree add "$r/.worktrees/$b" -b "$b"';
+  + 'git worktree add "$r/.worktrees/$b" -b "$b" ${3:+"$3"}';
 export async function repoOf(cwd, on) {
   if (!cwd) return null;
   const r = await exec("sh", ["-c", REPO], { cwd, on: on ?? undefined, timeout: 10000 }).catch(() => null);
@@ -35,9 +35,10 @@ export async function repoOf(cwd, on) {
 // resolves once the setup succeeded or was skipped, and rejects when it was cancelled (the error has `setup` and
 // `worktree`, the folder that was made and is kept). `opts.card(run)`: the caller draws the progress card itself
 // (with `sleep` and `onChange` from its `cx`); without it the card opens as a dialog of its own. `opts.setup: false`
-// makes the worktree alone.
+// makes the worktree alone. `opts.from`: the branch (or commit) the new one starts from; without it, the main checkout's HEAD
+// (the Tasks surface starts its worktrees from the branch the person is on).
 export async function addWorktree(repo, branch, on, opts = {}) {
-  const r = await exec("sh", ["-c", ADD, "sh", repo, branch], { cwd: repo, on: on ?? undefined, timeout: 60000 });
+  const r = await exec("sh", ["-c", ADD, "sh", repo, branch, ...(opts.from ? [String(opts.from)] : [])], { cwd: repo, on: on ?? undefined, timeout: 60000 });
   if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim().split("\n").pop().replace(/^fatal: /, "") || "git worktree add failed");
   const path = `${repo}/.worktrees/${branch}`;
   await setupWorktree(repo, path, on, opts);
