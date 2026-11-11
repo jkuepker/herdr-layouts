@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="360" height="200" viewBox="0 0 360 200">
+  <!-- Drawn for Settings' small layout card (about 112×62) in the shipped previews' manner: a frame, a few thick lines, one thing lit.
+       Colors: catppuccin-mocha, the theme the demo and README pictures wear -->
+  <rect x="1.5" y="1.5" width="357" height="197" rx="18" fill="#1e1e2e" stroke="#313244" stroke-width="3"/>
+  <path d="M136.5 3v194M138 37.5h219" stroke="#313244" stroke-width="3"/>
+  <!-- The Inbox: the one card that needs you; the shelves holding the rest at the bottom -->
+  <rect x="12" y="14" width="112" height="46" rx="10" fill="#313244"/>
+  <rect x="24" y="24" width="30" height="9" rx="4.5" fill="#f9e2af"/>
+  <rect x="24" y="41" width="76" height="9" rx="4.5" fill="#cdd6f4"/>
+  <g fill="#585b70"><rect x="24" y="140" width="60" height="9" rx="4.5"/><rect x="24" y="158" width="72" height="9" rx="4.5"/><rect x="24" y="176" width="54" height="9" rx="4.5"/></g>
+  <!-- A tab and its pane -->
+  <rect x="148" y="10" width="62" height="18" rx="6" fill="#313244"/>
+  <rect x="150" y="50" width="196" height="136" rx="8" fill="none" stroke="#313244" stroke-width="3"/>
+</svg>
