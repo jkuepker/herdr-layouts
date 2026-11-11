@@ -110,8 +110,8 @@ const took = (ms) => (ms < 10000 ? `${(Math.max(0, ms) / 1000).toFixed(1)}s` : s
 const isWork = (m) => m.kind === "thought" || m.kind === "tool";
 // What a chat keeps across a reload of its pane (and of the app) that isn't the agent's to remember:
 // shared("ht3-panels.kept")[chat id] = { allow: true } while "Always allow this session" is on, and
-// { queue: [{ text, blocks, files }] }, the messages waiting for the agent's turn to end, and { pin: true } while the
-// chat is pinned (pinSync).
+// { queue: [{ text, blocks, files }] }, the messages waiting for the agent's turn to end, { pin: true } while the
+// chat is pinned (pinSync), and { history: [{ text, tokens? }] }, the prompts sent in it, oldest first (pushPrompt).
 // Empty values aren't kept; a chat with nothing kept has no entry.
 const KEPT = `${MOD}.kept`;
 const keptOf = (id) => (id ? (shared(KEPT) ?? {})[id] ?? {} : {});
@@ -126,6 +126,41 @@ function keep(id, patch) {
 // Where each chat's checkpoints are, so a chat deleted from Earlier chats can have its refs dropped in the repository
 // they are in: shared("ht3-panels.cps") = { <chat id>: { cwd, on } }. Looked through at most every SWEEP_EVERY_MS a pane.
 const CPS = `${MOD}.cps`, SWEEP_EVERY_MS = 10 * 60 * 1000;
+
+// The three functions below are pure (no gpui, no panel), so a node test can run them as they are.
+// Prompt history (T3's composerPromptHistory.ts): ↑ and ↓ in the message box walk one line of messages, oldest to
+// newest: the prompts sent in this chat, then the messages still queued, then the draft that was in the box.
+export const HISTORY_MAX = 100, HISTORY_TEXT_MAX = 20000;
+
+// `list` with a sent prompt at its end: { text, tokens? } (its "@" chips, as a queued message's). The same text twice
+// running is kept once, the newer; an empty one or a very long one is not remembered; at most `max`, the newest.
+export function pushPrompt(list, entry, max = HISTORY_MAX) {
+  const text = String(entry?.text ?? "").trim(), had = Array.isArray(list) ? list : [];
+  if (!text || text.length > HISTORY_TEXT_MAX) return had;
+  const tokens = Array.isArray(entry.tokens) ? entry.tokens.filter((t) => t?.range && t.range.end <= text.length) : [];
+  const next = { text, ...(tokens.length ? { tokens } : {}) };
+  return [...(had.at(-1)?.text === text ? had.slice(0, -1) : had), next].slice(-Math.max(1, max));
+}
+
+// Where a recalled prompt is in `list` now: where it was found, or, the list having moved, the newest with its text. -> -1 if gone.
+export function findPrompt(list, at, text) {
+  return list[at]?.text === text ? at : list.findLastIndex((e) => e.text === text);
+}
+
+// One step along the line. `history` and `queue`: how many there are of each (the queue counted with the one in the
+// box). `at`: where the box's unchanged recalled message is on the line (history 0…, then the queue), or null when
+// the box holds no such message; `empty`: the box has no text.
+// -> { history: i } | { queue: i } | { draft: true } (the way out, past the newest), or null: the key is the caret's.
+// T3's rules: a walk starts only from an empty box; a recalled prompt that was edited is a draft, and no step leaves it.
+export function stepPrompt({ dir, history, queue, at, empty }) {
+  const n = history + queue;
+  if (at != null && (at < 0 || at >= n)) at = null;
+  if (dir === "up" ? at == null && !empty : at == null) return null;
+  const to = dir === "up" ? (at ?? n) - 1 : at + 1;
+  if (to < 0) return null;
+  if (to >= n) return { draft: true };
+  return to < history ? { history: to } : { queue: to - history };
+}
 
 // A queued message's "@" files as the message box's chips: the spans it was typed with, where they still fit its
 // text; for one kept by an older build (no spans), each linked file's "@path" found in the text again.
@@ -192,6 +227,10 @@ export class ChatPanel {
     // Messages queued before a reload wait on: they go out when the agent is back and ready.
     const waiting = keptOf(this.chatId).queue;
     if (Array.isArray(waiting) && waiting.length) this.queue = waiting.map((q) => ({ text: String(q.text ?? ""), blocks: q.blocks ?? [], ...(Array.isArray(q.tokens) ? { tokens: q.tokens } : {}), files: (q.files ?? []).map((a) => ({ ...a, type: a.type ?? IMAGE_TYPES[String(a.name ?? "").split(".").pop().toLowerCase()] ?? null })) }));
+    // The prompts sent in this chat, for ↑ in the message box (pushPrompt); kept with the chat, so they outlive a reload.
+    const sent = keptOf(this.chatId).history;
+    this.history = Array.isArray(sent) ? sent.filter((e) => typeof e?.text === "string" && e.text).slice(-HISTORY_MAX) : [];
+    this.recall = null; // the recalled message the box holds: { text, at } (a sent prompt) or { text, queue: true }
     // A chat tab's agent has no terminal: it tells the layout's lists how it is itself (report.js).
     // A side chat is no tab, and a terminal agent's chat has its terminal to speak for it.
     this.reporter = this.chatId && !p.terminal && !p.side ? new Reporter(this.chatId) : null;
@@ -244,6 +283,8 @@ export class ChatPanel {
         // What was attached and named with "@" in the box it was typed in comes along (`draft`).
         const first = firstMessage(p);
         if (argv && first && !this.queue?.length) { this.queue = [first]; this.keepQueue(); }
+        // A chat started from a pull request (pr.js): its text waits in the box, not sent. Only a chat with no saved state.
+        if (argv && !first && p.seed) { this.input.set_value(String(p.seed)); this.hasText = true; }
         if (argv) src.start(cx, argv, p.cwd ?? d.found.HOME ?? home(), null, p.set ?? null);
         else src.startError = d.error ?? `${Array.isArray(p.agent) ? p.agent[0] : p.agent ?? "The agent"} isn't installed.`;
         cx.notify();
@@ -356,6 +397,8 @@ export class ChatPanel {
     this.input.on("change", (_e, cx) => {
       const has = this.input.value().trim().length > 0;
       const changed = this.typed(cx);
+      // A recalled message that was edited is a draft like any other (recalled).
+      if (this.recall && this.input.value() !== this.recall.text) this.recall = null;
       // A queued message being edited that was emptied, with no draft to return to, is no edit any more.
       if (this.editing && !this.parked && !has && !this.attached?.length) { this.editing = null; cx.notify(); }
       if (has !== this.hasText || changed) { this.hasText = has; cx.notify(); }
@@ -730,7 +773,7 @@ export class ChatPanel {
     const payload = this.boxMessage(v);
     // A queued message that was being edited goes back to its place; the draft it was set before returns to the box.
     const editing = this.editing, parked = this.parked;
-    this.editing = this.parked = null;
+    this.editing = this.parked = this.recall = null;
     this.input.set_value(parked?.content ?? "");
     this.hasText = !!parked?.content.text.trim();
     this.trig = null;
@@ -792,13 +835,16 @@ export class ChatPanel {
     // up and down: its place in the queue.
     if (what === "up" || what === "down") this.queue.splice(Math.max(0, Math.min(this.queue.length, i + (what === "up" ? -1 : 1))), 0, q);
     if (what === "edit") {
-      const now = this.input.content(), files = this.attached ?? [], has = !!now.text.trim() || files.length > 0;
+      // A sent prompt recalled with ↑ and left as it was is no draft: it gives way.
+      const again = this.recalled() && !this.recall.queue;
+      const now = this.input.content(), files = again ? [] : this.attached ?? [], has = !again && (!!now.text.trim() || files.length > 0);
       // The box is not empty. If it holds another queued message being edited, that one goes back to the queue, where
       // this one was. Else it is a draft: it is set aside, whole (its "@" files and attachments), and comes back
       // when this message is sent or put back (backToDraft).
       if (has && this.editing) this.queue.splice(Math.min(i, this.queue.length), 0, this.boxMessage(this.view ?? this.source.view()));
       else if (has) this.parked = { content: { text: now.text, tokens: now.tokens ?? [] }, files };
       this.editing = { at: i };
+      this.recall = { text: q.text, queue: true };
       this.attached = [...q.files];
       // Its "@" files come back as chips, so sending it again links them again.
       this.input.set_value({ text: q.text, tokens: chipsOf(q, (this.view ?? this.source.view()).cwd) });
@@ -812,11 +858,12 @@ export class ChatPanel {
 
   // "Back to draft" over the message box while a queued message is being edited: the message goes back to the queue
   // where it was (an emptied box drops it), and the draft that was set aside returns.
+  // The same for a sent prompt recalled over a draft: the prompt is dropped and the draft returns.
   backToDraft(cx) {
-    if (!this.editing) return;
+    if (!this.editing && !this.parked) return;
     const msg = this.boxMessage(this.view ?? this.source.view()), parked = this.parked;
-    if (msg.text || msg.files.length) { this.queue ??= []; this.queue.splice(Math.min(this.editing.at, this.queue.length), 0, msg); }
-    this.editing = this.parked = null;
+    if (this.editing && (msg.text || msg.files.length)) { this.queue ??= []; this.queue.splice(Math.min(this.editing.at, this.queue.length), 0, msg); }
+    this.editing = this.parked = this.recall = null;
     this.attached = parked?.files ?? [];
     this.input.set_value(parked?.content ?? "");
     this.hasText = !!parked?.content.text.trim();
@@ -826,8 +873,59 @@ export class ChatPanel {
     cx.notify();
   }
 
+  // Whether the box still holds the message ↑ or ↓ (or a queued message's Edit) put there, as it was put: a queued
+  // message being edited, or a sent prompt with nothing attached to it since.
+  recalled() {
+    const r = this.recall;
+    return !!r && this.input.value() === r.text && (r.queue ? !!this.editing : !this.editing && !this.attached?.length);
+  }
+
+  // ↑ ("up") and ↓ ("down") in the message box (stepPrompt). ↑ in an empty box brings back the last queued message
+  // to be edited, then the ones before it, then the prompts sent in this chat, newest first; ↓ walks forward again
+  // and, past the newest, returns the draft the walk began on (its attachments; the box had no text). A queued message
+  // passed by goes back to its place in the queue. -> whether the key was taken (else it is the caret's).
+  recallKey(cx, dir) {
+    const on = this.recalled(), r = on ? this.recall : null, list = this.history ?? [];
+    // An edited queued message, or one emptied: the arrows are the caret's, and its own buttons the way out.
+    if (!on && this.editing) return false;
+    const waiting = (this.queue?.length ?? 0) + (r?.queue ? 1 : 0);
+    const at = !r ? null : r.queue ? list.length + Math.min(this.editing.at, waiting - 1) : findPrompt(list, r.at, r.text);
+    const step = stepPrompt({ dir, history: list.length, queue: waiting, at: at != null && at < 0 ? null : at, empty: !this.input.value().trim() });
+    if (!step) return false;
+    const v = this.view ?? this.source.view();
+    // What the box held leaves it: a queued message goes back where it was, a sent prompt is only dropped, and a
+    // draft (the files attached to an empty box) is set aside, to return past the newest or when a message is sent.
+    if (r?.queue) this.queue.splice(Math.min(this.editing.at, this.queue.length), 0, this.boxMessage(v));
+    else if (!r && this.attached?.length) this.parked = { content: { text: "", tokens: [] }, files: this.attached };
+    this.editing = this.recall = null;
+    this.attached = [];
+    this.trig = null;
+    if (step.queue != null) {
+      this.input.set_value("");
+      this.queued(cx, "edit", step.queue);
+    } else {
+      const e = step.draft ? null : list[step.history], parked = step.draft ? this.parked : null;
+      if (step.draft) this.parked = null;
+      else this.recall = { text: e.text, at: step.history };
+      if (parked) this.attached = parked.files ?? [];
+      // A sent prompt's "@" files come back as chips, so sending it again links them again.
+      this.input.set_value(e ? { text: e.text, tokens: this.source.kind === "acp" ? chipsOf(e, v.cwd) : [] } : parked?.content ?? "");
+      this.hasText = !!this.input.value().trim();
+      this.trig = null;
+      this.keepQueue();
+      this.drain(cx);
+    }
+    // The caret at the end, as a shell leaves it: ↓ goes on from there, ↑ climbs the lines first where the box moves it.
+    try { const n = this.input.value().length; this.input.set_selected_range({ start: n, end: n }); } catch {}
+    cx.notify();
+    return true;
+  }
+
   // Sends one message: { text, blocks (ACP blocks for "@" files), files (attachments) }. `steer`: for the turn that is running.
-  dispatch(cx, { text, blocks, files }, steer = false) {
+  dispatch(cx, { text, blocks, files, tokens }, steer = false) {
+    // It is remembered for ↑ in the message box, with the chat (kept); a chat with no id remembers it while its pane lives.
+    const sent = pushPrompt(this.history, { text, tokens });
+    if (sent !== this.history) { this.history = sent; keep(this.chatId, { history: sent }); }
     const out = (...args) => (steer && this.source.steer ? this.source.steer(...args) : this.source.send(...args));
     // The chat as it is now, not as last drawn: a new chat's first message may go out before its pane was drawn with a folder.
     const v = this.source.view();
@@ -1934,7 +2032,7 @@ export class ChatPanel {
     const qBtn = (id, glyph, tip, fn) => h_flex().id(id).size(22).flex_none().items_center().justify_center().rounded(6).text_color(k.muted).cursor_pointer().role("button").accessibility_label(tip).tooltip(tip)
       .hover((s) => s.bg(k.accent).text_color(k.foreground)).on_click((_e, cx) => fn(cx)).child(icon(glyph).size(13));
     const queueRows = v_flex().w_full().items_end().gap(6).pb(8)
-      .child(div().text_size(11).text_color(k.muted).child(`${queue.length} queued${v.status === "ready" ? "" : ": sent when the agent is done"} · ↑ in an empty box edits the last`))
+      .child(div().text_size(11).text_color(k.muted).child(`${queue.length} queued${v.status === "ready" ? "" : ": sent when the agent is done"} · ↑ in an empty box edits the last, then earlier messages`))
       .children(queue.slice(0, 3).map((q, i) => h_flex().max_w("80%").min_w(0).h(34).pl(12).pr(4).gap(4).items_center().rounded(12).border(1).border_color(alpha(k.border, 0.8)).bg(alpha(k.message, 0.5)).text_size(13)
         .child(div().flex_1().min_w(0).truncate().text_color(alpha(k.foreground, 0.8)).child(q.text || `${q.files.length} file${q.files.length === 1 ? "" : "s"}`))
         .when(q.files.length > 0 && !!q.text, (el) => el.child(div().flex_none().text_size(11).text_color(k.muted).child(`+${q.files.length}`)))
@@ -1993,13 +2091,14 @@ export class ChatPanel {
         })
         // The open menu's arrows, Tab and Esc, where the text area lets them through (Enter comes as its submit).
         .on_key_down((e, cx) => {
-          // ↑ in an empty box (T3: alt+↑, which works here too): the last queued message comes back to be edited.
-          if (String(e.key ?? "").toLowerCase() === "up" && !this.trig && this.queue?.length && !this.input.value() && !e.modifiers?.platform && !e.modifiers?.control) {
-            this.queued(cx, "edit", this.queue.length - 1);
-            return cx.stop_propagation?.();
-          }
-          if (!this.trig || e.modifiers?.platform || e.modifiers?.control || e.modifiers?.alt) return;
-          if (this.menuKey(e.key.toLowerCase(), cx)) cx.stop_propagation?.();
+          const key = String(e.key ?? "").toLowerCase(), mod = e.modifiers ?? {};
+          if (mod.platform || mod.control) return;
+          // ↑ and ↓ walk the queued messages and the prompts sent before (recallKey). An open menu has the arrows
+          // first, unless the box holds a recalled message as it came (a recalled "/word" opens the menu by itself).
+          // With alt they are the caret's, but for alt+↑ in an empty box (T3's key for the last queued message).
+          if ((key === "up" || key === "down") && !mod.shift && (!mod.alt || !this.input.value()) && (!this.trig || this.recalled()) && this.recallKey(cx, key)) return cx.stop_propagation?.();
+          if (!this.trig || mod.alt) return;
+          if (this.menuKey(key, cx)) cx.stop_propagation?.();
         })
         .child(Textarea.new(this.input).token((tok) => h_flex().h(20).px(4).gap(4).items_center().rounded(4).border(1).border_color(alpha(k.border, 0.8))
           .bg(alpha(k.accent, 0.6)).text_size(12).child(fileIcon(tok.token.label ?? tok.token.id, k.dark, 12)).child(tok.token.label ?? tok.token.id))))
@@ -2031,7 +2130,11 @@ export class ChatPanel {
     // While a queued message is in the box: what it is, where a draft went, and the way back.
     const editLine = this.editing ? h_flex().w_full().justify_end().items_center().gap(6).pb(6).text_size(11).text_color(k.muted)
       .child(div().min_w(0).truncate().child(this.parked ? "Editing a queued message · your draft comes back when it is sent" : "Editing a queued message"))
-      .child(button(k, "q-back", this.parked ? "Back to draft" : "Put it back", (cx) => this.backToDraft(cx), { variant: "ghost-muted" })) : null;
+      .child(button(k, "q-back", this.parked ? "Back to draft" : "Put it back", (cx) => this.backToDraft(cx), { variant: "ghost-muted" }))
+      // A sent prompt recalled over a draft (files attached to an empty box): the same line, the same way back.
+      : this.parked ? h_flex().w_full().justify_end().items_center().gap(6).pb(6).text_size(11).text_color(k.muted)
+        .child(div().min_w(0).truncate().child("A message you sent before · your draft comes back with ↓ or when it is sent"))
+        .child(button(k, "q-back", "Back to draft", (cx) => this.backToDraft(cx), { variant: "ghost-muted" })) : null;
     return lane(queue.length || editLine ? v_flex().when(queue.length > 0, (el) => el.child(queueRows)).when(!!editLine, (el) => el.child(editLine)).child(box) : box);
   }
 }

@@ -41,6 +41,8 @@ const NAMED = [
   ["ht3-tabs.chat:prev", {}, "T3", "Previous chat", "thread card inbox agents list walk"],
   ["ht3-panels.plan", {}, "T3", "Plan mode on or off", "chat agent plan toggle"],
   ["ht3-panels.usage", {}, "T3", "Usage: tokens and context", "stats cost context window agents"],
+  ["ht3-panels.search", {}, "T3", "Search in project files…", "find grep text regex content"],
+  ["ht3-panels.prChat", {}, "T3", "Start chat from pull request…", "pr github review worktree"],
   ["ht3-panels.settings", {}, "T3", "T3 settings: agents, models, chats", "preferences notifications sound editors"],
   ["tab.new", {}, "Tab", "New tab", "tab agent new task"],
   ["mod.open", { name: "picker" }, "Tab", "Go to space or tab…", "switch jump find"],

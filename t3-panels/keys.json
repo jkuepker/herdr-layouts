@@ -62,6 +62,7 @@
     "cmd-shift-e": "layout.toggle:ht3-side",
     "cmd-j": "ht3-panels.bottom",
     "cmd-shift-p": "mod.open:ht3-palette",
+    "cmd-shift-f": "ht3-panels.search",
     "ctrl-shift-]": "ht3-tabs.chat:next",
     "ctrl-shift-[": "ht3-tabs.chat:prev",
     "ctrl-shift-1": "ht3-tabs.chat:1",

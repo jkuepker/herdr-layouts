@@ -13,8 +13,8 @@ import { div, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { closeOverlay } from "herdr";
 import { activeSpace } from "./side.js";
-import { projectOf, scriptsOf, setScripts } from "./scripts.js";
-import { tokens, alpha, icon, agentMark, button, iconButton, shortPath } from "./look.js";
+import { projectOf, scriptsOf, setScripts, toggleSetup } from "./scripts.js";
+import { tokens, alpha, icon, agentMark, button, iconButton, shortPath, badge } from "./look.js";
 import { AGENTS, detect } from "./agent-acp.js";
 import { EDITORS, editors } from "./menus.js";
 import { prefs, agentOn, modelsOf, knownModels, editorOn, sideStartsHidden, firstAgent, setPref, settingsFile, followUp, checkpointsOn, toastsOn, soundsOn } from "./settings.js";
@@ -64,6 +64,8 @@ export class Settings {
     // ui:script:<name>=<command> adds a project script (same name: replaces it), ui:unscript:<n> removes the nth.
     else if (what === "script") { const at = rest.indexOf("="); if (at > 0) { this.scriptName.set_value(rest.slice(0, at)); this.scriptCommand.set_value(rest.slice(at + 1)); this.addScript(); } }
     else if (what === "unscript") this.dropScript(Number(rest));
+    // ui:setup:<n> marks the nth script as the setup script New worktree runs first (again: unmarks it).
+    else if (what === "setup") { const s = scriptsOf(this.project?.key)[Number(rest)]; if (s) toggleSetup(this.project.key, s.name); }
     // ui:edit:<n> puts the nth script into the fields to change it (ui:script: then saves it in its place; ui:edit: alone gives up),
     // ui:move:<n>:<up|down> moves it one place.
     else if (what === "edit") this.editScript(rest === "" ? null : Number(rest));
@@ -239,9 +241,11 @@ export class Settings {
             [this.toggle(k, "set-notifications", toastsOn(), "Notify", () => setPref("notifications", toastsOn() ? false : undefined))]),
           this.row(icon("volume-2").size(16).flex_none().text_color(k.muted), "Sound", "Play Herdr's done or blocked sound then.",
             [this.toggle(k, "set-sounds", soundsOn(), "Sound", () => setPref("sounds", soundsOn() ? undefined : true))])]))
-        .when(!!this.project, (el) => el.child(this.section(k, "Project scripts", `Commands for ${this.project.name} (${shortPath(this.project.root)}${this.project.on ? ` on ${this.project.on}` : ""}), the project of the shown space. The Project popover runs them in a side terminal.`,
-          [...scriptsOf(this.project.key).map((s, i, all) => this.row(icon("square-terminal").size(16).flex_none().text_color(k.muted), s.name, s.command,
-            [...(all.length > 1 ? [iconButton(k, `script-up-${i}`, "chevron-up", (cx) => { this.moveScript(i, -1); cx.notify(); }, { tip: "Move up" }).opacity(i ? 1 : 0.3),
+        .when(!!this.project, (el) => el.child(this.section(k, "Project scripts", `Commands for ${this.project.name} (${shortPath(this.project.root)}${this.project.on ? ` on ${this.project.on}` : ""}), the project of the shown space. The Project popover runs them in a side terminal. The one marked with the wrench is the setup script: New worktree runs it in the new worktree before the chat starts.`,
+          [...scriptsOf(this.project.key).map((s, i, all) => this.row(icon("square-terminal").size(16).flex_none().text_color(k.muted),
+            s.setup ? h_flex().gap(6).items_center().child(div().min_w(0).truncate().child(s.name)).child(badge(k, "setup", "info")) : s.name, s.command,
+            [iconButton(k, `script-setup-${i}`, "wrench", (cx) => { toggleSetup(this.project.key, s.name); cx.notify(); }, { tip: s.setup ? "The setup script: runs in a new worktree before its chat starts. Click to unmark" : "Run in a new worktree before its chat starts", on: !!s.setup }),
+              ...(all.length > 1 ? [iconButton(k, `script-up-${i}`, "chevron-up", (cx) => { this.moveScript(i, -1); cx.notify(); }, { tip: "Move up" }).opacity(i ? 1 : 0.3),
               iconButton(k, `script-down-${i}`, "chevron-down", (cx) => { this.moveScript(i, 1); cx.notify(); }, { tip: "Move down" }).opacity(i < all.length - 1 ? 1 : 0.3)] : []),
               iconButton(k, `script-edit-${i}`, "pen-line", (cx) => { this.editScript(this.editing === i ? null : i); cx.notify(); }, { tip: `Change ${s.name}`, on: this.editing === i }),
               iconButton(k, `script-drop-${i}`, "trash-2", (cx) => { this.dropScript(i); cx.notify(); }, { tip: `Remove ${s.name}` })])),

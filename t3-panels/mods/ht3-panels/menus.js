@@ -10,7 +10,7 @@ import { closeOverlay, exec, hc, run, appHome, shared, setShared, readTextFile, 
 import { chatLike, forkChat } from "./agent-acp.js";
 import { toMarkdown } from "./transcript.js";
 import { agentName } from "./report.js";
-import { MOD, tokens, icon, button, iconButton, shortPath } from "./look.js";
+import { MOD, tokens, icon, button, iconButton, badge, shortPath } from "./look.js";
 import { revertTo } from "./checkpoint.js";
 import { editorOn } from "./settings.js";
 import { SURFACES, send, placeOf, activeSpace, surfaceOff, surfacesHere } from "./side.js";
@@ -679,6 +679,7 @@ export class ProjectMenu {
             .role("button").accessibility_label(`Run ${s.name}`).hover((st) => st.bg(k.accent)).on_click(() => this.script(s))
             .child(icon("play").size(12).flex_none().text_color(k.muted))
             .child(div().flex_none().max_w(120).truncate().child(s.name))
+            .when(!!s.setup, (e) => e.child(badge(k, "setup", "info")))
             .child(div().flex_1().min_w(0).truncate().text_size(11).font_family(k.mono).text_color(k.muted).child(s.command))).reduce((box, r) => box.child(r), v_flex().id("ht3-list-scripts").max_h(180).overflow_y_scrollbar().pl(8))));
       })
       // A chat's worktree: removed only from here, and only after its question.

@@ -9,7 +9,7 @@
 // - as an overlay (`mod.open {"name": "ht3-panels"}`): the New chat dialog (launcher.js), or with
 //   props.menu "add" / "project", the side panel's popups, "copy" / "thread" / "revert", the chat's
 //   and the lists' menus (all menus.js), "settings", the Settings dialog (settings-ui.js), or
-//   "usage", the Usage dialog (usage.js).
+//   "usage", the Usage dialog (usage.js), or "search", the project content search (search.js).
 // The panel's state and the code that makes the layout match it are in side.js.
 
 import { View } from "gpui-kit";
@@ -23,7 +23,7 @@ import { Strip, ADD_MENU } from "./strip.js";
 import { AddMenu, ProjectMenu, CopyMenu, ThreadMenu, RevertMenu } from "./menus.js";
 import { DiffPanel } from "./diff.js";
 import { DashboardPanel } from "./dashboard.js";
-import { PrPanel } from "./pr.js";
+import { PrPanel, PrChatDialog, prChatCommand } from "./pr.js";
 import { BrowserPanel } from "./browser.js";
 import { SideChat, beginChat } from "./sidechat.js";
 import { Empty } from "./empty.js";
@@ -31,6 +31,7 @@ import { detect } from "./agent-acp.js";
 import { announce, prune } from "./report.js";
 import { Settings, SETTINGS_SIZE } from "./settings-ui.js";
 import { Usage, USAGE_SIZE } from "./usage.js";
+import { Search, SEARCH_SIZE, showHit, searchOpen } from "./search.js";
 import { loadPrefs, setPref, agentOn } from "./settings.js";
 import { SIDE, read, sideShown, bottomShown, reconcile, keep, toggleMax, toggleBottom, toggleSplit, openSurface, openBottom, closeTab, activate, activeSpace, openScript } from "./side.js";
 import { pendingScript } from "./scripts.js";
@@ -81,10 +82,16 @@ class Buttons {
     else if (name === "bottom") cx.spawn(async (cx) => { try { await toggleBottom(); } catch (e) { fail(e); } cx.notify(); });
     // usage: the Usage dialog (usage.js).
     else if (name === "usage") openOverlay({ mod: MOD, kind: "dialog", ...USAGE_SIZE, props: { menu: "usage" } });
+    // search: the project content search dialog (search.js; T3's mod+shift+f); again while it is open closes it (the dialog
+    // does that itself). search:<text> opens it with that typed. goto:<line>:<absolute path>: Files shows that file with the line picked.
+    else if (name === "search") { if (!searchOpen()) openOverlay({ mod: MOD, kind: "dialog", ...SEARCH_SIZE, props: { menu: "search", query: c.slice(7) } }); }
+    else if (name === "goto") showHit(c.slice(5), cx);
     // earlier: the New chat dialog as a list of the earlier chats alone, its search focused (the palette's "Earlier chats…").
     else if (name === "earlier") openOverlay({ mod: MOD, kind: "dialog", width: 512, height: 520, props: { find: true } });
     // script: runs the project script the Project popover just picked (scripts.js), if it was picked a moment ago.
     else if (name === "script") { const s = pendingScript(); if (s && Date.now() - s.at < 10000) cx.spawn(async (cx) => { try { await openScript(s); } catch (e) { fail(e); } cx.notify(); }); }
+    // prChat: Start chat from PR (pr.js). Alone it asks for the number or the address; prChat:<number or address> starts at once.
+    else if (name === "prChat") prChatCommand(c.slice(7));
     else if (name === "menu") openOverlay({ mod: MOD, kind: "popup", at: { x: 900, y: 48 }, width: a === "project" ? 344 : ADD_MENU.w, height: a === "project" ? 660 : ADD_MENU.h, props: { menu: a, group: b ?? "a" } });
     cx.notify();
   }
@@ -123,7 +130,7 @@ export default class T3Panels extends View {
   init(_props, cx) {
     const p = props() ?? {};
     this.face = p.overlay
-      ? p.menu === "add" ? new AddMenu() : p.menu === "project" ? new ProjectMenu() : p.menu === "settings" ? new Settings() : p.menu === "usage" ? new Usage() : p.menu === "copy" ? new CopyMenu() : p.menu === "thread" ? new ThreadMenu() : p.menu === "revert" ? new RevertMenu() : new Launcher()
+      ? p.menu === "add" ? new AddMenu() : p.menu === "project" ? new ProjectMenu() : p.menu === "settings" ? new Settings() : p.menu === "usage" ? new Usage() : p.menu === "search" ? new Search() : p.menu === "copy" ? new CopyMenu() : p.menu === "thread" ? new ThreadMenu() : p.menu === "revert" ? new RevertMenu() : p.menu === "prchat" ? new PrChatDialog() : new Launcher()
       : (FACES[p.panel] ?? (() => new ChatPanel()))();
     this.face.init(p, cx);
     // Key commands from keys.json's "mod:ht3-panels" section (save), and "focus" from pane.go.

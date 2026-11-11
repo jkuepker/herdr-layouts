@@ -8,10 +8,12 @@ import { div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { exec, run, closeOverlay, focused, spaces, panes, home, pickFolder, appHome, shared, setShared, readTextFile } from "herdr";
 import { agentName } from "./report.js";
-import { MOD, tokens, alpha, icon, agentMark, button, iconButton, shortPath } from "./look.js";
+import { MOD, tokens, alpha, icon, agentMark, button, iconButton, badge, shortPath } from "./look.js";
 import { AGENTS, detect } from "./agent-acp.js";
 import { enabledAgents, agentOn, firstAgent } from "./settings.js";
 import { KINDS } from "./core/chat-reader.js";
+import { scriptsOf, setScripts, setupOf, setSetup, toggleSetup, setupTemplate } from "./scripts.js";
+import { runSetup, setupCard, setupButtons, SetupDialog } from "./setup.js";
 
 const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
@@ -28,10 +30,26 @@ export async function repoOf(cwd, on) {
   return r?.code === 0 && r.stdout.trim() ? r.stdout.trim() : null;
 }
 // Resolves to the new worktree's folder; rejects with git's last line.
-export async function addWorktree(repo, branch, on) {
+// Every New-worktree launch comes through here, so the project's setup script (scripts.js `setupOf`, setup.js) runs
+// here too: after the worktree is made and before this resolves, which is before the caller starts its chat. It
+// resolves once the setup succeeded or was skipped, and rejects when it was cancelled (the error has `setup` and
+// `worktree`, the folder that was made and is kept). `opts.card(run)`: the caller draws the progress card itself
+// (with `sleep` and `onChange` from its `cx`); without it the card opens as a dialog of its own. `opts.setup: false`
+// makes the worktree alone.
+export async function addWorktree(repo, branch, on, opts = {}) {
   const r = await exec("sh", ["-c", ADD, "sh", repo, branch], { cwd: repo, on: on ?? undefined, timeout: 60000 });
   if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim().split("\n").pop().replace(/^fatal: /, "") || "git worktree add failed");
-  return `${repo}/.worktrees/${branch}`;
+  const path = `${repo}/.worktrees/${branch}`;
+  await setupWorktree(repo, path, on, opts);
+  return path;
+}
+// The same for a worktree made some other way (an existing branch, a pull request's): runs the setup script of the
+// repository's project in `path`. Resolves to "none" (no setup script), "ok" or "skipped"; rejects when cancelled.
+export async function setupWorktree(repo, path, on, opts = {}) {
+  const script = opts.setup === false ? null : setupOf(`${on ?? ""}:${repo}`);
+  if (!script) return "none";
+  return runSetup({ cwd: path, root: repo, on: on ?? null, script, card: opts.card ?? null, sleep: opts.sleep ?? null, onChange: opts.onChange ?? null,
+    ...(opts.timeout ? { timeout: opts.timeout } : {}), ...(opts.every ? { every: opts.every } : {}) });
 }
 
 const ago = (ms) => { const m = Math.max(0, Math.round((Date.now() - ms) / 60000)); return m < 1 ? "just now" : m < 60 ? `${m}m ago` : m < 1440 ? `${Math.round(m / 60)}h ago` : `${Math.round(m / 1440)}d ago`; };
@@ -61,6 +79,8 @@ async function savedChats() {
 export class Launcher {
   init(p, cx) {
     this.overlay = p.overlay;
+    // Opened by setup.js for a caller with no card of its own: the setup card alone.
+    if (p.setup) { this.face = new SetupDialog(); return this.face.init(p, cx); }
     // Opened to find an earlier chat (`ht3-panels.earlier`): that list alone.
     this.find = p.find === true;
     const f = focused();
@@ -80,6 +100,13 @@ export class Launcher {
     this.busy = false;
     this.branch = InputState.new({ placeholder: "new branch, e.g. fix-login" });
     this.branch.on("change", (_e, cx) => cx.notify());
+    // The setup script New worktree runs first: its picker (the project's scripts, and a new one from a template),
+    // and the run whose card is shown while it runs or after it failed.
+    this.pickSetup = false;
+    this.template = null; // true while the new script's command is being typed
+    this.setupCommand = InputState.new({ placeholder: "command, e.g. npm ci" });
+    this.setupCommand.on("change", (_e, cx) => cx.notify());
+    this.setupRun = null;
     // Earlier chats (T3's thread search and its archived threads): the chats saved on this computer,
     // newest first, with a field that looks through their names and what was said in them.
     this.recent = null;
@@ -100,11 +127,45 @@ export class Launcher {
     });
   }
 
-  close() {}
+  // Closed (Esc) while the setup script runs: the script is stopped; the worktree stays.
+  async close(cx) { if (this.face) return this.face.close(cx); await this.setupRun?.cancel(); }
+  // The project the scripts are kept for: the repository's main checkout on the space's machine (scripts.js `projectOf`).
+  projectKey() { return this.repo ? `${this.machine ?? ""}:${this.repo}` : null; }
+  // New from template: the field gets a command to start from (scripts.js `setupTemplate`); Save adds it as the
+  // script "setup" (replacing one of that name) and marks it.
+  newSetup(cx) {
+    this.pickSetup = true;
+    this.template = true;
+    this.setupCommand.focus();
+    cx.spawn(async (cx) => { const t = await setupTemplate(this.repo, this.machine); if (this.template && !this.setupCommand.value().trim()) this.setupCommand.set_value(t); cx.notify(); });
+  }
+  saveSetup() {
+    const key = this.projectKey(), command = this.setupCommand.value().trim();
+    if (!key || !command) return;
+    setScripts(key, [...scriptsOf(key).filter((s) => s.name !== "setup"), { name: "setup", command }]);
+    setSetup(key, "setup");
+    this.template = null;
+    this.pickSetup = false;
+    this.setupCommand.set_value("");
+  }
   // For scripts: worktree:<branch> (New worktree on, with that branch; worktree: turns it off), custom:<command> (types it into
   // the command field), open (the Open chat button),
   // recent:<text> (types into Search chats), reopen:<n> and forget:<n> (the nth row shown, from 0; forget twice deletes).
+  // setup:pick (opens or closes the setup picker), setup:<script name> (marks it; setup: alone unmarks), setup:template (a new
+  // one, from the template), setup:command:<text> (types its command), setup:save; while the card shows, setup:retry,
+  // setup:skip, setup:cancel.
   command(c, cx) {
+    if (this.face) return this.face.command(c, cx);
+    if (c.startsWith("setup:")) {
+      const a = c.slice(6), run = this.setupRun;
+      if (run && (a === "retry" || a === "skip" || a === "cancel")) run[a]();
+      else if (a === "pick") this.pickSetup = !this.pickSetup;
+      else if (a === "template") this.newSetup(cx);
+      else if (a.startsWith("command:")) { this.pickSetup = this.template = true; this.setupCommand.set_value(a.slice(8)); }
+      else if (a === "save") this.saveSetup();
+      else setSetup(this.projectKey(), a || null);
+      return cx.notify();
+    }
     if (c.startsWith("worktree:")) { this.wt = !!c.slice(9) && !!this.repo; this.branch.set_value(c.slice(9)); }
     if (c.startsWith("custom:")) this.custom.set_value(c.slice(7));
     if (c === "open") this.open(cx);
@@ -162,8 +223,15 @@ export class Launcher {
     this.error = null;
     cx.notify();
     cx.spawn(async (cx) => {
-      try { this.start(await addWorktree(this.repo, branch, this.machine)); }
-      catch (e) { this.error = `Couldn't make the worktree: ${String(e?.message ?? e)}`; }
+      const sleep = (ms) => new Promise((r) => cx.timer.after(ms, () => r()));
+      try {
+        // The setup script, if the project has one, runs inside addWorktree: its card takes the dialog's place until
+        // it succeeded or was skipped.
+        const cwd = await addWorktree(this.repo, branch, this.machine, { card: (run) => { this.setupRun = run; cx.notify(); }, sleep, onChange: () => cx.notify() });
+        if (this.setupRun?.state === "ok") await sleep(700); // the finished card, for a moment
+        this.start(cwd);
+      } catch (e) { this.error = e?.setup ? String(e.message) : `Couldn't make the worktree: ${String(e?.message ?? e)}`; }
+      this.setupRun = null;
       this.busy = false;
       cx.notify();
     });
@@ -183,8 +251,50 @@ export class Launcher {
     closeOverlay(this.overlay);
   }
 
-  render(_cx) {
+  // Under New worktree: the project's setup script (or that it has none) with Change, and under it the picker: the
+  // project's scripts, the marked one with a "setup" badge (a click marks or unmarks), and a new one from a template.
+  setupRows(k, el) {
+    const key = this.projectKey(), list = scriptsOf(key), setup = list.find((s) => s.setup) ?? null;
+    const line = h_flex().px(10).pb(6).gap(8).h(30).items_center()
+      .child(icon("wrench").size(14).flex_none().text_color(k.muted))
+      .child(div().flex_none().text_size(12).text_color(setup ? k.foreground : k.muted).child(setup ? `Runs ${setup.name} first` : "No setup script"))
+      .child(div().flex_1().min_w(0).truncate().text_size(11).font_family(k.mono).text_color(k.muted).child(setup ? setup.command : ""))
+      .child(button(k, "setup-pick", this.pickSetup ? "Done" : setup ? "Change…" : "Set…", (cx) => { this.pickSetup = !this.pickSetup; this.template = null; cx.notify(); },
+        { tip: "The script that runs in a new worktree before its chat starts" }));
+    if (!this.pickSetup) return el.child(line);
+    const rows = list.map((s, i) => h_flex().id(`setup-script-${i}`).h(28).px(8).gap(8).flex_none().items_center().rounded(6).text_size(13).cursor_pointer()
+      .role("button").accessibility_label(s.setup ? `${s.name}: the setup script. Click to unmark` : `Run ${s.name} as the setup script`)
+      .hover((st) => st.bg(alpha(k.accent, 0.6))).on_click((_e, cx) => { toggleSetup(key, s.name); cx.notify(); })
+      .child(icon(s.setup ? "check" : "square-terminal").size(14).flex_none().text_color(k.muted))
+      .child(div().flex_none().max_w(150).truncate().child(s.name))
+      .when(!!s.setup, (e) => e.child(badge(k, "setup", "info")))
+      .child(div().flex_1().min_w(0).truncate().text_size(11).font_family(k.mono).text_color(k.muted).child(s.command)));
+    return el.child(line).child(v_flex().id("ht3-setup-pick").mx(10).mb(6).p(4).gap(2).rounded(8).border(1).border_color(k.border)
+      .children(rows)
+      .when(!this.template, (e) => e.child(h_flex().id("setup-new").h(28).px(8).gap(8).flex_none().items_center().rounded(6).text_size(13).cursor_pointer().role("button").accessibility_label("New setup script from a template")
+        .hover((st) => st.bg(alpha(k.accent, 0.6))).on_click((_e, cx) => this.newSetup(cx))
+        .child(icon("plus").size(14).flex_none().text_color(k.muted))
+        .child(div().flex_none().child("New from a template…"))
+        .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(k.muted).child("copy .env files, install from the lockfile"))))
+      .when(!!this.template, (e) => e
+        .child(h_flex().px(4).py(2).gap(6).items_center()
+          .child(div().flex_1().min_w(0).h(28).px(8).rounded(6).border(1).border_color(k.input).text_size(12).font_family(k.mono).child(Input.new(this.setupCommand)))
+          .child(button(k, "setup-template-cancel", "Cancel", (cx) => { this.template = null; this.setupCommand.set_value(""); cx.notify(); }))
+          .child(button(k, "setup-save", "Save", (cx) => { this.saveSetup(); cx.notify(); }, { variant: "default", disabled: !this.setupCommand.value().trim() })))
+        .child(div().px(8).pb(2).text_size(11).text_color(k.muted).child("Saved as the project script \"setup\". It runs with sh in the new worktree; $HT3_PROJECT_ROOT is the main checkout.")))
+      .when(!list.length && !this.template, (e) => e.child(div().px(8).py(2).text_size(11).text_color(k.muted).child("The project has no scripts yet. Settings → Project scripts adds more."))));
+  }
+
+  render(cx) {
+    if (this.face) return this.face.render(cx);
     const k = tokens();
+    // A setup script runs (or failed and waits): its card, and its buttons in the footer.
+    if (this.setupRun) return v_flex().id("ht3-launcher").size_full().bg(k.popover).text_color(k.foreground).text_size(14)
+      .child(v_flex().px(24).pt(24).pb(8).gap(8).flex_none()
+        .child(div().text_size(20).font_semibold().child("New chat"))
+        .child(div().text_size(14).text_color(k.muted).child(`The worktree is made. The chat starts once ${this.setupRun.script.name} has run.`)))
+      .child(v_flex().id("ht3-launcher-list").flex_1().min_h(0).px(24).py(8).overflow_y_scrollbar().child(setupCard(k, this.setupRun)))
+      .child(h_flex().px(24).py(16).gap(8).flex_none().justify_end().border_t(1).border_color(k.border).children(setupButtons(k, this.setupRun)));
     const remote = this.machine != null;
     const where = remote ? `${this.machine}:${this.cwd ?? "~"}` : shortPath(this.cwd);
     const label = (text) => div().px(10).pt(8).pb(4).text_size(12).font_medium().text_color(k.muted).child(text);
@@ -258,6 +368,7 @@ export class Launcher {
           .when(!this.wt, (e) => e.child(div().flex_1().min_w(0).truncate().text_size(12).text_color(k.dim).child("the chat gets a branch and a folder of its own: .worktrees/<branch>")))))
         .when(this.wt && !!this.branch.value().trim(), (el) => el.child(div().px(10).pb(6).text_size(12).text_color(k.muted).truncate()
           .child(`git worktree add .worktrees/${this.branch.value().trim()} -b ${this.branch.value().trim()}   in ${shortPath(this.repo)}`)))
+        .when(this.wt, (el) => this.setupRows(k, el))
         .when(!this.found, (el) => el.child(div().px(10).py(6).text_size(12).text_color(k.muted).child("Looking for installed agents…")))
         .when(!!this.error, (el) => el.child(div().px(10).py(6).text_size(12).text_color(k.destructiveText).child(this.error)))
         .when(!!this.found && !enabledAgents().length, (el) => el.child(div().px(10).py(6).text_size(12).text_color(k.muted).child("No agent is enabled in Settings.")))
