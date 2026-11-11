@@ -239,12 +239,13 @@ export class ChecksPanel {
     if (!this.where) return;
     const key = this.keyOf(item), was = this.runs.get(key);
     if (was?.running()) { this.sel = key; return; }
-    const r = new CheckRun({ key, name: item.name, command: item.command, cwd: this.where.cwd, on: this.where.on, onChange: () => cx.notify() });
+    // The click's cx goes stale at the first await, so the run reports through the spawn's own context.
+    const r = new CheckRun({ key, name: item.name, command: item.command, cwd: this.where.cwd, on: this.where.on });
     this.runs.set(key, r);
     this.sel = key;
     this.said = null;
     cx.notify();
-    cx.spawn(async (cx) => { await r.start(); cx.notify(); });
+    cx.spawn(async (acx) => { r.onChange = () => acx.notify(); await r.start(); acx.notify(); });
   }
 
   addCustom(cx) {
