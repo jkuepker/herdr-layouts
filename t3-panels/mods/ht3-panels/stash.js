@@ -18,6 +18,15 @@ import {
 } from "./gitstate.js";
 
 const opt = (o, timeout) => ({ cwd: o.cwd, on: o.on ?? undefined, ...(timeout ? { timeout } : {}) });
+// Another git process (Files, Diff, an agent) holding index.lock for a moment.
+const LOCKED = /index\.lock|Another git process seems to be running|could not write index/i;
+const locked = (r) => r && r.code !== 0 && LOCKED.test(`${r.stderr ?? ""}${r.stdout ?? ""}`);
+// exec git; a command that is safe to repeat runs once more after a short wait when the index was locked.
+async function git(o, args, timeout) {
+  let r = await exec("git", args, opt(o, timeout));
+  if (locked(r)) { await exec("sleep", ["0.4"], opt(o, 5000)).catch(() => null); r = await exec("git", args, opt(o, timeout)); }
+  return r;
+}
 
 // ---- git ----
 
@@ -42,8 +51,10 @@ const topStash = async (o) => {
 export async function stashPush(o, { message = "", untracked = false } = {}) {
   const before = await topStash(o);
   const r = await exec("git", stashPushArgs({ message, untracked }), opt(o, 60000));
-  if (r.code !== 0) throw new Error(gitMessage(r, 2, "git stash failed"));
-  return { created: (await topStash(o)) !== before };
+  const created = (await topStash(o)) !== before;
+  // A lock clash after git saved the stash still leaves the stash made; only a stash that wasn't made is a failure.
+  if (r.code !== 0 && !(created && locked(r))) throw new Error(gitMessage(r, 2, "git stash failed"));
+  return { created };
 }
 
 // Apply or pop the nth stash. -> { conflict }: true when it was applied with conflicts (git keeps the stash then).
@@ -87,9 +98,9 @@ export async function stashAndPull(o, { untracked = false } = {}) {
 // `git checkout --ours|--theirs -- file && git add -- file`.
 export async function takeSide(o, file, side) {
   if (side !== "ours" && side !== "theirs") throw new Error("No such side");
-  const c = await exec("git", ["checkout", `--${side}`, "--", file], opt(o, 30000));
+  const c = await git(o, ["checkout", `--${side}`, "--", file], 30000);
   if (c.code !== 0) throw new Error(gitMessage(c, 2, `git checkout --${side} failed`));
-  const a = await exec("git", ["add", "--", file], opt(o, 30000));
+  const a = await git(o, ["add", "--", file], 30000);
   if (a.code !== 0) throw new Error(gitMessage(a, 2, "git add failed"));
 }
 
@@ -97,7 +108,7 @@ export async function takeSide(o, file, side) {
 export async function markResolved(o, file) {
   const g = await exec("grep", ["-qE", MARKER_GREP, "--", file], opt(o, 30000)).catch(() => null);
   if (g?.code === 0) throw new Error(`${file} still has conflict markers (<<<<<<< or >>>>>>>). Remove them and save the file first.`);
-  const a = await exec("git", ["add", "--", file], opt(o, 30000));
+  const a = await git(o, ["add", "--", file], 30000);
   if (a.code !== 0) throw new Error(gitMessage(a, 2, "git add failed"));
 }
 
@@ -175,7 +186,7 @@ export function stashView(m, k) {
   const make = v_flex().flex_none().mx(4).mb(6).p(8).gap(6).rounded(8).border(1).border_color(alpha(k.border, 0.8))
     .child(div().h(28).px(8).rounded(6).border(1).border_color(k.input).text_size(13).child(Input.new(m.stashMsg)))
     .child(h_flex().gap(6).items_center()
-      .child(h_flex().id("stash-untracked").h(24).px(4).gap(6).items_center().rounded(6).cursor_pointer().role("checkbox").accessibility_label("Include untracked files")
+      .child(h_flex().id("stash-untracked").h(24).px(4).gap(6).items_center().rounded(6).cursor_pointer().role("check_box").accessibility_label("Include untracked files")
         .hover((s) => s.bg(k.accent)).on_click((_e, cx) => { m.untracked = !m.untracked; cx.notify(); })
         .child(h_flex().size(14).flex_none().rounded(4).border(1).border_color(k.input).items_center().justify_center().bg(m.untracked ? k.primary : "#00000000")
           .when(m.untracked, (e) => e.child(icon("check").size(10).text_color(k.primaryText))))
@@ -186,7 +197,7 @@ export function stashView(m, k) {
     .child(head(m, k, "Stash", m.stashes ? cnt(list.length, "stash") : "Reading…"))
     .child(make)
     .child(list.length
-      ? v_flex().id("ht3-stash-list").flex_1().min_h(0).gap(6).overflow_y_scrollbar().children(list.map(row))
+      ? (list.length > 4 ? v_flex().id("ht3-stash-list").flex_none().h(380).gap(6).overflow_y_scrollbar() : v_flex().id("ht3-stash-list").flex_none().gap(6)).children(list.map(row))
       : div().px(12).py(8).text_size(12).text_color(k.muted).child(m.stashes ? "No stashes yet. Stash changes puts the working changes away and leaves a clean tree." : "Reading the stashes…"))
     .child(div().flex_none().h(4))
     .child(tail(m, k));
@@ -217,8 +228,8 @@ export function conflictView(m, k) {
     .child(head(m, k, "Merge conflict", def ? `${def.word}${m.branch ? ` on ${m.branch}` : ""}` : "unmerged files"))
     .child(div().px(12).pb(6).text_size(11).line_height("15px").text_color(k.muted).child(sideHint(op)))
     .child(left
-      ? v_flex().id("ht3-conflict-list").flex_1().min_h(0).gap(6).overflow_y_scrollbar().children(c.files.map(row))
-      : div().flex_1().px(12).py(8).text_size(12).text_color(k.muted).child(op ? `Every file is resolved. Continue the ${word}, or abort it.` : "No unmerged files are left."))
+      ? (left > 5 ? v_flex().id("ht3-conflict-list").flex_none().h(380).gap(6).overflow_y_scrollbar() : v_flex().id("ht3-conflict-list").flex_none().gap(6)).children(c.files.map(row))
+      : div().flex_none().px(12).py(8).text_size(12).text_color(k.muted).child(op ? `Every file is resolved. Continue the ${word}, or abort it.` : "No unmerged files are left."))
     .child(div().flex_none().h(4))
     .child(tail(m, k))
     .child(div().mx(4).my(4).h(1).flex_none().bg(k.border))

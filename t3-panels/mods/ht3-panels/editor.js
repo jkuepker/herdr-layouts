@@ -635,8 +635,8 @@ export class FilePanel {
       .when(c.on != null, (el) => el.child(banner(`Read-only: this space is on ${c.on}, and Herdr can only write files on this computer.`, k.muted)))
       .when(!!tab.note, (el) => el.child(banner(tab.note, k.warningText, alpha(k.warning, k.dark ? 0.16 : 0.08))))
       .when(!!tab.state && this.conflictsOf(tab).length > 0, (el) => el.child(banner(`${this.conflictsOf(tab).length} conflict${this.conflictsOf(tab).length === 1 ? "" : "s"}`, k.warningText, alpha(k.warning, k.dark ? 0.16 : 0.08), [
-        button(k, "file-conflict-prev", "Previous", (cx) => this.stepConflicts(cx, tab, -1), { glyph: "chevron-up" }),
-        button(k, "file-conflict-next", "Next", (cx) => this.stepConflicts(cx, tab, 1), { glyph: "chevron-down" })])))
+        iconButton(k, "file-conflict-prev", "chevron-up", (cx) => this.stepConflicts(cx, tab, -1), { tip: "Previous conflict" }),
+        iconButton(k, "file-conflict-next", "chevron-down", (cx) => this.stepConflicts(cx, tab, 1), { tip: "Next conflict" })])))
       .when(!!tab.conflict, (el) => el.child(banner(tab.conflict, k.destructiveText, alpha(k.destructive, k.dark ? 0.16 : 0.08), [
         button(k, "file-reload", "Reload", (cx) => this.reload(cx, c, tab)),
         button(k, "file-overwrite", "Overwrite", (cx) => this.save(cx, tab, true), { variant: "destructive" })])))
