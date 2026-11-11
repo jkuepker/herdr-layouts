@@ -63,7 +63,7 @@ const SOURCE_FIELDS = {
   ],
   fleetq: [],
   projects: [
-    { key: "source.extra", label: "More folders", kind: "json", shape: "array", hint: '[{ "path": "/opt/code/x", "name": "x", "on": null }]' },
+    { key: "source.extra", label: "More folders", kind: "json", shape: "array", hint: '[{ "path": "~/code/x", "name": "x", "on": null }]' },
     { key: "source.gh", label: "Ask GitHub", kind: "choice", options: ["true", "false"], json: true },
   ],
   static: [{ key: "source.data", label: "Data", kind: "json", hint: "any JSON: the widget's data, written here" }],

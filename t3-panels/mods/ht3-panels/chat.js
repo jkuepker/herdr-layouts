@@ -1469,7 +1469,7 @@ export class ChatPanel {
     const nTerm = this.terminals().length, termShown = nTerm > 0 && !panes().find((p) => p.pane === this.reporter?.pane)?.zoomed;
     const controls = v.options.map((o) => {
       const cur = o.choices.find((c) => c.value === o.current);
-      // A model named by its path ("provider/Model") shows as the model alone, as T3's "Qwen3.8 (tatooine-r9700)":
+      // A model named by its path ("provider/Model") shows as the model alone, as T3 Code shows it:
       // the start of the path says least and would push the name out of the control. The menu lists the whole names.
       const whole = String(cur?.name ?? o.current ?? o.name), cut = (o.category ?? o.id) === "model" ? whole.lastIndexOf("/") : -1;
       const named = cut > 0 && cut < whole.length - 1 ? { label: whole.slice(cut + 1) } : { label: whole };

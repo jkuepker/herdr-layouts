@@ -1,5 +1,5 @@
 {
-  "title": "Fleet",
+  "title": "Fleet (example: needs fleetq)",
   "refresh": 20,
   "widgets": [
     { "type": "status", "title": "Boxes", "w": 2,
@@ -16,7 +16,7 @@
       "columns": [
         { "title": "Box", "value": ".name" },
         { "title": "Free", "value": ".free", "unit": "GB", "decimals": 0, "w": 64,
-          "thresholds": { "below": true, "warn": 20, "bad": 10, "when": { "path": ".name", "match": "^spark" } } },
+          "thresholds": { "below": true, "warn": 20, "bad": 10, "when": { "path": ".name", "match": "^gpu" } } },
         { "title": "Used", "value": ".used", "unit": "GB", "decimals": 0, "w": 64 },
         { "title": "Of", "value": ".capacity_gb", "unit": "GB", "decimals": 0, "w": 64 },
         { "title": "GPU busy", "value": ".gpu_pct", "unit": "%", "w": 64 },
@@ -28,7 +28,7 @@
     { "type": "bars", "title": "Memory used", "w": 2,
       "source": { "type": "fleetq" }, "pick": ".hosts[]",
       "label": ".name", "value": ".used", "max": ".capacity_gb", "unit": "GB", "decimals": 0, "labelWidth": 110,
-      "of": ".free", "thresholds": { "below": true, "warn": 20, "bad": 10, "when": { "path": ".name", "match": "^spark" } } },
+      "of": ".free", "thresholds": { "below": true, "warn": 20, "bad": 10, "when": { "path": ".name", "match": "^gpu" } } },
     { "type": "status", "title": "Services", "w": 2,
       "source": { "type": "fleetq" }, "pick": ".services",
       "label": ".name", "state": ".state", "sub": ".host",

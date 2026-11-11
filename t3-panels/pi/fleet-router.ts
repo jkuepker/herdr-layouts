@@ -4,12 +4,12 @@
 // Override the order with FLEET_ROUTER_ORDER="provider/id,provider/id".
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
+// Placeholders: put your own models here, best first, as "provider/model-id" exactly as `pi --list-models`
+// prints them (the provider is the one in ~/.pi/agent/models.json), or set FLEET_ROUTER_ORDER instead.
 const DEFAULT_ORDER = [
-  "fleetq-tatooine-r9700-8080/Qwen3.8",
-  "fleetq-spark2-8000/guidance",
-  "fleetq-spark1-8000/guidance",
-  "spark-one/qwen3.8-27b-sglang",
-  "fleetq-bespin-8020/mlx-community/Qwen3.5-9B-MLX-4bit",
+  "my-gpu-server/my-large-model",
+  "my-second-server/my-large-model",
+  "my-laptop/my-small-model",
 ];
 const UP_FOR_MS = 20_000;
 const DOWN_FOR_MS = 60_000;
@@ -63,7 +63,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerVirtualModel({
     provider: "fleet",
     id: "auto",
-    name: "Fleet auto (tatooine, then Sparks)",
+    name: "Fleet auto (first server that is up)",
     thinkingLevels: ["off", "low", "medium", "high"],
     contextWindow: 131072,
     maxTokens: 32768,

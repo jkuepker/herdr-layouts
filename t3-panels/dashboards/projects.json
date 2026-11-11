@@ -3,10 +3,9 @@
   "refresh": 120,
   "sources": {
     "projects": { "type": "projects", "extra": [
-      {"path": "/opt/code/herdr-layouts"},
-      {"path": "/opt/code/fleetq"},
-      {"path": "/opt/code/deepeval"},
-      {"path": "/opt/code/t3code"}
+      {"path": "~/code/my-app"},
+      {"path": "~/code/api"},
+      {"path": "~/code/docs"}
     ] }
   },
   "widgets": [

@@ -30,7 +30,7 @@ async function fromPrometheus(s, ctx) {
       args.push("--data-urlencode", `start=${end - range}`, "--data-urlencode", `end=${end}`, "--data-urlencode", `step=${step}`);
     }
     const r = await exec("curl", [...args, `${base}${range > 0 ? "/api/v1/query_range" : "/api/v1/query"}`], { timeout: 15000 });
-    if (r.code !== 0) throw new Error(`Prometheus at ${base} didn't answer: ${first(r.stderr) || `curl exited ${r.code}`}`);
+    if (r.code !== 0) throw new Error(`Needs Prometheus: nothing answered at ${base}. Set "prometheus" in this dashboard's file to your server.`);
     let body;
     try { body = JSON.parse(r.stdout); } catch { throw new Error(`Prometheus at ${base} answered something that isn't JSON: ${first(r.stdout)}`); }
     return promRows(body);
@@ -49,6 +49,8 @@ async function fromCommand(s) {
   const cmd = s.shell != null ? "sh" : s.run, args = s.shell != null ? ["-c", String(s.shell)] : (s.args ?? []).map(String);
   if (!cmd) throw new Error('A "command" source needs "run" or "shell"');
   const r = await exec(String(cmd), args, { on: s.on ?? null, ...(s.cwd ? { cwd: tilde(s.cwd) } : {}), timeout: Math.min(120, Math.max(1, seconds(s.timeout, 20))) * 1000 });
+  const lacks = r.code !== 0 && /(?:^|: )([\w.-]+): (?:command )?not found/m.exec(r.stderr ?? "")?.[1];
+  if (lacks || (r.code === 127 && s.shell == null)) throw new Error(`Needs ${lacks || cmd}, which isn't installed here`);
   if (r.code !== 0) throw new Error(`${s.shell != null ? "The command" : cmd} exited ${r.code}: ${first(r.stderr) || first(r.stdout) || "no output"}`);
   return parse(r.stdout, s.parse);
 }
@@ -84,7 +86,7 @@ async function fromFleetq() {
     if (r.code === 127) { missing++; r = null; continue; }
     break;
   }
-  if (!r) throw new Error(missing ? "fleetq isn't installed (looked on PATH and in ~/.local/bin)" : "fleetq didn't start");
+  if (!r) throw new Error(missing ? "Needs fleetq, which isn't installed here (looked on PATH and in ~/.local/bin)" : "fleetq didn't start");
   if (r.code !== 0) throw new Error(`fleetq: ${first(r.stderr) || first(r.stdout) || `exited ${r.code}`}`);
   const d = JSON.parse(r.stdout), now = d.now ?? Date.now() / 1000;
   const jobs = new Map(), services = [];

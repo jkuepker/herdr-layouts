@@ -32,7 +32,7 @@ async function xo(args) {
     if (r.code !== 0) throw new Error((r.stderr || "").trim().split("\n").filter(Boolean).pop()?.replace(/^xo: (error: )?/, "").slice(0, 200) || `xo ${args[0]} exited ${r.code}`);
     return JSON.parse(r.stdout);
   }
-  throw new Error(`xo isn't installed (looked on PATH and in ~/.local/bin)${last?.message && !/installed/.test(last.message) ? `: ${String(last.message).slice(0, 80)}` : ""}`);
+  throw new Error(`Needs xo, which isn't installed here (looked on PATH and in ~/.local/bin)${last?.message && !/installed/.test(last.message) ? `: ${String(last.message).slice(0, 80)}` : ""}`);
 }
 
 export const planmap = {
@@ -59,7 +59,7 @@ export const planmap = {
   },
 
   "draw_plan-map"(k, w, st) {
-    if (st.data === undefined) return this.say(k, st.error ? `xo plan --rows failed: ${st.error}` : "Reading xo plan…", st.error ? k.destructiveText : k.muted);
+    if (st.data === undefined) return this.say(k, st.error ? (st.missing ? st.error : `xo plan --rows failed: ${st.error}`) : "Reading xo plan…", st.error && !st.missing ? k.destructiveText : k.muted);
     const d = st.data.data, compact = w.layout !== "full";
     const C = { done: k.success, working: VIOLET, planned: alpha(k.muted, 0.55), stuck: k.destructive };
     const sizes = (this.xoSizes ??= new Map()), width = Math.max(280, Math.floor(sizes.get(w.id) ?? 640));

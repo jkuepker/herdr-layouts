@@ -1,7 +1,7 @@
 {
-  "title": "Agents",
+  "title": "Agents (example: needs xo and Prometheus)",
   "refresh": 20,
-  "prometheus": "http://192.168.1.126:9090",
+  "prometheus": "http://localhost:9090",
   "widgets": [
     {"type": "plan-map", "title": "Plan map: every project", "w": 4, "view": "fleet", "layout": "compact", "refresh": 15},
     {"type": "chat", "title": "Open chats", "w": 2, "refresh": 10},

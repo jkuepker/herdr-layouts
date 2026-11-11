@@ -42,7 +42,7 @@ export const widgets = {
   draw_text(k, w, st) {
     let text;
     if (w.source) {
-      if (st.data === undefined) return this.say(k, st.error ?? "Loading…", st.error ? k.destructiveText : k.muted);
+      if (st.data === undefined) return this.say(k, st.error ?? "Loading…", st.error && !st.missing ? k.destructiveText : k.muted);
       const v = w.value != null ? field(st.data, w.value) : st.data;
       text = v == null ? "" : typeof v === "string" ? v : Array.isArray(v) && v.every((x) => typeof x === "string") ? v.join("\n") : JSON.stringify(v, null, 2);
     } else text = String(w.text ?? "");

@@ -129,9 +129,14 @@ export class DashboardPanel {
           if (w.count) data = Array.isArray(data) ? data.length : data == null ? 0 : 1;
           st.data = data;
           st.error = null;
+          st.missing = false;
           st.at = Date.now();
           if (w.type === "stat") { const v = num(this.statValue(w, data)); if (v != null) st.past = [...st.past, v].slice(-KEEP); }
-        } catch (e) { st.error = String(e?.message ?? e).split("\n")[0].slice(0, 200); }
+        } catch (e) {
+          st.error = String(e?.message ?? e).split("\n")[0].slice(0, 200);
+          // A program or server this setup doesn't have is said quietly, not as a failure (the example dashboards).
+          st.missing = /^Needs /.test(st.error);
+        }
         st.loading = false;
         st.tried = Date.now();
         cx.notify();
@@ -159,7 +164,7 @@ export class DashboardPanel {
     const root = v_flex().id(`ht3-dash-${this.group}`).size_full().min_h(0).overflow_hidden().bg(k.background).text_color(k.foreground).text_size(12);
     const widgets = cur?.dash.widgets ?? [];
     const ats = widgets.map((w) => this.state.get(w.id)?.at ?? 0).filter(Boolean);
-    const failing = widgets.filter((w) => this.state.get(w.id)?.error).length;
+    const failing = widgets.filter((w) => { const s = this.state.get(w.id); return s?.error && !s.missing; }).length;
     const said = !cur ? "" : !shown ? "Paused" : !ats.length ? "Loading…" : `Updated ${age((Date.now() - Math.max(...ats)) / 1000)} ago${failing ? ` · ${failing} failing` : ""}`;
     const head = h_flex().h(40).flex_none().px(16).gap(8).items_center().border_b(1).border_color(alpha(k.border, 0.6))
       .child(icon("layout-dashboard").size(14).flex_none().text_color(k.muted))
@@ -200,7 +205,7 @@ export class DashboardPanel {
     const empty = has && (st.data == null || (Array.isArray(st.data) && !st.data.length));
     const body = !w.type ? this.say(k, `No widget type "${w.typeName}". There are: ${TYPES.join(", ")}.`, k.destructiveText)
       : DIRECT.has(w.type) ? this.safely(k, () => this[`draw_${w.type}`](k, w, st))
-      : !has ? this.say(k, st.error ?? "Loading…", st.error ? k.destructiveText : k.muted)
+      : !has ? this.say(k, st.error ?? "Loading…", st.error && !st.missing ? k.destructiveText : k.muted)
         : empty ? this.say(k, w.empty ?? "No data", k.muted)
           : this.safely(k, () => this[`draw_${w.type}`](k, w, st));
     return v_flex().id(`dash-w-${w.id}`).flex_grow(w.w).flex_shrink(1).flex_basis(w.w * 168 + (w.w - 1) * 8).min_w(Math.min(w.w, 2) * 150).max_w_full()

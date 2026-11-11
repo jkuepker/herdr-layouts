@@ -1,7 +1,7 @@
 {
-  "title": "Model servers",
+  "title": "Model servers (example: needs Prometheus with vLLM metrics)",
   "refresh": 20,
-  "prometheus": "http://192.168.1.126:9090",
+  "prometheus": "http://localhost:9090",
   "widgets": [
     { "type": "status", "title": "Servers", "w": 2,
       "source": { "type": "prometheus", "query": "up{engine!=\"\"}" },
@@ -45,10 +45,10 @@
       "source": { "type": "prometheus", "query": "max by (host) (vllm:kv_cache_usage_perc) * 100" },
       "label": ".host", "value": ".value", "max": 100, "showMax": false, "unit": "%", "decimals": 0,
       "thresholds": { "warn": 80, "bad": 95 } },
-    { "type": "status", "title": "Endpoints, as mc-exporter on endor sees them", "w": 2,
+    { "type": "status", "title": "Endpoints, as mc-exporter sees them", "w": 2,
       "source": { "type": "prometheus", "query": "mc_endpoint_up" },
       "label": ".role", "sub": ".url", "state": ".value", "empty": "mc-exporter reports no endpoints" },
-    { "type": "table", "title": "omlx on endor", "w": 2,
+    { "type": "table", "title": "omlx", "w": 2,
       "source": { "type": "prometheus", "by": "instance", "queries": {
         "requests": "sum by (instance) (increase(mc_omlx_requests_total[30m]))",
         "decode": "sum by (instance) (rate(mc_omlx_generated_tokens_total[2m]) / rate(mc_omlx_generation_seconds_total[2m]))",

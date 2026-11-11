@@ -6,15 +6,15 @@ import { fileURLToPath } from "node:url";
 const here = dirname(fileURLToPath(import.meta.url));
 const d = await import(join(here, "../mods/ht3-panels/dash-data.js"));
 
-const fleet = { hosts: [{ name: "spark1", free_gb: 82, services: [{ name: "vllm", status: "up" }] }, { name: "endor", free_gb: 8, services: [] }] };
-assert.deepEqual(d.pick(fleet, ".hosts[].name"), ["spark1", "endor"]);
+const fleet = { hosts: [{ name: "box-a", free_gb: 82, services: [{ name: "vllm", status: "up" }] }, { name: "mini", free_gb: 8, services: [] }] };
+assert.deepEqual(d.pick(fleet, ".hosts[].name"), ["box-a", "mini"]);
 assert.equal(d.pick(fleet, ".hosts[0].free_gb"), 82);
 assert.deepEqual(d.pick(fleet, ".hosts[].services[].status"), ["up"]);
 assert.equal(d.pick(fleet, ".nope.deeper"), undefined);
 assert.equal(d.pick({ "a b": { c: 1 } }, '."a b".c'), 1);
 assert.equal(d.pick(5, "."), 5);
 assert.throws(() => d.pick(fleet, "hosts"));
-assert.equal(d.field(fleet.hosts[0], "{.name}: {.free_gb} GB"), "spark1: 82 GB");
+assert.equal(d.field(fleet.hosts[0], "{.name}: {.free_gb} GB"), "box-a: 82 GB");
 assert.equal(d.field(fleet.hosts[0], ".free_gb"), 82);
 assert.equal(d.field(fleet.hosts[0], "plain"), "plain");
 
@@ -32,8 +32,8 @@ assert.equal(d.show("main"), "main");
 assert.equal(d.level(96, { warn: 80, bad: 95 }), "bad");
 assert.equal(d.level(85, { warn: 80, bad: 95 }), "warn");
 assert.equal(d.level(8, { below: true, warn: 15, bad: 10 }), "bad");
-assert.equal(d.level(8, { below: true, bad: 10, when: { path: ".name", match: "^spark" } }, { name: "endor" }), null);
-assert.equal(d.level(8, [{ below: true, bad: 10, when: { path: ".name", match: "^spark" } }, { below: true, bad: 2 }], { name: "endor" }), "ok");
+assert.equal(d.level(8, { below: true, bad: 10, when: { path: ".name", match: "^box" } }, { name: "mini" }), null);
+assert.equal(d.level(8, [{ below: true, bad: 10, when: { path: ".name", match: "^box" } }, { below: true, bad: 2 }], { name: "mini" }), "ok");
 assert.equal(d.level("up", { ok: ["up"], warn: ["starting"] }), "ok");
 assert.equal(d.level("gone", { ok: ["up"] }), "bad");
 assert.equal(d.level("x", { warn: 1 }), null);
@@ -41,9 +41,9 @@ assert.equal(d.stateLevel(1), "ok");
 assert.equal(d.stateLevel("DOWN"), "bad");
 assert.equal(d.stateLevel("loading"), "warn");
 
-assert.deepEqual(d.keep(fleet.hosts, { path: ".name", match: "^spark" }).map((h) => h.name), ["spark1"]);
-assert.deepEqual(d.sortRows(fleet.hosts, ".free_gb").map((h) => h.name), ["endor", "spark1"]);
-assert.deepEqual(d.sortRows(fleet.hosts, "-.free_gb").map((h) => h.name), ["spark1", "endor"]);
+assert.deepEqual(d.keep(fleet.hosts, { path: ".name", match: "^box" }).map((h) => h.name), ["box-a"]);
+assert.deepEqual(d.sortRows(fleet.hosts, ".free_gb").map((h) => h.name), ["mini", "box-a"]);
+assert.deepEqual(d.sortRows(fleet.hosts, "-.free_gb").map((h) => h.name), ["box-a", "mini"]);
 
 const instant = { status: "success", data: { resultType: "vector", result: [{ metric: { __name__: "up", host: "a" }, value: [10, "1"] }, { metric: { host: "b" }, value: [10, "0"] }] } };
 assert.deepEqual(d.promRows(instant), [{ host: "a", metric: "up", value: 1, time: 10 }, { host: "b", metric: null, value: 0, time: 10 }]);
