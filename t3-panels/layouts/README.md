@@ -1,6 +1,10 @@
-# Layout fragment
+# Layouts
 
-`ht3-panels` is a mod for a layout you already have (the Herdr T3 layout, `layouts/herdr-t3.json`), so this folder holds no layout file. Five of that layout's mods are kept beside it in `mods/` as this build changed them (`ht3-agents`, `ht3-inbox`, `ht3-tabs`, `ht3-pane`, `ht3-chrome`: they show a chat tab's agent as an agent and never close a chat, see RECIPE.md); the layout already names them (`"mod": "ht3-agents"` in `agents`, `"ht3-inbox"` in `inbox`, `"ht3-tabs"` in `tabs` and `tabs-end`, `"ht3-pane"` as `main`'s pane header, `"ht3-chrome"` in `sidebar-footer`), so copying them over the installed ones needs no change to the layout file. Make these changes to that layout (the file is generated from a backup by a small script in the build notes; every id below is used by the mod and must stay):
+`herdr-t3-panels.json` is the whole layout (Herdr T3's frame with the panels in it); `herdr-t3-panels.svg` is its picture in the layout switcher. Install it with the thirteen mods in `../mods/`, the two themes in `../themes/` and `../keys.json` (see `../RECIPE.md`). It is the result of the changes below.
+
+## Add the panels to a Herdr T3 you already have
+
+If you run [Herdr T3](https://github.com/JinJieBeWater/herdr-t3) under its own names (`layouts/herdr-t3.json`, mods `t3-*`), you can add only the panels instead: copy `mods/ht3-panels` and `mods/ht3-palette`, the themes, and the keys of `../keys.json` that name `ht3-panels`, `ht3-palette` or `layout.toggle:ht3-side` into your `layout:herdr-t3` section. The chat-agent changes live in this folder's `ht3-agents`, `ht3-inbox`, `ht3-tabs`, `ht3-pane` and `ht3-chrome`; to have them, use those five in place of your `t3-` ones (rename the `mod` values in your layout to match; they call the other mods by their `ht3-` names, so the whole `ht3-` set is the simpler way). Then make these changes to the layout (every id below is used by the mod and must stay):
 
 1. In `tabs-row`, before `tabs-end`, the buttons (New chat, maximize the panel, bottom panel, right panel):
 
@@ -78,4 +82,4 @@ The Dashboard surface (`+` menu, letter G) needs one block per panel group in th
 
 The widgets need nothing more in the layout: the `terminal` widget opens its terminal as a side-panel terminal tab (the `ht3-term-*` blocks the mod already manages), and the Plan map widget (`plan-map`) opens the real xo-map mod with `tab.new` (`mod: "xo-map"`), as a tab of the work area, so no block for it either; the xo-map mod itself must be in `~/.config/herdr-app/mods/xo-map`.
 
-The dashboards themselves are not in the layout: they are JSON files in `~/.config/herdr-app/data/ht3-dashboards/`. Copy the ones in `t3-panels/dashboards/` there (`fleet`, `model-servers`, `projects`, `agents`, and `kit`, which shows every widget type) (`cp t3-panels/dashboards/*.json ~/.config/herdr-app/data/ht3-dashboards/`). The format is in `RECIPE.md`, under "Dashboard".
+The dashboards themselves are not in the layout: they are JSON files in `~/.config/herdr-app/data/ht3-dashboards/`. Copy the ones you want from `t3-panels/dashboards/` there: `kit` (every widget type) and `projects` work anywhere; `fleet`, `model-servers` and `agents` are examples that need fleetq, Prometheus or xo and say so where those are missing. The format is in `RECIPE.md`, under "Dashboard".

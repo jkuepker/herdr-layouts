@@ -4,7 +4,15 @@
 // the drawing taken out. In a space on another machine the local program is ssh, and the
 // agent runs there under that user's login shell.
 
-import { exec, hc, spawn, processWrite, processNextLine, processExited, processKill, home, readTextFile, appHome, run, focused, shared, setShared } from "herdr";
+import * as herdr from "herdr";
+import { exec, hc, home, readTextFile, appHome, run, focused, shared, setShared } from "herdr";
+// `spawn` and its process calls are read from the module, not imported by name: on a Herdr without them a named
+// import would stop the whole mod from loading (the panels, Files, Diff), and only starting an agent needs them.
+const { processWrite, processNextLine, processExited, processKill } = herdr;
+const spawn = (...args) => {
+  if (typeof herdr.spawn !== "function") throw new Error("This Herdr can't keep a program running for a mod (no `spawn`), so it can't start an agent here. Update Herdr; a chat of a terminal's agent works without it.");
+  return herdr.spawn(...args);
+};
 import * as fs from "fs/promises";
 import { ChatSession } from "./session.js";
 
