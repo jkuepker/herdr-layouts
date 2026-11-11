@@ -16,7 +16,8 @@ import { TermSource } from "./agent-term.js";
 import { Reporter } from "./report.js";
 import { fileIcon } from "./fileicons.js";
 import { snapshot, turnStat, undoRevert, prune, chatsWithRefs, safe as refName, KEEP } from "./checkpoint.js";
-import { checkpointsOn, followUp, limitModels, rememberModels } from "./settings.js";
+import { checkpointsOn, followUp, limitModels, rememberModels, prefs } from "./settings.js";
+import { Diagrams, isMermaid, fit, INSTALL } from "./mermaid.js";
 import { addNotice, toMarkdown } from "./transcript.js";
 import { repoOf } from "./launcher.js";
 
@@ -28,7 +29,7 @@ const OPTION_GLYPH = { model: "sparkles", mode: "lock", thought_level: "brain" }
 
 // A message's text cut at its fenced code blocks, so each block can carry its own Copy button
 // (chat/MessageCopyButton.tsx, ChatMarkdown's code header): [{ code, lang, text }]. A fence left
-// open (still streaming) is a block to its end.
+// open (still streaming) is a block to its end, and says so (`open`).
 export function segments(text) {
   const out = [];
   let buf = [], code = null;
@@ -40,7 +41,7 @@ export function segments(text) {
     else if (code) code.lines.push(line);
     else buf.push(line);
   }
-  if (code) out.push({ code: true, lang: code.lang, text: code.lines.join("\n") });
+  if (code) out.push({ code: true, lang: code.lang, text: code.lines.join("\n"), open: true });
   flush();
   return out;
 }
@@ -188,6 +189,9 @@ export class ChatPanel {
     this.hits = [];
     this.hitAt = new Map();
     this.rowH = new Map(); // each built row's height, to scroll to one (goTo)
+    // Mermaid blocks as pictures (mermaid.js): drawn off the UI thread, and each one that settles draws the chat again.
+    this.diagrams = new Diagrams({ cli: () => prefs().mermaidCli });
+    cx.spawn(async (cx) => { for (;;) { await this.diagrams.next(); cx.notify(); } });
     this.findField.on("change", (_e, cx) => { this.findAt = 0; this.findFresh = true; cx.notify(); });
     this.findField.on("submit", (e, cx) => this.findStep(cx, e?.shift ? -1 : 1));
     this.filter = InputState.new({ placeholder: "Search" });
@@ -1208,8 +1212,10 @@ export class ChatPanel {
       if (m.kind === "user") { closeTurn(); turn = m; }
       if (m.kind === "agent") {
         segments(m.text || "(empty response)").forEach((g, i) => {
-          if (g.code) out.push({ id: `${m.id}:h${i}`, kind: "codehead", lang: g.lang, text: g.text });
-          out.push({ id: `${m.id}:s${i}`, kind: "seg", code: g.code, lang: g.lang, text: g.text, whole: m.text });
+          // A mermaid block whose fence has closed is a diagram (one still being written stays code).
+          const diagram = g.code && !g.open && isMermaid(g.lang) && !!g.text.trim();
+          if (g.code) out.push({ id: `${m.id}:h${i}`, kind: diagram ? "diaghead" : "codehead", lang: g.lang, text: g.text, seg: `${m.id}:s${i}` });
+          out.push({ id: `${m.id}:s${i}`, kind: "seg", code: g.code, lang: g.lang, text: g.text, whole: m.text, ...(diagram ? { diagram } : {}) });
         });
         if (m.text && !(busy && m === lastItem)) out.push({ id: `${m.id}:cp`, kind: "copy", text: m.text });
       } else if (m.kind === "user") {
@@ -1281,7 +1287,7 @@ export class ChatPanel {
       cx.notify();
     };
     // A right-click on a message, a thought or a tool's output: Copy, for all of it.
-    const copies = (m) => (m.kind === "seg" ? m.whole : m.kind === "tool" ? m.detail : ["user", "thought", "codehead", "copy", "notice"].includes(m.kind) ? m.text : null);
+    const copies = (m) => (m.kind === "seg" ? m.whole : m.kind === "tool" ? m.detail : ["user", "thought", "codehead", "diaghead", "copy", "notice"].includes(m.kind) ? m.text : null);
     const lane = v_flex().absolute().left(0).right(0)
       .on_size_change((size, cx) => {
         const h = size.height / zoom;
@@ -1302,7 +1308,7 @@ export class ChatPanel {
           });
         const text = copies(m);
         // A message's rows (its text, its code blocks, its copy row) are one thing to the pointer: over any of them, its copy icon shows.
-        const of = ["seg", "user", "copy", "codehead"].includes(m.kind) ? String(m.id).split(":")[0] : null;
+        const of = ["seg", "user", "copy", "codehead", "diaghead"].includes(m.kind) ? String(m.id).split(":")[0] : null;
         return (text ? el.on_mouse_down("right", (e) => this.copyMenu(e.position, copies(m), of)) : el)
           .when(of != null, (e) => e.on_hover((over, cx) => {
             if (over ? this.over === of : this.over !== of) return;
@@ -1313,9 +1319,10 @@ export class ChatPanel {
       }));
     return v_flex().id("ht3-chat-lane").relative().flex_1().min_h(0).overflow_hidden()
       .on_size_change((size, cx) => {
-        const h = size.height / zoom;
-        if (Math.abs(h - (this.viewH ?? 0)) < 1) return;
+        const h = size.height / zoom, w = size.width / zoom;
+        if (Math.abs(h - (this.viewH ?? 0)) < 1 && Math.abs(w - (this.viewW ?? 0)) < 1) return;
         this.viewH = h;
+        this.viewW = w; // a diagram is fitted to the lane's width
         cx.notify();
       })
       .on_scroll_wheel((e, cx) => this.wheel(e.delta.y, rows.length, cx))
@@ -1565,6 +1572,20 @@ export class ChatPanel {
             }));
           return lane(el, 4);
         }
+        if (m.diagram) {
+          // A mermaid block: its picture once drawn, fitted to the lane and no higher than 480; until then, and
+          // when it can't be drawn or its source is asked for, the code with a line that says why.
+          const d = this.diagrams.get(m.text, k.dark);
+          if (d.state === "ready" && !this.expanded[m.id]) {
+            const size = fit(d.w, d.h, Math.max(80, Math.min(LANE, (this.viewW ?? LANE + 32) - 32) - 34));
+            return lane(h_flex().mx(4).p(12).justify_center().rounded_b(8).border(1).border_color(alpha(k.border, 0.6)).overflow_hidden()
+              .child(image(d.path).w(size.w).h(size.h).flex_none()), 4);
+          }
+          const note = d.state === "wait" ? "Rendering diagram…" : d.state === "missing" ? `Mermaid CLI not found. To see diagrams: ${INSTALL}` : d.state === "error" ? `Diagram not drawn: ${d.error}` : null;
+          return lane(v_flex().px(4).text_size(14).line_height("23px")
+            .child(TextView.markdown(`md-${m.id}`, "```" + m.lang + "\n" + m.text + "\n```").selectable(true))
+            .when(note != null, (el) => el.child(div().px(12).pb(2).text_size(12).line_height("18px").text_color(d.state === "error" ? k.destructiveText : k.muted).child(note))), 4);
+        }
         // A stretch of a reply: text you can select, or one code block (under its header row).
         return lane(div().px(4).py(m.code ? 0 : 2).text_size(14).line_height("23px")
           .child(TextView.markdown(`md-${m.id}`, m.code ? "```" + m.lang + "\n" + m.text + "\n```" : m.text).selectable(true)), 4);
@@ -1572,6 +1593,17 @@ export class ChatPanel {
         // ChatMarkdown's code header: Copy at the right (the block names its language itself).
         return lane(h_flex().mx(4).mt(4).h(28).pl(12).pr(6).items_center().justify_end().rounded_t(8).border(1).border_color(alpha(k.border, 0.6)).bg(alpha(k.muted, 0.08))
           .child(this.copyMark(k, m.id, "Copy")), 0);
+      case "diaghead": {
+        // A diagram's header: the picture or its source, and Copy for the source. Two buttons, so the row itself takes no click.
+        const d = this.diagrams.get(m.text, k.dark), code = !!this.expanded[m.seg] || this.hitAt.has(m.seg);
+        return lane(h_flex().mx(4).mt(4).h(28).pl(12).pr(6).gap(4).items_center().rounded_t(8).border(1).border_color(alpha(k.border, 0.6)).bg(alpha(k.muted, 0.08))
+          .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(k.muted).child("mermaid"))
+          .when(d.state === "ready", (el) => el.child(h_flex().id(`dg-${m.id}`).h(20).px(4).gap(4).flex_none().items_center().rounded(4).cursor_pointer().text_size(12).text_color(alpha(k.muted, 0.8))
+            .role("button").accessibility_label(code ? "Show diagram" : "Show code").hover((s) => s.bg(k.accent).text_color(k.foreground))
+            .on_click((_e, cx) => { this.expanded[m.seg] = !this.expanded[m.seg]; cx.notify(); })
+            .child(icon(code ? "eye" : "code-xml").size(12).flex_none()).child(code ? "Show diagram" : "Show code")))
+          .child(div().id(`dc-${m.id}`).flex_none().role("button").accessibility_label("Copy the diagram's source").on_click((_e, cx) => this.copy(cx, m.id, m.text)).child(this.copyMark(k, m.id, "Copy"))), 0);
+      }
       case "files": {
         // T3's changed-files card at the end of a turn: what the turn changed, its diff, and Revert.
         const cp = m.of.cp;
