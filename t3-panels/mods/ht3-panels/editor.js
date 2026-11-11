@@ -9,8 +9,8 @@
 // saving. Files are written with writeTextFile, which works on this computer only, so a
 // space on another machine opens its files read-only.
 
-import { div } from "gpui-kit";
-import { v_flex, h_flex, Editor, EditorState, InputState, Input, TextareaState, Textarea } from "gpui-base";
+import { div, image } from "gpui-kit";
+import { v_flex, h_flex, Editor, EditorState, InputState, Input, TextareaState, Textarea, TextView } from "gpui-base";
 import { spaces, panes, focused, exec, readTextFile, writeTextFile, watchFolder, theme, pickFolder, shared, setShared } from "herdr";
 import { tokens, alpha, icon, button, iconButton, shortPath } from "./look.js";
 import { fileIcon } from "./fileicons.js";
@@ -20,6 +20,9 @@ import { recordRecent } from "./quick.js";
 import { loadBlame, loadHistory, openCommit, blameCell, blameNote, historyView, gutterWidth } from "./blame.js";
 import { conflictBlocks, stepConflict } from "./gitstate.js";
 import { openOutline, outlineView, shareOutline } from "./outline.js";
+import { isMarkdownPath, resolveLink, splitMarkdown } from "./md-preview.js";
+import { Diagrams, isMermaid, fit, INSTALL } from "./mermaid.js";
+import { prefs, mdPreviewDefault } from "./settings.js";
 
 const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", cjs: "js", toml: "yaml", jsonc: "json", svelte: "html", vue: "html", yml: "yaml", htm: "html", markdown: "md", zsh: "sh", bash: "sh" };
 const PER_FOLDER = 500, TOTAL = 5000;
@@ -27,6 +30,9 @@ const MAX_EDIT = 1000000; // readTextFile reads at most 1 MiB
 const MAX_TABS = 12, MAX_INDEX = 20000, MAX_MATCHES = 200;
 const ROW = 24; // @pierre/trees, compact density
 const PAGE = 1500; // lines drawn at once in the Lines view
+const PREVIEW_MAX = 300000; // characters of a Markdown file the preview renders
+// The Markdown preview choice per file, kept for the session: "<machine>|<root>|<path>" -> true / false (Preview button, ht3-panels.preview).
+const PREVIEWED = new Map();
 const LIST = 'n=0; for p in "$1"/* "$1"/.[!.]* "$1"/..?*; do [ -e "$p" ] || [ -L "$p" ] || continue; name=${p##*/}; [ "$name" = .git ] && continue; if [ -d "$p" ]; then kind=d; else kind=f; fi; printf "%s\\0%s\\0" "$kind" "$name"; n=$((n+1)); [ "$n" -gt 500 ] && break; done; test -d "$1"';
 
 async function directory(path, on) {
@@ -75,12 +81,15 @@ export class FilePanel {
     this.lineBox = TextareaState.new({ placeholder: "Text to insert after this line, or a note for the agent" });
     this.lineBox.set_auto_grow(1, 8);
     this.follow(cx);
+    // Mermaid blocks of the Markdown preview as pictures (mermaid.js, as the chat's): each one that settles draws the panel again.
+    this.diagrams = new Diagrams({ cli: () => prefs().mermaidCli });
+    cx.spawn(async (cx) => { for (;;) { await this.diagrams.next(); cx.notify(); } });
     // Lists the folder and asks git only while the tab shows; back in view, at once (render).
     cx.timer.every(10000, (cx) => {
       if (!showing(this.group, "files")) { this.stale = true; return; }
       this.refresh(cx);
       const t = this.tab(); // a new commit changes what blame says
-      if (t?.blameOn && t.lines && !t.history) this.syncBlame(cx, this.ctx, t, true);
+      if (t?.blameOn && t.lines && !t.history && !t.preview) this.syncBlame(cx, this.ctx, t, true);
     });
   }
 
@@ -95,7 +104,9 @@ export class FilePanel {
     const t = this.tab();
     if (c === "save") this.save(cx, t);
     else if (c === "tree") { if (this.ctx) this.ctx.tree = !this.ctx.tree; }
-    else if (c === "lines") { if (t?.state) { t.lines = !t.lines; this.pickLine(cx, t, null); } }
+    else if (c === "lines") { if (t?.state) { t.lines = !t.lines; if (t.lines) t.preview = false; this.pickLine(cx, t, null); } }
+    // preview: shows or hides the rendered Markdown of a .md, .mdx or .markdown file (togglePreview).
+    else if (c === "preview") this.togglePreview(cx, t);
     // blame: shows or hides the author, age and subject of each line's commit in the Lines view (blame.js); history: the file's commits as a step.
     else if (c === "blame") this.toggleBlame(cx, t);
     else if (c === "history") this.toggleHistory(cx, this.ctx, t);
@@ -301,7 +312,9 @@ export class FilePanel {
       if (spare < 0) { c.error = `Save or close a file first: ${MAX_TABS} are open.`; return cx.notify(); }
       this.drop(c, spare, false); // making room is not a close the user can undo
     }
-    const tab = { path, abs: `${c.root}/${path}`, state: null, saved: "", dirty: false, readonly: c.on != null, note: null, error: null, conflict: null, closing: false, loading: true };
+    const tab = { path, abs: `${c.root}/${path}`, state: null, saved: "", dirty: false, readonly: c.on != null, note: null, error: null, conflict: null, closing: false, loading: true,
+      // A Markdown file opens as its preview unless the setting is off or this file was last shown as text.
+      preview: isMarkdownPath(path) && (PREVIEWED.get(`${c.key}|${path}`) ?? mdPreviewDefault()) };
     c.tabs.push(tab);
     c.active = c.tabs.length - 1;
     cx.notify();
@@ -409,6 +422,7 @@ export class FilePanel {
   pickLine(cx, tab, from, to = null, extend = false) {
     const n = this.linesOf(tab).length, was = tab.pick;
     tab.said = null;
+    if (from != null) tab.preview = false; // a picked line is in the Lines view
     if (from == null || from < 1 || from > n) tab.pick = null;
     else if (extend && was) tab.pick = { from: Math.min(was.from, from), to: Math.max(was.to, from) };
     else if (was && to == null && was.from === from && was.to === from) tab.pick = null;
@@ -520,10 +534,11 @@ export class FilePanel {
   // Blame on in the Lines view (which it turns on), or off again when it is already showing.
   toggleBlame(cx, tab) {
     if (!tab?.state) return;
-    const off = !!tab.blameOn && !!tab.lines && !tab.history;
+    const off = !!tab.blameOn && !!tab.lines && !tab.history && !tab.preview;
     tab.blameOn = !off;
     tab.history = null;
     tab.outline = null;
+    tab.preview = false;
     if (!off) tab.lines = true;
     cx.notify();
   }
@@ -549,6 +564,7 @@ export class FilePanel {
     if (!tab?.state || !c) return;
     tab.outline = null;
     if (tab.history) { tab.history = null; return cx.notify(); }
+    tab.preview = false;
     const h = tab.history = { loading: true, entries: [], error: null };
     cx.spawn(async (cx) => {
       const r = await loadHistory(c, tab.path);
@@ -565,9 +581,52 @@ export class FilePanel {
     if (!tab?.state) return;
     if (tab.outline) { tab.outline = null; return cx.notify(); }
     tab.history = null;
+    tab.preview = false;
     openOutline(cx, tab, (cx) => cx.notify());
     cx.notify();
   }
+  // The Markdown preview (Preview button, `ht3-panels.preview`): a .md, .mdx or .markdown file's current text, unsaved edits
+  // included, rendered in the file's place. It is one of the body views with Outline, History and Blame: opening it closes
+  // them, and opening one of them closes it. The choice is kept per file for the session (PREVIEWED).
+  togglePreview(cx, tab) {
+    if (!tab?.state || !isMarkdownPath(tab.path)) return;
+    tab.preview = !tab.preview;
+    if (tab.preview) { tab.history = null; tab.outline = null; tab.blameOn = false; tab.lines = false; this.pickLine(cx, tab, null); }
+    PREVIEWED.set(`${this.ctx.key}|${tab.path}`, tab.preview);
+    cx.notify();
+  }
+
+  // A link clicked in the preview: an address opens in the system browser (as a link in the chat does), a file of the repository
+  // opens in this editor. An anchor within the page, or any other kind of link, does nothing.
+  followLink(cx, tab, url) {
+    const r = resolveLink(url, tab.path, this.ctx?.root);
+    if (r.kind === "web") exec("open", [r.url]).catch(() => {});
+    else if (r.kind === "file") this.open(cx, r.path);
+  }
+
+  // The preview's body: the text as markdown, a ```mermaid block as its picture (or its code with a note while it is drawn, when
+  // it can't be, or when there is no Mermaid CLI), in a column that scrolls.
+  previewView(k, c, tab) {
+    const text = tab.state.value(), cut = text.length > PREVIEW_MAX;
+    const room = Math.max(120, Math.min(840, panelWidth() - (c.tree ? 224 : 0)) - 40);
+    const link = (url, cx) => this.followLink(cx, tab, url);
+    const md = (id, source) => TextView.markdown(id, source).selectable(true).on_link_click(link);
+    const rows = splitMarkdown(cut ? text.slice(0, PREVIEW_MAX) : text).map((g, i) => {
+      const id = `md-pv-${tab.path}-${i}`;
+      if (!(g.code && !g.open && isMermaid(g.lang) && g.text.trim())) return md(id, g.code ? g.raw : g.text);
+      const d = this.diagrams.get(g.text, k.dark);
+      if (d.state === "ready") {
+        const size = fit(d.w, d.h, room - 26);
+        return h_flex().id(`${id}-d`).my(4).p(12).justify_center().rounded(8).border(1).border_color(alpha(k.border, 0.6)).overflow_hidden().child(image(d.path).w(size.w).h(size.h).flex_none());
+      }
+      const note = d.state === "wait" ? "Rendering diagram…" : d.state === "missing" ? `Mermaid CLI not found. To see diagrams: ${INSTALL}` : `Diagram not drawn: ${d.error}`;
+      return v_flex().child(md(id, g.raw)).child(div().pb(2).text_size(12).line_height("18px").text_color(d.state === "error" ? k.destructiveText : k.muted).child(note));
+    });
+    return v_flex().id("md-preview").flex_1().min_h(0).overflow_y_scrollbar().px(20).py(12)
+      .child(v_flex().w_full().max_w(840).gap(10).text_size(14).line_height("23px").children(rows)
+        .when(cut, (el) => el.child(div().text_size(12).text_color(k.muted).child(`Preview limited to the first ${PREVIEW_MAX.toLocaleString("en-US")} characters.`))));
+  }
+
   pickSymbol(cx, tab, line) {
     tab.outline = null;
     tab.lines = true;
@@ -596,7 +655,7 @@ export class FilePanel {
     const tab = this.tab();
     // A tab made before the wrap switch changed takes it on when shown.
     if (tab?.state && tab.wrap !== this.wrap) this.editorFor(tab, tab.state.value());
-    if (tab?.blameOn && tab.lines && !tab.history) this.syncBlame(cx, c, tab);
+    if (tab?.blameOn && tab.lines && !tab.history && !tab.preview) this.syncBlame(cx, c, tab);
     return root
       .when(c.tabs.length > 0, (el) => el.child(this.strip(k, c)))
       .child(h_flex().flex_1().min_h(0).items_stretch()
@@ -646,10 +705,11 @@ export class FilePanel {
       .when(tab.dirty, (el) => el.child(div().flex_none().text_size(11).text_color(k.muted).child("Unsaved")))
       .when(!tab.readonly && !!tab.state, (el) => el.child(button(k, "file-save", tab.saving ? "Saving…" : "Save", (cx) => this.save(cx, tab),
         { variant: tab.dirty ? "default" : "outline", disabled: !tab.dirty || tab.saving, glyph: "save", tip: "Save file (Cmd+S)" })))
-      .when(!!tab.state, (el) => el.child(iconButton(k, "file-lines", "list-plus", (cx) => { tab.lines = !tab.lines; this.pickLine(cx, tab, null); }, { on: !!tab.lines, tip: tab.lines ? "Back to the editor" : "Lines: a + beside each line, to insert after it or add it to the chat" })))
-      .when(!!tab.state, (el) => el.child(iconButton(k, "file-blame", "blame", (cx) => this.toggleBlame(cx, tab), { on: !!tab.blameOn && !!tab.lines && !tab.history, tip: tab.blameOn && tab.lines ? "Hide blame" : "Blame: who last changed each line, in the Lines view" }))
+      .when(!!tab.state, (el) => el.child(iconButton(k, "file-lines", "list-plus", (cx) => { tab.lines = !tab.lines; if (tab.lines) tab.preview = false; this.pickLine(cx, tab, null); }, { on: !!tab.lines && !tab.preview, tip: tab.lines ? "Back to the editor" : "Lines: a + beside each line, to insert after it or add it to the chat" })))
+      .when(!!tab.state, (el) => el.child(iconButton(k, "file-blame", "blame", (cx) => this.toggleBlame(cx, tab), { on: !!tab.blameOn && !!tab.lines && !tab.history && !tab.preview, tip: tab.blameOn && tab.lines ? "Hide blame" : "Blame: who last changed each line, in the Lines view" }))
         .child(iconButton(k, "file-history", "history", (cx) => this.toggleHistory(cx, c, tab), { on: !!tab.history, tip: tab.history ? "Back to the file" : "History: the commits that changed this file" }))
         .child(iconButton(k, "file-outline", "list-tree", (cx) => this.toggleOutline(cx, tab), { on: !!tab.outline, tip: tab.outline ? "Back to the file" : "Outline: the file's functions, classes or headings, to go to one" })))
+      .when(!!tab.state && isMarkdownPath(tab.path), (el) => el.child(iconButton(k, "file-preview", "eye", (cx) => this.togglePreview(cx, tab), { on: !!tab.preview, tip: tab.preview ? "Back to the text" : "Preview: the rendered Markdown, with your unsaved changes" })))
       .child(iconButton(k, "file-wrap", "text-wrap", (cx) => this.setWrap(cx), { on: this.wrap, tip: this.wrap ? "Disable word wrap" : "Enable word wrap" }));
     return v_flex().flex_1().min_w(0).min_h(0)
       .child(head)
@@ -665,7 +725,7 @@ export class FilePanel {
         button(k, "file-keep", "Keep editing", (cx) => { tab.closing = false; cx.notify(); }),
         button(k, "file-discard", "Close without saving", (cx) => { this.drop(c, c.tabs.indexOf(tab)); cx.notify(); }, { variant: "destructive" }),
         button(k, "file-saveclose", "Save and close", (cx) => this.save(cx, tab), { variant: "default" })])))
-      .child(tab.outline && tab.state ? outlineView(k, tab, { close: (cx) => { tab.outline = null; cx.notify(); }, pick: (cx, line) => this.pickSymbol(cx, tab, line) }) : tab.history ? historyView(k, tab, { close: (cx) => { tab.history = null; cx.notify(); }, open: (cx, hash) => openCommit(cx, hash, this.group) }) : tab.state && tab.lines ? this.linesView(k, c, tab) : tab.state ? Editor.new(tab.state).flex_1().min_h(0)
+      .child(tab.preview && tab.state ? this.previewView(k, c, tab) : tab.outline && tab.state ? outlineView(k, tab, { close: (cx) => { tab.outline = null; cx.notify(); }, pick: (cx, line) => this.pickSymbol(cx, tab, line) }) : tab.history ? historyView(k, tab, { close: (cx) => { tab.history = null; cx.notify(); }, open: (cx, hash) => openCommit(cx, hash, this.group) }) : tab.state && tab.lines ? this.linesView(k, c, tab) : tab.state ? Editor.new(tab.state).flex_1().min_h(0)
         : v_flex().flex_1().items_center().justify_center().px(16).text_size(12).text_color(tab.error ? k.destructiveText : k.muted).child(tab.error ?? "Loading…"));
   }
 

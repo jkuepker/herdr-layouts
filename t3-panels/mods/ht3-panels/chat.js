@@ -16,7 +16,8 @@ import { TermSource } from "./agent-term.js";
 import { Reporter, paneIds, tabIds, placeNew } from "./report.js";
 import { fileIcon } from "./fileicons.js";
 import { snapshot, turnStat, undoRevert, prune, chatsWithRefs, safe as refName, KEEP } from "./checkpoint.js";
-import { checkpointsOn, followUp, limitModels, rememberModels, prefs } from "./settings.js";
+import { checkpointsOn, followUp, limitModels, rememberModels, prefs, chatTokenBudget } from "./settings.js";
+import { budgetNotice } from "./token-budget.js";
 import { Diagrams, isMermaid, fit, INSTALL } from "./mermaid.js";
 import { addNotice, toMarkdown, subagents } from "./transcript.js";
 import { touchesSecret } from "./secrets.js";
@@ -2200,6 +2201,27 @@ export class ChatPanel {
         .hover((st) => st.bg(alpha(c, 0.15))).on_click((_e, cx) => { this.limitHidden = say.key; cx.notify(); }).child(icon("x").size(12)));
   }
 
+  // The per-chat token budget (Settings, `chatTokenBudget`; token-budget.js): from 80% of it, "This chat used N of M tokens" over
+  // the message box, at 100% with Stop (the stop button) and New session ("/clear"). Counts only the tokens the agent reports
+  // (session.js), so an agent that reports none shows nothing. Each level shows once per budget: the × or New session keeps
+  // it away (kept with the chat, so a reload doesn't bring it back). -> an element, or null.
+  budgetLine(k, v) {
+    if (this.source.kind !== "acp") return null;
+    const seen = (this.budgetDone ??= new Set(keptOf(this.chatId).budgetSeen ?? []));
+    const n = budgetNotice(this.source.state?.transcript?.tokens, chatTokenBudget(), seen);
+    if (!n) return null;
+    const bad = n.level === 2, c = bad ? k.destructiveText : k.warningText;
+    const dismiss = (cx) => { seen.add(n.key); keep(this.chatId, { budgetSeen: [...seen] }); cx.notify(); };
+    return h_flex().id("ht3-budget").mx(12).mb(-1).px(12).h(32).gap(8).items_center().rounded_t(12).border(1).border_color(alpha(c, 0.35)).bg(alpha(c, 0.08)).text_size(12).text_color(c)
+      .role("status").accessibility_label(n.text)
+      .child(icon(bad ? "circle-alert" : "gauge").size(13).flex_none())
+      .child(div().flex_1().min_w(0).truncate().tooltip(n.text).child(n.text))
+      .when(bad && v.status === "working", (el) => el.child(button(k, "budget-stop", "Stop", () => this.source.stop(), { variant: "ghost", glyph: "stop" })))
+      .when(bad && !this.fresh && v.alive, (el) => el.child(button(k, "budget-new", "New session", (cx) => { this.armFresh(cx, true); dismiss(cx); }, { variant: "ghost", glyph: "eraser" })))
+      .child(h_flex().id("budget-hide").size(20).flex_none().items_center().justify_center().rounded(5).cursor_pointer().role("button").accessibility_label("Hide this notice").tooltip("Hide")
+        .hover((st) => st.bg(alpha(c, 0.15))).on_click((_e, cx) => dismiss(cx)).child(icon("x").size(12)));
+  }
+
   // chat/ComposerFreshSession.tsx: over the box while "/clear" is armed. Its button keeps the current session.
   freshBanner(k) {
     if (!this.fresh || this.source.kind !== "acp") return null;
@@ -2399,8 +2421,8 @@ export class ChatPanel {
         .child(div().w(6).flex_none())
         .child(action));
     const limit = this.limitLine(k, v), subs = this.subBar(k, v), srv = v.cwd ? serversStrip(k, this.servers.at({ cwd: v.cwd, on: v.machine ?? null })) : null;
-    const fresh = this.freshBanner(k);
-    const box = drawer || limit || subs || srv || fresh ? v_flex().when(!!limit, (el) => el.child(limit)).when(!!srv, (el) => el.child(srv)).when(!!subs, (el) => el.child(subs)).when(!!fresh, (el) => el.child(fresh)).when(!!drawer, (el) => el.child(drawer)).child(card) : card;
+    const fresh = this.freshBanner(k), budget = this.budgetLine(k, v);
+    const box = drawer || limit || budget || subs || srv || fresh ? v_flex().when(!!budget, (el) => el.child(budget)).when(!!limit, (el) => el.child(limit)).when(!!srv, (el) => el.child(srv)).when(!!subs, (el) => el.child(subs)).when(!!fresh, (el) => el.child(fresh)).when(!!drawer, (el) => el.child(drawer)).child(card) : card;
     // While a queued message is in the box: what it is, where a draft went, and the way back.
     const editLine = this.editing ? h_flex().w_full().justify_end().items_center().gap(6).pb(6).text_size(11).text_color(k.muted)
       .child(div().min_w(0).truncate().child(this.parked ? "Editing a queued message · your draft comes back when it is sent" : "Editing a queued message"))

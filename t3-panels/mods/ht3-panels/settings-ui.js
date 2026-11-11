@@ -7,7 +7,9 @@
 // For scripts and keys, while the dialog is open: `ht3-panels.ui:agent:<id>` flips an agent,
 // `ui:default:<id>` makes it the default, `ui:models:<id>` opens its models, `ui:model:<id>=<model>`
 // flips one model, `ui:allmodels:<id>` goes back to all, `ui:editor:<id>` flips an editor,
-// `ui:side` flips the side panel's start, `ui:diffws` flips Hide whitespace in Diff, `ui:close` closes.
+// `ui:side` flips the side panel's start, `ui:diffws` flips Hide whitespace in Diff, `ui:mdpreview` flips Markdown
+// files opening as a preview, `ui:budget:<tokens>` sets the chat token budget (0 off; `ui:budget` alone takes the next choice),
+// `ui:close` closes.
 
 import { div, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
@@ -18,7 +20,8 @@ import { importable } from "./detect.js";
 import { tokens, alpha, icon, agentMark, button, iconButton, shortPath, badge } from "./look.js";
 import { AGENTS, detect } from "./agent-acp.js";
 import { EDITORS, editors } from "./menus.js";
-import { prefs, agentOn, modelsOf, knownModels, editorOn, sideStartsHidden, firstAgent, setPref, settingsFile, followUp, checkpointsOn, toastsOn, soundsOn, diffHidesWhitespace, commitStyle, COMMIT_STYLES } from "./settings.js";
+import { prefs, agentOn, modelsOf, knownModels, editorOn, sideStartsHidden, firstAgent, setPref, settingsFile, followUp, checkpointsOn, toastsOn, soundsOn, diffHidesWhitespace, commitStyle, COMMIT_STYLES, mdPreviewDefault, chatTokenBudget } from "./settings.js";
+import { BUDGETS, budgetLabel, nextBudget } from "./token-budget.js";
 
 export const SETTINGS_SIZE = { width: 640, height: 680 };
 
@@ -62,6 +65,8 @@ export class Settings {
     else if (what === "side") this.flipSide();
     else if (what === "steer") setPref("followUp", followUp() === "steer" ? undefined : "steer");
     else if (what === "diffws") setPref("diffIgnoreWhitespace", diffHidesWhitespace() ? false : undefined);
+    else if (what === "mdpreview") setPref("mdPreviewDefault", mdPreviewDefault() ? false : undefined);
+    else if (what === "budget") { const n = rest === "" ? nextBudget(chatTokenBudget()) : BUDGETS.find((b) => String(b) === rest); if (n != null) setPref("chatTokenBudget", n ? n : undefined); }
     else if (what === "checkpoints") setPref("checkpoints", checkpointsOn() ? false : undefined);
     else if (what === "notifications") setPref("notifications", toastsOn() ? false : undefined);
     else if (what === "sounds") setPref("sounds", soundsOn() ? undefined : true);
@@ -259,6 +264,8 @@ export class Settings {
         .child(this.section(k, "Chats", "How a chat with an agent behaves.",
           [this.row(icon("rows-2").size(16).flex_none().text_color(k.muted), "Steer instead of queue", "A message sent while the agent works interrupts it. Off: it waits for the turn to end.",
             [this.toggle(k, "set-steer", followUp() === "steer", "Steer instead of queue", () => setPref("followUp", followUp() === "steer" ? undefined : "steer"))]),
+          this.row(icon("gauge").size(16).flex_none().text_color(k.muted), "Token budget per chat", "A chat that has used 80% of this many input + output tokens (as its agent reports them) shows a warning over the message box; at 100% the line offers Stop and New session. Agents that report no tokens show nothing.",
+            [button(k, "set-token-budget", budgetLabel(chatTokenBudget()), () => setPref("chatTokenBudget", nextBudget(chatTokenBudget()) || undefined), { size: "sm", variant: "outline", tip: "Click to change: Off, 100k, 250k, 500k, 1M, 2M" })]),
           this.row(icon("rotate-ccw").size(16).flex_none().text_color(k.muted), "Checkpoints", "In a Git repository, snapshot the files before and after each turn, for its diff and for Revert.",
             [this.toggle(k, "set-checkpoints", checkpointsOn(), "Checkpoints", () => setPref("checkpoints", checkpointsOn() ? false : undefined))]),
           this.row(icon("bell").size(16).flex_none().text_color(k.muted), "Notify", "A notification when a chat you aren't looking at finishes or needs an approval. A click on it shows the chat.",
@@ -285,6 +292,9 @@ export class Settings {
           ...(this.importing ? this.offers().map((s, i) => this.row(icon("square-terminal").size(16).flex_none().text_color(k.muted),
             h_flex().gap(6).items_center().child(div().min_w(0).truncate().child(s.name)).child(badge(k, s.source)), s.command,
             [button(k, `script-import-${i}`, "Add", (cx) => { this.importScripts(String(i), cx); cx.notify(); }, { size: "sm", variant: "outline" })])) : [])])))
+        .child(this.section(k, "Files", "How the Files editor opens files.",
+          [this.row(icon("eye").size(16).flex_none().text_color(k.muted), "Preview Markdown files", "A .md, .mdx or .markdown file opens as its rendered preview. The Preview button in the editor still switches one file, and the choice is kept for the session.",
+            [this.toggle(k, "set-md-preview", mdPreviewDefault(), "Preview Markdown files", () => setPref("mdPreviewDefault", mdPreviewDefault() ? false : undefined))])]))
         .child(this.section(k, "Diff", "How the Diff surface shows changes.",
           [this.row(icon("pilcrow").size(16).flex_none().text_color(k.muted), "Hide whitespace changes", "Runs every diff and commit view with -w, so lines that only changed in whitespace don't show. Also the pilcrow button in Diff's header.",
             [this.toggle(k, "set-diff-ws", diffHidesWhitespace(), "Hide whitespace changes", () => setPref("diffIgnoreWhitespace", diffHidesWhitespace() ? false : undefined))])]))
