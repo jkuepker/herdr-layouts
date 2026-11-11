@@ -1,7 +1,8 @@
 // The New chat dialog (T3's dialog sizes: 512 wide, 24 in, a 20px title, the buttons in a
 // footer under a line). It offers the agents already running in this tab's terminals, whose
 // conversation the chat shows, and the ACP agents installed where the space is, which the
-// chat starts itself. Open chat splits a chat pane to the right of the pane under the dialog.
+// chat starts itself. Open chat opens the chat as a tab of its own. Under them, the earlier chats,
+// to search and reopen; opened with props.find, the dialog is that list alone.
 
 import { div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
@@ -63,7 +64,6 @@ export class Launcher {
     // Opened to find an earlier chat (`ht3-panels.earlier`): that list alone.
     this.find = p.find === true;
     const f = focused();
-    this.pane = f?.pane ?? null;
     this.machine = (f && spaces().find((s) => s.id === f.space)?.machine) ?? null;
     this.cwd = f?.cwd ?? spaces().find((s) => s.id === f?.space)?.folder ?? (this.machine ? null : home());
     // Claude Code and Codex terminals in the shown tab: their logs can be read as a chat.

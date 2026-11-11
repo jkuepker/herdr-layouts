@@ -1,5 +1,6 @@
 // A scripted ACP agent for the bridge tests: one model option, and a prompt that
-// starts with "tool" asks permission before "running" a tool. With
+// starts with "tool" asks permission before "running" a tool; one that starts with
+// "crash" asks and then exits without waiting for the answer. With
 // FAKE_AGENT_STORE set it keeps its updates in that file and can load the session.
 import * as fs from "node:fs";
 import { AcpConnection, lineSplitter } from "../mods/acp-chat/acp.js";
@@ -50,6 +51,11 @@ function update(u) {
 async function prompt(text) {
   cancelled = false;
   update({ sessionUpdate: "user_message_chunk", content: { type: "text", text } });
+  if (text.startsWith("crash")) {
+    conn.request("session/request_permission", { sessionId: sid, toolCall: { toolCallId: "t0", title: "Crash" }, options: [{ optionId: "yes", name: "Allow", kind: "allow_once" }] }).catch(() => {});
+    setTimeout(() => process.exit(3), 300);
+    return new Promise(() => {});
+  }
   if (text.startsWith("tool")) {
     update({ sessionUpdate: "tool_call", toolCallId: "t1", title: "Edit notes.md", kind: "edit", status: "pending" });
     const answer = await conn.request("session/request_permission", {

@@ -1,3 +1,4 @@
+// Changed from herdr-t3 (github.com/JinJieBeWater/herdr-t3, Apache-2.0) for T3 Panels: see NOTICE.
 // Agents in grouped or priority views; a parent reads with its sub-agents (tree.js).
 // A viewed done agent stays in Done until left.
 
@@ -204,9 +205,12 @@ export default class Agents extends View {
     // As shown: its own word with its sub-agents'. Sorted, a viewed done agent keeps Done.
     const own = (a) => ownStatus(a.status, a.address, all);
     // Settled or snoozed only drops the done dot, as tabs and pane headers do: hiding work is the Inbox's (docs/adr/0002).
+    // A chat's card has no terminal: its labels are the Inbox's (shared "ht3-inbox.cards") and its turns its mod's.
+    const cardLabels = shared("ht3-inbox.cards") ?? {};
+    const termOf = (a) => a.mod ? { address: a.address, labels: cardLabels[a.pane] ?? {}, turn: shared(`${a.mod}.turns`)?.[a.tab] ?? 0 } : all.find(k => k.address === a.address);
     const shownStatus = (a) => {
       const s = treeStatus(own(a), kidsOf.get(a.address));
-      return s === "done" && notNews(all.find(k => k.address === a.address), own(a), kidsOf.get(a.address)) ? "idle" : s;
+      return s === "done" && notNews(termOf(a), own(a), kidsOf.get(a.address)) ? "idle" : s;
     };
     const urgency = new Map(list.map((a) => [a.address, RANK[treeStatus(ownStatus(this.word(a), a.address, all), kidsOf.get(a.address))] ?? 0]));
     const rankOf = (a) => urgency.get(a.address);

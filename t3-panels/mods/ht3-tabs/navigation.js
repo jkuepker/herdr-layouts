@@ -1,3 +1,4 @@
+// Changed from herdr-t3 (github.com/JinJieBeWater/herdr-t3, Apache-2.0) for T3 Panels: see NOTICE.
 import { spaces, panes, agents, terminals, machines, run, openOverlay, closeOverlay, focused, hc, notify, layout, shared, setShared, home, window } from "herdr";
 import { namer, programOf } from "./name.js";
 import { descendants, kidStatus, ownStatus, treeStatus } from "./tree.js";
@@ -119,6 +120,15 @@ export function navigation(beforeAsk = (_cx) => {}, core = { spaces, panes, agen
     // A lone pane goes by its tab's name, as the tab shows it.
     const name = namer();
     const names = live.filter((_, k) => !empty[k]).map(p => mine.length === 1 ? nameOf(c, p, name) : name(p));
+    // A chat tab has no terminal, so nothing above asks for it; mid-turn, closing it would stop its agent's turn.
+    const said = (shared("ht3-panels.status") ?? {})[id];
+    if (names.length === 0 && (said === "working" || said === "blocked")) {
+      beforeAsk(cx);
+      if (asking) closeOverlay(asking);
+      asking = openOverlay({ mod: "ht3-actions", kind: "dialog", frame: "none", width: 512, props: { actions: "confirm", title: `Close chat "${c.name}"?`,
+        detail: `Its agent is ${said === "working" ? "still working" : "waiting for you"}; closing stops that turn. The chat stays under Earlier chats.`, command: { name: `ht3-tabs.close-tab-now:${id}` } } });
+      return;
+    }
     if (names.length === 0) return closeTabNow(id, {}, cx);
     ask(names, space.tabs.length === 1 ? " It's the space's last tab, so the space closes too." : "", `ht3-tabs.close-tab-now:${id}`, cx);
   }

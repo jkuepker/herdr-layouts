@@ -104,6 +104,17 @@ test("cancel answers a waiting permission as cancelled", async (t) => {
   assert.ok(s.transcript.items.some((i) => i.kind === "notice" && i.text === "Stopped."));
 });
 
+test("an agent that exits while it waits for an approval leaves none to answer", async (t) => {
+  const b = startBridge();
+  t.after(() => b.stop());
+  await b.until((s) => s.status === "ready", "ready");
+  b.send({ type: "prompt", text: "crash" });
+  await b.until((s) => s.permission, "permission request");
+  const s = await b.until((s) => s.status === "exited", "exit");
+  assert.equal(s.permission, null);
+  assert.match(s.error, /code 3/);
+});
+
 test("stop ends the bridge and leaves the chat on disk", async (t) => {
   const b = startBridge();
   t.after(() => b.stop());

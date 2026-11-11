@@ -8,18 +8,16 @@
 // - agent-acp.js: an agent this pane starts over ACP (props.agent, cwd, machine, prompt).
 
 import { div, list, image } from "gpui-kit";
-import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, TextView, Scrollbar, VirtualListScrollHandle } from "gpui-base";
+import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, TextView, Scrollbar } from "gpui-base";
 import { run, openOverlay, appHome, home, exec, layout, settings, shared, setShared, notify, focused, panes } from "herdr";
 import { MOD, tokens, alpha, icon, agentMark, button, iconButton, control, badge, workLine, divider, shortPath } from "./look.js";
-import { AcpSource, detect, argvOf, forkChat } from "./agent-acp.js";
+import { AcpSource, detect, argvOf, forkChat, agentOf, chatLike, askOnce } from "./agent-acp.js";
 import { TermSource } from "./agent-term.js";
 import { Reporter } from "./report.js";
 import { fileIcon } from "./fileicons.js";
 import { snapshot, turnStat } from "./checkpoint.js";
-import { checkpointsOn, followUp } from "./settings.js";
+import { checkpointsOn, followUp, limitModels, rememberModels } from "./settings.js";
 import { addNotice, toMarkdown } from "./transcript.js";
-import { limitModels, rememberModels } from "./settings.js";
-import { agentOf, chatLike, askOnce } from "./agent-acp.js";
 import { repoOf } from "./launcher.js";
 
 const LANE = 736; // --chat-content-max-width: 46rem
@@ -71,14 +69,14 @@ function subseq(q, s) {
   return true;
 }
 
-// T3's own commands (composer-logic.ts ComposerSlashCommand) that have a place here.
 // How many rows the lane builds at first, and how many more each time you near the first of them.
 const TAIL = 60;
-// The rows a click does something to.
 // A tool's output as its row shows it (cut at DETAIL_MAX).
 const detailOf = (m) => { const d = String(m.detail ?? ""); return d.length > DETAIL_MAX ? d.slice(0, DETAIL_MAX) + "\n…" : d; };
+// The rows a click does something to.
 const CLICKS = ["earlier", "copy", "codehead", "fold", "tool", "thought"];
 
+// T3's own commands (composer-logic.ts ComposerSlashCommand) that have a place here.
 const LOCAL_COMMANDS = [
   { name: "model", description: "Switch the model for this chat", local: true },
   { name: "side", description: "Ask a side question in the right panel", local: true },
@@ -149,7 +147,7 @@ export class ChatPanel {
     this.autoAllow = keptOf(this.chatId).allow === true;
     // Messages queued before a reload wait on: they go out when the agent is back and ready.
     const waiting = keptOf(this.chatId).queue;
-    if (Array.isArray(waiting) && waiting.length) this.queue = waiting.map((q) => ({ text: String(q.text ?? ""), blocks: q.blocks ?? [], files: q.files ?? [] }));
+    if (Array.isArray(waiting) && waiting.length) this.queue = waiting.map((q) => ({ text: String(q.text ?? ""), blocks: q.blocks ?? [], files: (q.files ?? []).map((a) => ({ ...a, type: a.type ?? IMAGE_TYPES[String(a.name ?? "").split(".").pop().toLowerCase()] ?? null })) }));
     // A chat tab's agent has no terminal: it tells the layout's lists how it is itself (report.js).
     // A side chat is no tab, and a terminal agent's chat has its terminal to speak for it.
     this.reporter = this.chatId && !p.terminal && !p.side ? new Reporter(this.chatId) : null;
@@ -157,7 +155,7 @@ export class ChatPanel {
     this.turnAt = null; // when the running turn of an ACP agent began
     this.hint = HINT;
     this.makeInput();
-    // Find in thread (T3's ThreadFindBar): while its bar is open and has text, the lane holds the matching messages only.
+    // Find in thread (T3's ThreadFindBar): while its bar is open and has text, the lane marks what matches.
     this.finding = false;
     this.findField = InputState.new({ placeholder: "Find in thread" });
     // Find marks every match in the lane and steps through them; a new word goes to its first match.
@@ -199,13 +197,15 @@ export class ChatPanel {
       this.phase = "empty";
     }
     // The "Working for …" line counts seconds; nothing else here redraws on a timer.
-    cx.timer.every(1000, (cx) => {
+    // It ends with the chat: a side chat's panel closes while the view that made it (sidechat.js) lives on.
+    this.tick = cx.timer.every(1000, (cx) => {
+      if (this.closed) return;
       // A revert done from its dialog: say so in the chat.
       const rv = shared(`${MOD}.reverted`);
       if (rv && rv.chat === this.chatId && rv.at !== this.revertSeen) {
         const first = this.revertSeen === undefined && Date.now() - rv.at > 5000;
         this.revertSeen = rv.at;
-        if (!first && this.source.kind === "acp" && this.source.state) {
+        if (!first && this.source?.kind === "acp" && this.source.state) {
           addNotice(this.source.state.transcript, rv.ok ? `Files are back as they were before "${rv.label}". What was there is kept as checkpoint ${String(rv.undo ?? "").slice(0, 8)}. The agent still remembers what it did.` : `Couldn't revert: ${rv.error}`, rv.ok ? "info" : "error");
           this.source.changed?.(cx, true);
         }
@@ -240,6 +240,8 @@ export class ChatPanel {
   }
 
   async close(_cx) {
+    this.closed = true;
+    this.tick?.cancel?.();
     this.reporter?.close();
     await this.source?.close();
   }
@@ -313,7 +315,7 @@ export class ChatPanel {
     this.skills = [];
     const v = this.view, on = v?.machine ?? undefined;
     cx.spawn(async (cx) => {
-      const script = `for d in "$HOME/.claude/skills" ${v?.cwd ? `"${String(v.cwd).replace(/["\\$\`]/g, "")}/.claude/skills"` : ""}; do for f in "$d"/*/SKILL.md; do [ -f "$f" ] && printf '%s\\t%s\\n' "$(basename "$(dirname "$f")")" "$(sed -n 's/^description: *//p' "$f" | head -1 | cut -c1-200)"; done; done`;
+      const script = `for d in "$HOME/.claude/skills" ${v?.cwd ? shq(`${String(v.cwd).replace(/\/$/, "")}/.claude/skills`) : ""}; do for f in "$d"/*/SKILL.md; do [ -f "$f" ] && printf '%s\\t%s\\n' "$(basename "$(dirname "$f")")" "$(sed -n 's/^description: *//p' "$f" | head -1 | cut -c1-200)"; done; done`;
       const r = await exec("/bin/sh", ["-c", script], { on }).catch(() => null);
       const seen = new Set();
       this.skills = String(r?.stdout ?? "").split("\n").filter(Boolean).map((l) => { const [name, description] = l.split("\t"); return { name, description: (description ?? "").replace(/^["']|["']$/g, ""), skill: true }; })
@@ -444,7 +446,7 @@ export class ChatPanel {
       if (item.name === "usage") run(`${MOD}.usage`);
       if (item.name === "find") return this.setFind(cx, true);
       if (item.name === "copy") this.copyThread(cx);
-      if (item.name === "branch" && this.source.kind === "acp") chatLike(this.source.state);
+      if (item.name === "branch" && this.source.kind === "acp" && this.source.state) chatLike(this.source.state);
       if (item.name === "terminal") this.toggleTerminal(cx);
       if (item.name === "title") this.retitle(cx);
       if (item.name === "send-new" || item.name === "send-background") return this.sendNew(cx, item.name === "send-background", before);
@@ -520,7 +522,7 @@ export class ChatPanel {
     if (p && !this.askWatch) {
       this.askWatch = true;
       const look = (cx) => {
-        const now = this.source.alive ? this.source.state?.permission : null, t = this.reporter?.tab;
+        const now = this.source.alive && !this.closed ? this.source.state?.permission : null, t = this.reporter?.tab;
         if (!now) { this.askWatch = false; return; }
         const answers = shared(`${MOD}.answers`) ?? {}, a = t ? answers[t] : null;
         if (a && a.ask === this.askId) {
@@ -544,6 +546,8 @@ export class ChatPanel {
   // button, and `fold:<row id>` opens or closes a row (a work row's id, `__startup`, `__worked-<message id>`).
   command(c, cx) {
     if (c === "focus") this.input.focus();
+    // No chat here yet: nothing else has anything to act on.
+    if (!this.source) return cx.notify();
     if (c.startsWith("say:")) { this.input.set_value(c.slice(4)); this.hasText = true; this.send(cx); }
     if (c.startsWith("pick:")) { this.picker = this.picker === c.slice(5) ? null : c.slice(5); this.filter.set_value(""); }
     if (c.startsWith("answer:")) this.source?.answer(cx, c.slice(7));
@@ -563,7 +567,7 @@ export class ChatPanel {
     // send:new and send:background: the draft becomes the first message of a new chat (sendNew); the layout's keys.
     if (c === "send:new" || c === "send:background") this.sendNew(cx, c === "send:background");
     // new:here is "/branch": a new chat with this one's agent in this one's folder (its branch).
-    if (c === "new:here" && this.source.kind === "acp") chatLike(this.source.state);
+    if (c === "new:here" && this.source.kind === "acp" && this.source.state) chatLike(this.source.state);
     // copy:thread is "/copy": the thread as Markdown on the clipboard.
     if (c === "copy:thread") this.copyThread(cx);
     // find:<text> opens the find bar with that text (find alone: opens or closes it), find: closes it.
@@ -692,7 +696,7 @@ export class ChatPanel {
   }
 
   keepQueue() {
-    keep(this.chatId, { queue: (this.queue ?? []).map((q) => ({ text: q.text, blocks: q.blocks, files: q.files.map((a) => ({ name: a.name, path: a.path, image: a.image, thumb: a.thumb })) })) });
+    keep(this.chatId, { queue: (this.queue ?? []).map((q) => ({ text: q.text, blocks: q.blocks, files: q.files.map((a) => ({ name: a.name, path: a.path, image: a.image, type: a.type ?? null, thumb: a.thumb })) })) });
   }
 
   // A queued message's buttons: steer (it goes in now), up and down (its place), edit (back into the message box), drop.
@@ -700,7 +704,8 @@ export class ChatPanel {
     const q = this.queue?.[i];
     if (!q) return;
     this.queue.splice(i, 1);
-    if (what === "steer") { if (this.source.word() === "ready" || this.sending) { this.queue.unshift(q); this.drain(cx); } else this.dispatch(cx, q, true); }
+    // Only a running turn can be steered: before one (the agent still starting, or a message on its way) it goes to the front.
+    if (what === "steer") { if (this.source.word() !== "working" || this.sending) { this.queue.unshift(q); this.drain(cx); } else this.dispatch(cx, q, true); }
     // up and down: its place in the queue.
     if (what === "up" || what === "down") this.queue.splice(Math.max(0, Math.min(this.queue.length, i + (what === "up" ? -1 : 1))), 0, q);
     if (what === "edit") { this.input.set_value(q.text); this.hasText = !!q.text.trim(); this.attached = [...(this.attached ?? []), ...q.files]; this.input.focus(); }
@@ -714,7 +719,8 @@ export class ChatPanel {
     const v = this.view ?? this.source.view();
     this.follow = true;
     const att = files.length ? files.map((a) => ({ name: a.name, path: a.path, image: a.image, thumb: a.thumb })) : null;
-    const where = this.source.kind === "acp" && checkpointsOn() && v.cwd ? { cwd: v.cwd, on: v.machine ?? undefined } : null;
+    // A steering message is part of the turn it goes into: that turn's checkpoint stays the open one.
+    const where = !steer && this.source.kind === "acp" && checkpointsOn() && v.cwd ? { cwd: v.cwd, on: v.machine ?? undefined } : null;
     if (!files.length && !where) { out(cx, text, blocks); return cx.notify(); }
     // Reading the pictures and snapshotting the files take a moment: the box empties now and the message follows.
     this.sending = files;
@@ -829,7 +835,7 @@ export class ChatPanel {
     // Working says so in the timeline ("Working for 3s"), as T3's header says nothing of it.
     const word = { starting: "Starting", blocked: "Waiting for you", exited: "Stopped", stopped: "Stopped" }[state] ?? null;
     const tone = { blocked: "warning", exited: "error", stopped: "error", working: "info" }[state] ?? null;
-    return { badge: folder ? initials(folder) : null, folder, where, title, word, tone, branch: this.reporter?.where?.branch ?? this.branchHere ?? null, usage: v.usage?.size > 0 ? Math.round((100 * v.usage.used) / v.usage.size) : null };
+    return { badge: folder ? initials(folder) : null, folder, where, title, word, tone, branch: this.reporter?.where?.branch ?? null, usage: v.usage?.size > 0 ? Math.round((100 * v.usage.used) / v.usage.size) : null };
   }
 
   header(k, v) {
@@ -854,7 +860,7 @@ export class ChatPanel {
   // a session of its own that is thrown away (agent-acp.js askOnce), on the chat's model. The chat's session and
   // transcript are not touched; the title is kept as a rename is (shared "ht3-panels.named"). This computer only.
   retitle(cx) {
-    const s = this.source.kind === "acp" ? this.source.state : null;
+    const s = this.source?.kind === "acp" ? this.source.state : null;
     if (!s || this.titling) return;
     const said = s.transcript.items.filter((m) => (m.kind === "user" || m.kind === "agent") && String(m.text ?? "").trim()).slice(0, 6);
     if (!said.length) return;
@@ -915,7 +921,8 @@ export class ChatPanel {
     this.input.set_value("");
     this.hasText = false;
     this.trig = null;
-    this.attached = [];
+    // A new chat starts from text alone: files attached to the draft stay here, and are said to.
+    if (this.attached?.length) notify({ title: "Attached files stay here", body: "The new chat got the text only.", level: "warning", timeout: 4000 });
     if (background) {
       // The new chat learns its pane by being drawn in the shown tab (report.js `place`), so it gets a moment in front
       // before this tab is shown again; without it its card would have no name or state until it is looked at.
@@ -1571,7 +1578,6 @@ export class ChatPanel {
             .when(!choices.length, (el) => el.child(div().px(8).py(4).text_size(12).text_color(k.muted).child("No matches."))))));
   }
 
-  // chat/ComposerSurface.tsx and ComposerPrimaryActions.tsx.
   // chat/ComposerUsageLimits.tsx: a line over the message box when a limit is near or reached. Only what the agent
   // says is known: Claude Code's adapter sends the account's rate limit (status, how much is used, when it resets),
   // any agent's refusal for a limit comes as an error, and every agent that reports its context says how full it is.
@@ -1595,6 +1601,7 @@ export class ChatPanel {
         .hover((st) => st.bg(alpha(c, 0.15))).on_click((_e, cx) => { this.limitHidden = say.key; cx.notify(); }).child(icon("x").size(12)));
   }
 
+  // chat/ComposerSurface.tsx and ComposerPrimaryActions.tsx.
   composer(k, v) {
     const lane = (body) => h_flex().w_full().flex_none().justify_center().px(16).pb(12).child(v_flex().w_full().max_w(LANE).child(body));
     const line = alpha(k.foreground, k.dark ? 0.1 : 0.08);

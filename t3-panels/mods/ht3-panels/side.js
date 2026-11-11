@@ -7,7 +7,7 @@
 //
 // State is one shared value, `ht3-side.state`, kept by Herdr across reloads:
 //   { v: 1, max: false, spaces: { <space id>: { split, w (the panel's px), ha (the first group's px), a: { tabs, active }, b: { tabs, active }, bottom } } }
-// A tab is { id, kind, addr?, n?, at?, chat? }: kind is files, diff, pr, prs, browser, chat or terminal
+// A tab is { id, kind, addr?, n?, at?, chat? }: kind is files, diff, pr, prs, browser, dashboard, chat or terminal
 // (addr: the terminal's address, n: its number, at: when it started). `bottom` is the address of the
 // space's bottom-panel terminal, or null.
 //
@@ -332,7 +332,8 @@ export function ensureShown() {
 
 export function activate(group, id) {
   const space = activeSpace();
-  change(space?.id, (st) => { if (st[group].tabs.some((t) => t.id === id)) st[group].active = id; });
+  if (!space || !GROUPS.includes(group)) return;
+  change(space.id, (st) => { if (st[group].tabs.some((t) => t.id === id)) st[group].active = id; });
   reconcile();
 }
 
@@ -340,8 +341,9 @@ export function activate(group, id) {
 // other copies send(`close:<group>:<tab id>`).
 export function closeTab(group, id) {
   const space = activeSpace();
+  if (!space || !GROUPS.includes(group)) return Promise.resolve();
   let gone = null;
-  change(space?.id, (st) => {
+  change(space.id, (st) => {
     const g = st[group], at = g?.tabs.findIndex((t) => t.id === id) ?? -1;
     if (at < 0) return;
     gone = g.tabs[at];

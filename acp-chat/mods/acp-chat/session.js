@@ -77,6 +77,9 @@ export class ChatSession {
   // `why`: how it ended, e.g. "code 1"; `stderr`: the end of what it wrote there.
   exited(why, stderr) {
     this.conn.close("agent exited");
+    // An approval it was waiting for has nobody left to answer.
+    this.pendingPermission = null;
+    this.state.permission = null;
     if (this.state.status !== "stopped") {
       this.state.status = "exited";
       this.state.error = `The agent exited (${why}).` + (stderr?.trim() ? `\n\n${stderr.trim()}` : "");

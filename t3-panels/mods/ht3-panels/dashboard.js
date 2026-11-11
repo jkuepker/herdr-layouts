@@ -3,8 +3,9 @@
 //
 // - A dashboard is a file in <app home>/data/ht3-dashboards/*.json: { title, refresh, widgets: [...] }.
 //   t3-panels/dashboards/ has examples; RECIPE.md has the format.
-// - A widget: { type, title, w (1-4 columns), refresh (seconds), source, pick, … }. Types: stat, table, list, bars,
-//   line, status. Its data goes source (dash-sources.js) -> pick -> filter -> sort (dash-data.js) -> drawn here.
+// - A widget: { type, title, w (1-4 columns), refresh (seconds), source, pick, … }. Types drawn here: stat, table,
+//   list, bars, line, status; dash-widgets.js and dash-planmap.js draw the others (gauge, text, log, heatmap, link,
+//   terminal, chat, plan-map). Its data goes source (dash-sources.js) -> pick -> filter -> sort (dash-data.js) -> drawn.
 // - Charts are divs: gpui-kit has no chart element, and its paths are placed in window coordinates.
 // - Polls only while its tab shows (side.js showing); a widget keeps what it last had beside an error.
 // - The picked dashboard is kept per panel group in shared "ht3-panels.dashboard".
@@ -14,13 +15,12 @@ import { v_flex, h_flex } from "gpui-base";
 import { exec, readTextFile, appHome, shared, setShared, run } from "herdr";
 import { MOD, tokens, alpha, icon, iconButton, shortPath } from "./look.js";
 import { showing } from "./side.js";
-import { pick, field, num, show, level, stateLevel, keep, sortRows, age, readDashboard } from "./dash-data.js";
+import { pick, field, num, show, level, stateLevel, keep, sortRows, age, readDashboard, TYPES } from "./dash-data.js";
 import { fetchSource } from "./dash-sources.js";
 import { editor } from "./dash-editor.js";
 import { renamed } from "./dash-edit.js";
 import "./dash-types.js";
 import { widgets as moreWidgets, DIRECT } from "./dash-widgets.js";
-import { TYPES } from "./dash-data.js";
 import { planmap } from "./dash-planmap.js";
 
 const TICK_MS = 5000, SHARE_MS = 4000; // widgets asking for the same source within a tick share one answer
@@ -35,7 +35,7 @@ export class DashboardPanel {
     this.filesError = null;
     this.menu = false;
     this.state = new Map(); // widget id -> { data, error, at, tried, loading, past }
-    this.answers = new Map(); // a source as JSON -> { at, promise }
+    this.answers = new Map(); // a source as JSON -> { at, promise, pending }
     this.initEditor();
     this.loadFiles(cx);
     cx.timer.every(TICK_MS, (cx) => { if (showing(this.group, "dashboard")) { this.poll(cx); cx.notify(); } });
@@ -64,7 +64,8 @@ export class DashboardPanel {
   }
 
   loadFiles(cx, force = false) {
-    if (this.reading) return;
+    // A Refresh pressed while the files are being read is kept for when they have been.
+    if (this.reading) { this.forceNext ||= force; return; }
     this.reading = true;
     cx.spawn(async (cx) => {
       try {
@@ -81,13 +82,21 @@ export class DashboardPanel {
             files.push({ name, dash, text, raw: renamed(JSON.parse(text)) });
           } catch (e) { files.push({ name, error: String(e?.message ?? e) }); }
         }
+        // A file that changed on disk: its widgets may be others now (their ids are places in the list), so what
+        // they had is dropped, and a settings form open on one of them closes.
+        for (const f of files) { const old = (this.files ?? []).find((x) => x.name === f.name); if (old && old.text !== f.text) this.forget(f.name); }
         this.files = files;
         this.filesError = null;
       } catch (e) { this.files = this.files ?? []; this.filesError = String(e?.message ?? e); }
       this.reading = false;
-      if (force) { this.answers.clear(); this.poll(cx, true); }
+      if (force || this.forceNext) { this.forceNext = false; this.answers.clear(); this.poll(cx, true); }
       cx.notify();
     });
+  }
+  // Drops what the widgets of one dashboard file had, and the settings form open on it.
+  forget(name) {
+    for (const id of [...this.state.keys()]) if (id.startsWith(`${name}:`)) this.state.delete(id);
+    if (this.form?.file === name) this.closeForm();
   }
 
   current() {
@@ -98,6 +107,8 @@ export class DashboardPanel {
   choose(cx, name) {
     setShared(`${MOD}.dashboard`, { ...(shared(`${MOD}.dashboard`) ?? {}), [this.group]: name });
     this.menu = false;
+    // A "Remove?" or "Delete this dashboard?" asked of the dashboard shown before is not this one's.
+    this.confirm = null;
     this.poll(cx);
     cx.notify();
   }
@@ -145,9 +156,12 @@ export class DashboardPanel {
   }
   ask(source, dash) {
     const key = JSON.stringify(source ?? null), had = this.answers.get(key), now = Date.now();
-    if (had && now - had.at < SHARE_MS) return had.promise;
-    const promise = fetchSource(source, { prometheus: dash.prometheus });
-    this.answers.set(key, { at: now, promise });
+    // One still on its way is shared however old, so a slow source is never asked twice at once.
+    if (had && (had.pending || now - had.at < SHARE_MS)) return had.promise;
+    const promise = fetchSource(source, { prometheus: dash.prometheus }), entry = { at: now, promise, pending: true };
+    const settled = () => { entry.pending = false; };
+    promise.then(settled, settled);
+    this.answers.set(key, entry);
     if (this.answers.size > 200) this.answers.delete(this.answers.keys().next().value);
     return promise;
   }

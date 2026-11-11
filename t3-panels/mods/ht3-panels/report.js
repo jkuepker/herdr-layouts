@@ -118,7 +118,7 @@ export class Reporter {
   }
 
   drop(tab) {
-    for (const key of [STATUS, TITLES, PROGRAMS, TURNS, `${MOD}.asks`, `${MOD}.answers`]) {
+    for (const key of [STATUS, TITLES, PROGRAMS, TURNS, `${MOD}.asks`, `${MOD}.answers`, UNREAD]) {
       const all = { ...(shared(key) ?? {}) };
       delete all[tab];
       put(key, all);

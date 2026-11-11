@@ -7,8 +7,9 @@
 // - props.panel "strip": a group's tab strip (strip.js);
 // - props.panel "buttons": the buttons in the layout's tab bar (below);
 // - as an overlay (`mod.open {"name": "ht3-panels"}`): the New chat dialog (launcher.js), or with
-//   props.menu "add" / "project", the side panel's popups (menus.js), or "settings", the Settings
-//   dialog (settings-ui.js).
+//   props.menu "add" / "project", the side panel's popups, "copy" / "thread" / "revert", the chat's
+//   and the lists' menus (all menus.js), "settings", the Settings dialog (settings-ui.js), or
+//   "usage", the Usage dialog (usage.js).
 // The panel's state and the code that makes the layout match it are in side.js.
 
 import { View } from "gpui-kit";

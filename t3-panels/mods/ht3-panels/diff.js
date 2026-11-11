@@ -1,10 +1,13 @@
-// T3 Code's Diff surface (DiffPanel.tsx) in gpui-kit: the working tree against HEAD, one section
-// per file with its status, its +/- counts and its hunks, the lines tinted green and red and
-// colored with T3 Code's code colors. Files are collapsible; new (untracked) files show as added.
+// T3 Code's Diff surface (DiffPanel.tsx) in gpui-kit: what changed, one section per file with its
+// status, its +/- counts and its hunks, the lines tinted green and red and colored with T3 Code's
+// code colors. Files are collapsible; new (untracked) files show as added. What is compared is the
+// header's choice: Changes (the working tree against the merge base with the default branch),
+// Uncommitted (against HEAD), or one turn of a chat (its two checkpoints).
 //
-// Runs git in the repository of the shown space's folder: `git diff HEAD`, and for untracked
-// files `git diff --no-index /dev/null <file>`. Reads only. The listing follows the folder
-// (watchFolder) and a 15 s timer.
+// Runs git in the repository of the shown space's folder: `git diff <base or HEAD>`, and for
+// untracked files `git diff --no-index /dev/null <file>`. Reads only. The listing follows the
+// folder (watchFolder) and a 15 s timer. A hunk or some of its lines can be picked and sent to
+// the shown chat's message box with a comment.
 
 import { div, list } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, InputState, Input } from "gpui-base";
@@ -235,6 +238,8 @@ export class DiffPanel {
     const root = turn ? turn.root : this.root, on = turn ? turn.on ?? undefined : this.on;
     this.loading = true;
     cx.spawn(async (cx) => {
+      // What this run found is dropped when the scope or the folder changed meanwhile: then it runs again.
+      let used = false;
       try {
         const flags = ["--no-optional-locks", "-c", "core.fsmonitor=false", "diff", "--no-color", "--no-ext-diff", "-U3", "--find-renames"];
         let from = "HEAD", base = null;
@@ -253,16 +258,17 @@ export class DiffPanel {
           this.files = files.slice(0, MAX_FILES);
           this.more = files.length - this.files.length;
           this.error = null;
+          used = true;
         }
-      } catch (e) { if (turn || this.root === root) { this.error = String(e?.message ?? e); if (turn) this.files = []; } }
-      finally { this.loading = false; cx.notify(); }
+      } catch (e) { if (turn ? this.turn === turn : this.root === root) { used = this.scope === scope; this.error = String(e?.message ?? e); if (turn) this.files = []; } }
+      finally { this.loading = false; if (!used) this.stale = true; cx.notify(); }
     });
   }
 
   // The rows of the list: a header per file, then its hunks' lines.
   rows() {
     const rows = [];
-    for (const f of this.files) {
+    for (const f of this.files ?? []) {
       const open = !this.shut.has(f.path);
       rows.push({ id: `f:${f.path}`, kind: "file", f, open });
       if (!open) continue;
@@ -359,7 +365,7 @@ export class DiffPanel {
             .on_click((_e, cx) => this.setScope(cx, id))
             .child(div().flex_1().child(label))
             .when(this.scope === id, (e) => e.child(icon("check").size(14).flex_none().text_color(k.muted)))))))
-      .when(this.error, (el) => el.child(div().px(12).py(4).text_size(11).text_color(k.destructiveText).child(this.error)))
+      .when(!!this.error, (el) => el.child(div().px(12).py(4).text_size(11).text_color(k.destructiveText).child(this.error)))
       .when(!files.length, (el) => el.child(v_flex().flex_1().items_center().justify_center().text_color(k.muted).child(this.scope === "branch" ? `Nothing changed against ${this.base ?? "the base"}.` : this.scope === "turn" ? "That turn changed no files." : "The working tree matches HEAD.")))
       .when(files.length > 0, (el) => el.child(v_flex().relative().flex_1().min_h(0)
         .child(list("ht3-diff-rows", rows.length, (i) => rows[i].id, (i) => {

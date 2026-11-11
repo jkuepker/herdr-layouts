@@ -171,8 +171,7 @@ export const widgets = {
   // "ht3-panels.places", ".status", ".titles", ".programs", ".named"); the last message from the chat's own file.
   async load_chat(w) {
     const places = shared(`${MOD}.places`) ?? {}, out = {};
-    for (const id of Object.keys(places).slice(0, 30)) {
-      if (w.chat && w.chat !== id) continue;
+    for (const id of Object.keys(places).filter((id) => !w.chat || w.chat === id).slice(0, 30)) {
       try {
         const text = await readTextFile(`${appHome()}/data/${MOD}/chats/${id}/state.json`);
         const s = text ? JSON.parse(text) : null, said = (s?.transcript?.items ?? []).filter((m) => (m.kind === "agent" || m.kind === "user") && m.text);

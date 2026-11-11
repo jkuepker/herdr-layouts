@@ -1,5 +1,5 @@
 {
-  "layout:herdr-t3": {
+  "layout:herdr-t3-panels": {
     "cmd-shift-p": "mod.open:ht3-palette"
   }
 }

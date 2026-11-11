@@ -10,7 +10,7 @@ rename (folder names, `mod` names, command and shared-state prefixes) is the onl
 - Changed by this build: mods/ht3-agents (main.js, name.js, rows.js), mods/ht3-chrome (main.js; icons chart-column,
   circle-arrow-up, git-pull-request added), mods/ht3-inbox (actions.js, main.js, name.js, row-view.js; icon laptop
   added), mods/ht3-pane (main.js, name.js; icons git-branch redrawn, square-pen added), mods/ht3-tabs (main.js,
-  name.js). The changes: a chat tab's agent counts as an agent, a chat is never closed by a tab or pane key, the
+  name.js, navigation.js). The changes: a chat tab's agent counts as an agent, a chat's agent counts for the close-tab question (a working chat asks first) and the settle key never closes it, the
   sidebar footer has the usage, pull-request and settings buttons, and the window buttons are aligned in a layout
   named herdr-t3 or herdr-t3-panels.
 - layouts/herdr-t3-panels.json is its layouts/herdr-t3.json with the panel buttons, the bottom panel, the side panel

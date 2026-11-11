@@ -86,7 +86,7 @@ const TYPE_FIELDS = {
   line: [{ key: "legend", label: "Legend", kind: "path", hint: "a template per series, e.g. {.host}" }, { key: "min", label: "Scale from", kind: "number" }, { key: "max", label: "Scale to", kind: "number" }, ...VALUE_FIELDS],
   status: [{ key: "label", label: "Label", kind: "path" }, { key: "state", label: "State", kind: "path" }, { key: "sub", label: "Note", kind: "path" }],
 };
-// What the widget types added later bring (dash-widgets.js, dash-mods.js) is registered here by them.
+// What the widget types added later bring (dash-types.js) is registered here by them.
 // source: true (needs one), false (has none: a link, a terminal button), "optional" (a text: written in the file, or from a source).
 export function registerWidget(info, fields, { source = true } = {}) {
   if (!WIDGETS.some((w) => w.type === info.type)) WIDGETS.push(info);

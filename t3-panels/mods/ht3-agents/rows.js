@@ -1,7 +1,8 @@
+// Changed from herdr-t3 (github.com/JinJieBeWater/herdr-t3, Apache-2.0) for T3 Panels: see NOTICE.
 // The agents list's rows and group headers, including their leaving ghosts.
 import { div, svg } from "gpui-kit";
 import { h_flex, Popup } from "gpui-base";
-import { spaces, run, hc, notify, setShared, openOverlay } from "herdr";
+import { spaces, run, hc, notify, shared, setShared, openOverlay } from "herdr";
 import { namer } from "./name.js";
 import { focusAgent, focusPane } from "./zoom.js";
 import { agentKids, kidStatus } from "./tree.js";
@@ -181,8 +182,8 @@ export function agentEntries(view, t, { list, all, shown, ps, now, viewing, byPr
     const pinId = `pin-${a.address}`, rowId = `ag-${a.address}`;
     // Hovered, or with the keyboard on the row or inside it.
     const offer = !ghost && (view.hovered === a.address || within(view, [rowId, pinId, `fold-${a.address}`]));
-    // A mod pane's row has no pin: a pin is kept on a terminal.
-    const canPin = !a.mod;
+    // A mod pane's row has a pin only if its mod keeps it (a chat), as its Inbox card's menu has: any other is a view that closes.
+    const canPin = !a.mod || Boolean(a.program?.keep);
     // As T3's rows: what you're on or what wants you leads; the rest recede until hovered, a working one fainter still.
     const leads = on || offer || st === "blocked" || st === "done";
     // Over the time's slot on hover, as in the shipped list; the two cross-fade, as T3's corner. Faded out it's no button.
@@ -200,7 +201,13 @@ export function agentEntries(view, t, { list, all, shown, ps, now, viewing, byPr
           detailsFor(view, null, cx);
           if (isPinned) run(`ht3-tabs.unpin:${a.address}`);
           else setShared("agents.pins", [...view.pins, a.address]);
-          // A pin ends a snooze. Here, not in the Inbox: it may not have started yet.
+          // A pin ends a snooze. Here, not in the Inbox: it may not have started yet. A chat's is in the Inbox's shared labels.
+          const cards = shared("ht3-inbox.cards") ?? {};
+          if (!isPinned && a.mod && cards[a.pane]?.snoozed) {
+            const { snoozed: _woken, ...own } = cards[a.pane], next = { ...cards };
+            if (Object.keys(own).length) next[a.pane] = own; else delete next[a.pane];
+            setShared("ht3-inbox.cards", next);
+          }
           if (!isPinned && all.find((k) => k.address === a.address)?.labels?.snoozed) cx.spawn(async () => {
             const r = await hc(["label", a.address, "snoozed="]).catch((e) => ({ code: 1, stderr: String(e) }));
             if (r.code !== 0) notify({ title: "Couldn't update the agent", body: r.stderr.trim(), level: "error" });

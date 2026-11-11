@@ -32,7 +32,7 @@ export const editor = {
     else if (c.startsWith("dash-width:")) { const [i, w] = c.slice(11).split(":").map(Number); this.change(cx, { width: i, w }); }
     else if (c.startsWith("dash-remove:")) this.removeWidget(cx, Number(c.slice(12)));
     else if (c.startsWith("dash-gear:")) { if (c.length > 10) this.openForm(cx, Number(c.slice(10))); else this.closeForm(); }
-    else if (c.startsWith("dash-set:") && this.form) { const at = c.indexOf("="), key = c.slice(9, at), text = c.slice(at + 1).replace(/\\n/g, "\n"); this.setField(key, text); }
+    else if (c.startsWith("dash-set:") && this.form) { const at = c.indexOf("="); if (at > 9) this.setField(c.slice(9, at), c.slice(at + 1).replace(/\\n/g, "\n")); }
     else if (c.startsWith("dash-source:") && this.form) this.setSourceKind(c.slice(12));
     else if (c === "dash-apply") this.applyForm(cx);
     else if (c.startsWith("dash-new:")) this.newDashboard(cx, c.slice(9));
@@ -59,7 +59,7 @@ export const editor = {
   // Writes a dashboard's object as its file: checked first, the .bak before the first change, and only over the
   // text this surface last read (a file changed on disk meanwhile is not overwritten).
   save(cx, file, raw, then = null) {
-    if (this.saving) return;
+    if (this.saving) { this.editError = "Still saving the last change. Try again."; return cx.notify(); }
     let text;
     try { text = checked(raw, file.name, file.raw); } catch (e) { this.editError = String(e?.message ?? e); return cx.notify(); }
     this.saving = true;
@@ -70,18 +70,24 @@ export const editor = {
         if (!this.backed.has(file.name) && file.text != null) {
           const old = await readTextFile(`${path}.bak`).catch(() => null);
           await writeTextFile(`${path}.bak`, file.text, old);
-          this.backed.add(file.name);
         }
         await writeTextFile(path, text, file.text ?? null);
+        // Only now: a write refused for a file changed on disk leaves the .bak to be taken again, from what is read then.
+        this.backed.add(file.name);
         file.text = text;
         file.raw = raw;
         file.dash = readDashboard(text, file.name);
         delete file.error;
+        // The files read again while this was being written: the list has an object with the text from before.
+        const at = (this.files ?? []).findIndex((x) => x.name === file.name);
+        if (at >= 0 && this.files[at] !== file) this.files[at] = file;
         // Widget ids are places in the list: after a change every widget asks again.
         for (const id of [...this.state.keys()]) if (id.startsWith(`${file.name}:`)) this.state.delete(id);
         this.poll(cx, true);
         then?.(cx);
       } catch (e) {
+        // A new dashboard that couldn't be written is not in the list.
+        if (file.text == null) this.files = (this.files ?? []).filter((x) => x !== file);
         this.editError = /stale|match|changed/i.test(String(e?.message ?? e)) ? `${file.name}.json changed on disk. Refresh, then change it again.` : `Couldn't save: ${String(e?.message ?? e).slice(0, 160)}`;
       }
       this.saving = false;
@@ -93,7 +99,16 @@ export const editor = {
     const cur = this.current();
     if (!cur) return;
     this.confirm = null;
-    try { this.save(cx, cur, edit(cur.raw, op), then); } catch (e) { this.editError = String(e?.message ?? e); cx.notify(); }
+    try {
+      const next = edit(cur.raw, op);
+      // Nothing changed (the first widget moved earlier, a width already at its end, settings saved as they were):
+      // the file is not rewritten.
+      if (JSON.stringify(next) === JSON.stringify(cur.raw)) { this.editError = null; then?.(cx); return cx.notify(); }
+      // The open settings form follows its widget when that one, or its neighbour, moves.
+      const f = this.form, i = op.move, j = i + (op.by < 0 ? -1 : 1);
+      const follow = "move" in op && f ? (cx) => { if (this.form === f) f.i = f.i === i ? j : f.i === j ? i : f.i; then?.(cx); } : then;
+      this.save(cx, cur, next, follow);
+    } catch (e) { this.editError = String(e?.message ?? e); cx.notify(); }
   },
 
   addWidget(cx, type) {
@@ -168,6 +183,7 @@ export const editor = {
   newDashboard(cx, title, from = null) {
     const t = String(title ?? "").trim();
     if (!t) { this.editError = "A dashboard needs a name"; return cx.notify(); }
+    if (this.saving) { this.editError = "Still saving the last change. Try again."; return cx.notify(); }
     const name = fileName(t, (this.files ?? []).map((x) => x.name)), raw = from ? { ...JSON.parse(JSON.stringify(from)), title: t.slice(0, 80) } : blank(t);
     this.naming = null;
     cx.spawn(async (cx) => {

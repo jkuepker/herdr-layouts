@@ -14,7 +14,7 @@ import { v_flex, h_flex, Editor, EditorState, InputState, Input, TextareaState, 
 import { spaces, panes, focused, exec, readTextFile, writeTextFile, watchFolder, theme, pickFolder, shared, setShared } from "herdr";
 import { tokens, alpha, icon, button, iconButton, shortPath } from "./look.js";
 import { fileIcon } from "./fileicons.js";
-import { chatPlace } from "./side.js";
+import { chatPlace, showing } from "./side.js";
 
 const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", cjs: "js", toml: "yaml", jsonc: "json", svelte: "html", vue: "html", yml: "yaml", htm: "html", markdown: "md", zsh: "sh", bash: "sh" };
 const PER_FOLDER = 500, TOTAL = 5000;
@@ -56,7 +56,9 @@ export function syntax() {
 }
 
 export class FilePanel {
-  init(_p, cx) {
+  init(p, cx) {
+    this.group = p?.group ?? "a";
+    this.stale = false;
     this.ctxs = new Map(); // "<machine>|<root>" -> what is open there
     this.ctx = null;
     this.roots = new Map(); // "<machine>|<cwd>" -> its repo's top folder
@@ -68,7 +70,8 @@ export class FilePanel {
     this.lineBox = TextareaState.new({ placeholder: "Text to insert after this line, or a note for the agent" });
     this.lineBox.set_auto_grow(1, 8);
     this.follow(cx);
-    cx.timer.every(10000, (cx) => this.refresh(cx));
+    // Lists the folder and asks git only while the tab shows; back in view, at once (render).
+    cx.timer.every(10000, (cx) => { if (showing(this.group, "files")) this.refresh(cx); else this.stale = true; });
   }
 
   close() {}
@@ -97,7 +100,8 @@ export class FilePanel {
       else if (!this.ctx.on) cx.spawn(async (cx) => {
         const dir = path.replace(/\/[^/]*$/, "") || "/";
         const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd: dir }).catch(() => null);
-        const base = top?.code === 0 && top.stdout.trim() ? top.stdout.trim() : dir;
+        // (Git names the repository by its real path: through a symlink it isn't the start of `path`, so the folder is taken.)
+        const base = top?.code === 0 && top.stdout.trim() && path.startsWith(top.stdout.trim() + "/") ? top.stdout.trim() : dir;
         this.pin(cx, base);
         this.open(cx, path.slice(base.length + 1));
         cx.notify();
@@ -174,8 +178,7 @@ export class FilePanel {
       try {
         for (;;) {
           await watchFolder(c.root);
-          c.files = null;
-          if (this.ctx === c) { this.refresh(cx); this.reread(cx, c); }
+          if (this.ctx === c) { this.refresh(cx); this.reread(cx, c); this.index(cx, true); } else c.files = null;
         }
       } catch { c.watched = false; }
     });
@@ -233,10 +236,13 @@ export class FilePanel {
     cx.notify();
   }
 
-  // Every file of the folder, for the search box: git's list where there is a repo.
-  index(cx) {
+  // Every file of the folder, for the search box: git's list where there is a repo. `again`: the folder
+  // changed, so the list is made anew; a search that is open keeps the old one until the new one is in.
+  index(cx, again = false) {
     const c = this.ctx;
-    if (!c || c.files || c.indexing || !this.search.value().trim()) return;
+    if (!c || c.indexing) return;
+    if (!this.search.value().trim()) { if (again) c.files = null; return; }
+    if (c.files && !again) return;
     c.indexing = true;
     cx.spawn(async (cx) => {
       try {
@@ -297,6 +303,8 @@ export class FilePanel {
           if (text === null) throw new Error("This file is no longer available.");
         }
         if (text.includes("\0")) throw new Error("Binary file: no text to show.");
+        // Closed while it loaded: an editor made now would never be released.
+        if (!c.tabs.includes(tab)) return;
         tab.saved = text;
         this.editorFor(tab, text);
       } catch (e) { tab.error = String(e?.message ?? e); }
@@ -341,10 +349,10 @@ export class FilePanel {
   }
 
   // Throws the edits away and reads the file again.
-  reload(cx, tab) {
+  reload(cx, c, tab) {
     cx.spawn(async (cx) => {
-      const text = await readTextFile(tab.abs, { on: this.ctx.on }).catch(() => null);
-      if (text != null) { tab.saved = text; tab.dirty = false; tab.conflict = null; tab.closing = false; tab.state?.set_value(text); }
+      const text = await readTextFile(tab.abs, { on: c.on }).catch(() => null);
+      if (text != null && c.tabs.includes(tab)) { tab.saved = text; tab.dirty = false; tab.conflict = null; tab.closing = false; tab.state?.set_value(text); }
       cx.notify();
     });
   }
@@ -355,7 +363,7 @@ export class FilePanel {
     if (!tab || !tab.state || tab.dirty || tab.note || tab.saving) return;
     cx.spawn(async (cx) => {
       const text = await readTextFile(tab.abs).catch(() => null);
-      if (text == null || text === tab.saved || tab.dirty || text.includes("\0")) return;
+      if (text == null || text === tab.saved || tab.dirty || text.includes("\0") || !c.tabs.includes(tab)) return;
       tab.saved = text;
       tab.state.set_value(text);
       cx.notify();
@@ -483,6 +491,7 @@ export class FilePanel {
 
   render(cx) {
     this.follow(cx);
+    if (this.stale) { this.stale = false; this.refresh(cx); }
     const k = tokens();
     const c = this.ctx;
     const root = v_flex().id("ht3-files").size_full().min_h(0).overflow_hidden().bg(k.background).text_color(k.foreground).text_size(12);
@@ -546,7 +555,7 @@ export class FilePanel {
       .when(c.on != null, (el) => el.child(banner(`Read-only: this space is on ${c.on}, and Herdr can only write files on this computer.`, k.muted)))
       .when(!!tab.note, (el) => el.child(banner(tab.note, k.warningText, alpha(k.warning, k.dark ? 0.16 : 0.08))))
       .when(!!tab.conflict, (el) => el.child(banner(tab.conflict, k.destructiveText, alpha(k.destructive, k.dark ? 0.16 : 0.08), [
-        button(k, "file-reload", "Reload", (cx) => this.reload(cx, tab)),
+        button(k, "file-reload", "Reload", (cx) => this.reload(cx, c, tab)),
         button(k, "file-overwrite", "Overwrite", (cx) => this.save(cx, tab, true), { variant: "destructive" })])))
       .when(tab.closing && tab.dirty && !tab.conflict, (el) => el.child(banner("This file has unsaved changes.", k.warningText, alpha(k.warning, k.dark ? 0.16 : 0.08), [
         button(k, "file-keep", "Keep editing", (cx) => { tab.closing = false; cx.notify(); }),

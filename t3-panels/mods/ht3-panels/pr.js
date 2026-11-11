@@ -98,14 +98,18 @@ export class PrPanel {
         const r = await exec("gh", args, { cwd, on, timeout: 25000 });
         if (this.seen !== seen) return;
         if (r.code !== 0) { this.data = null; this.problem = explain(r.stderr || r.stdout, this.branch, on); }
-        else { this.data = JSON.parse(r.stdout || "null"); this.problem = null; }
+        else {
+          this.data = JSON.parse(r.stdout || "null") ?? (this.linked ? [] : null);
+          this.problem = this.data ? null : { kind: "error", text: "gh answered with nothing." };
+        }
       } catch (e) {
         if (this.seen !== seen) return;
         this.data = null;
         this.problem = explain(e, this.branch, on);
         // A folder that is gone fails the same way as a missing gh.
         if (this.problem.kind === "missing" && (await exec("test", ["-d", cwd], { on }).catch(() => null))?.code === 1) this.problem = { kind: "folder", text: `The folder ${cwd} is gone.` };
-      } finally { this.loading = false; cx.notify(); }
+      // The folder or the branch changed while it asked: what came back was dropped, so it asks again (render).
+      } finally { this.loading = false; if (this.seen !== seen) this.stale = true; cx.notify(); }
     });
   }
 

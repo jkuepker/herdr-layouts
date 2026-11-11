@@ -225,8 +225,12 @@ export default class AcpChat extends View {
 
   async close(_cx) {
     if (this.overlay) return;
+    // Ends the folder watch's loop, and the lease with it.
+    this.closed = true;
     if (!DIRECT) {
-      if (this.alive) await exec("hc", ["kill", this.name]);
+      const alive = this.alive;
+      this.alive = false;
+      if (alive) await exec("hc", ["kill", this.name]);
       return;
     }
     if (!this.session) return;
@@ -300,13 +304,13 @@ export default class AcpChat extends View {
   watch(cx) {
     const dir = this.dir;
     cx.spawn(async (cx) => {
-      while (dir === this.dir) {
+      while (dir === this.dir && !this.closed) {
         try {
           await watchFolder(dir);
         } catch {
           await new Promise((done) => cx.timer.after(1000, done));
         }
-        if (dir === this.dir) await this.reload(cx);
+        if (dir === this.dir && !this.closed) await this.reload(cx);
       }
     });
   }

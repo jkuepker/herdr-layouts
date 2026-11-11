@@ -77,6 +77,9 @@ export class ChatSession {
   // `why`: how it ended, e.g. "code 1"; `stderr`: the end of what it wrote there.
   exited(why, stderr) {
     this.conn.close("agent exited");
+    // An approval the agent was waiting on has nobody to answer it now: its buttons would do nothing.
+    this.pendingPermission = null;
+    this.state.permission = null;
     if (this.state.status !== "stopped") {
       this.state.status = "exited";
       this.state.error = `The agent exited (${why}).` + (stderr?.trim() ? `\n\n${stderr.trim()}` : "");
@@ -172,7 +175,7 @@ export class ChatSession {
 
   // `blocks`: ACP content blocks sent after the text (resource links for mentioned files, images).
   // `opt.shown`: the message is in the transcript already; `opt.lead`: text put before it for the agent only;
-  // `opt.after`: it follows a turn that steer() ended, whose "working" still stands.
+  // `opt.after`: it follows a turn that steer() ended or waited for, whose "working" still stands.
   prompt(text, blocks = [], attachments = null, opt = {}) {
     const turn = this.turn(text, blocks, attachments, opt);
     this.inflight = turn;
@@ -185,6 +188,8 @@ export class ChatSession {
   async steer(text, blocks = [], attachments = null) {
     const state = this.state;
     if (!text.trim() && !blocks.length) return;
+    // One at a time: a second message waits until the first is on its way, then steers that turn.
+    while (this.steered || this.held) await this.inflight;
     if (state.status !== "working") return this.prompt(text, blocks, attachments);
     const from = state.transcript.items.findLastIndex((m) => m.kind === "user");
     const partial = state.transcript.items.slice(from + 1).filter((m) => m.kind === "agent").map((m) => m.text ?? "").join("\n\n").trim();
@@ -198,11 +203,14 @@ export class ChatSession {
       } catch (e) {
         addNotice(state.transcript, `The agent didn't take the message into its turn (${e.message}); it is sent as the next one.`, "warn");
       }
-      // The turn ended before the message got there: it is the next turn's message.
+      // The turn ended before the message got there: it is the next turn's message. Until it is sent the session
+      // stays "working" (turn), so nothing queued takes its place and leaves it shown but never sent.
+      this.held = true;
       await this.inflight;
+      this.held = false;
       const mine = state.transcript.items.findLast((m) => m.kind === "user" && m.steered);
       if (mine) delete mine.steered;
-      return this.prompt(text, blocks, attachments, { shown: true });
+      return this.prompt(text, blocks, attachments, { shown: true, after: true });
     }
     this.steered = true;
     this.answerPermission({ outcome: "cancelled" });
@@ -248,7 +256,7 @@ export class ChatSession {
     }
     endTurn(state.transcript);
     // A turn stopped by steer() stays "working": the steering message is on its way, and nothing queued may pass it.
-    if (state.status === "working" && !this.steered) state.status = "ready";
+    if (state.status === "working" && !this.steered && !this.held) state.status = "ready";
     this.changed(false);
   }
 

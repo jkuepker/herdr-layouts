@@ -1,17 +1,17 @@
-// The two popups of the side panel: the `+` menu of surfaces (RightPanelTabs.tsx's
+// The mod's popups. Two are the side panel's: the `+` menu of surfaces (RightPanelTabs.tsx's
 // AddSurfaceMenu: a row per surface with its icon, its name and its letter, which opens it while
-// the menu is open) and the project popover (the machine, its folder, the editor, the branch).
+// the menu is open) and the project popover (the machine, its folder, the editor, the branch, the
+// Git actions, the project's scripts). Three are the chat's and the lists': the right-click menu of
+// a message (Copy, Fork), of an Inbox card (Rename, Settle, Pin, …), and the question before a revert.
 
 import { div, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { closeOverlay, exec, run, appHome, shared, setShared, readTextFile, notify, spaces } from "herdr";
-import { chatLike } from "./agent-acp.js";
+import { closeOverlay, exec, hc, run, appHome, shared, setShared, readTextFile, notify, spaces } from "herdr";
+import { chatLike, forkChat } from "./agent-acp.js";
 import { toMarkdown } from "./transcript.js";
 import { agentName } from "./report.js";
-import { MOD, tokens, icon, iconButton, shortPath } from "./look.js";
-import { forkChat } from "./agent-acp.js";
+import { MOD, tokens, icon, button, iconButton, shortPath } from "./look.js";
 import { revertTo } from "./checkpoint.js";
-import { button } from "./look.js";
 import { editorOn } from "./settings.js";
 import { SURFACES, send, placeOf, activeSpace, surfaceOff, surfacesHere } from "./side.js";
 import { projectOf, scriptsOf, runScript } from "./scripts.js";
@@ -132,7 +132,7 @@ export class CopyMenu {
     const k = tokens();
     return v_flex().id("ht3-copy-menu").size_full().p(4).bg(k.popover).text_color(k.foreground).text_size(14)
       .track_focus(this.focus)
-      .on_key_down((e, cx) => this.key(e.key.toLowerCase(), cx))
+      .on_key_down((e, cx) => { if (!(e.modifiers?.platform || e.modifiers?.control || e.modifiers?.alt)) this.key(e.key.toLowerCase(), cx); })
       .child(h_flex().id("copy-row").h(28).px(8).gap(8).items_center().rounded(4).cursor_pointer().role("button").accessibility_label("Copy")
         .hover((s) => s.bg(k.accent)).on_click((_e, cx) => this.key("enter", cx))
         .child(icon("copy").size(16).flex_none().text_color(k.muted)).child(div().flex_1().child("Copy")))
@@ -190,6 +190,15 @@ export class ThreadMenu {
     if (key === "i" && this.p.address) {
       const pins = shared("agents.pins") ?? [], a = this.p.address;
       setShared("agents.pins", pins.includes(a) ? pins.filter((x) => x !== a) : [...pins, a]);
+      // A pin ends a snooze, as pinning in the Agents list does: a chat's is in the Inbox's shared labels, a terminal's is its label.
+      if (!pins.includes(a)) {
+        const cards = shared("ht3-inbox.cards") ?? {}, pane = a.replace(/^pane:/, "");
+        if (cards[pane]?.snoozed) {
+          const { snoozed: _woken, ...own } = cards[pane], next = { ...cards };
+          if (Object.keys(own).length) next[pane] = own; else delete next[pane];
+          setShared("ht3-inbox.cards", next);
+        } else if (!this.p.chat) hc(["label", a, "snoozed="]).catch(() => null);
+      }
       closeOverlay(this.overlay);
     }
     // Mark unread: the chat takes the mark and says "done" again (report.js `marked`).
@@ -215,7 +224,8 @@ export class ThreadMenu {
       .child(icon(glyph).size(16).flex_none().text_color(k.muted)).child(div().flex_1().child(label));
     return v_flex().id("ht3-thread-menu").size_full().p(4).bg(k.popover).text_color(k.foreground).text_size(14)
       .track_focus(this.focus)
-      .on_key_down((e, cx) => this.key(e.key.toLowerCase(), cx))
+      // A chord (Cmd+S, Cmd+N) is not a row's letter, as in the `+` menu.
+      .on_key_down((e, cx) => { if (!(e.modifiers?.platform || e.modifiers?.control || e.modifiers?.alt)) this.key(e.key.toLowerCase(), cx); })
       .when(this.naming, (el) => el.child(div().h(28).mt(14).mx(4).px(8).rounded(6).border(1).border_color(k.input).child(Input.new(this.field))))
       .when(!this.naming, (el) => el
         .child(row("thread-rename", "pen-line", "Rename thread", "r"))
@@ -277,10 +287,11 @@ export class RevertMenu {
 export class ProjectMenu {
   init(p, cx) {
     this.overlay = p.overlay;
-    const space = activeSpace();
+    const space = activeSpace(), at = placeOf(space);
     this.space = space;
-    this.on = space?.machine ?? null;
-    this.folder = placeOf(space).cwd;
+    // The folder's own machine: a pinned folder or a chat's may be on another one than the space.
+    this.on = at.on ?? null;
+    this.folder = at.cwd;
     this.root = null;
     this.machine = this.on ?? "This computer";
     this.editors = null;
@@ -485,6 +496,9 @@ export class ProjectMenu {
       if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim().split("\n").slice(0, 3).join(" "));
       this.branch = name;
       this.pick = null;
+      // Commit, Push and Create PR go by the branch that is checked out now.
+      this.changes = null;
+      await this.status();
     });
   }
 

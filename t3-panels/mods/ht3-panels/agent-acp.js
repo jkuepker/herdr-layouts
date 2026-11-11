@@ -106,10 +106,6 @@ export function argvOf(agent, found) {
   return a && found[a.argv[0]] ? [found[a.argv[0]], ...a.argv.slice(1)] : null;
 }
 
-// Fork a thread (useTimelineRewind.ts forkFromRun): a new chat tab on the same agent and folder that
-// starts with this chat's messages, all of them or those up to and with item `upto`. ACP has no
-// fork, so the new chat is a new session, told what was said with its first message (session.js
-// `handoff`). Reads the chat as it was last saved (at most a second old). -> the new chat's id, or null.
 // One question to an agent in a session of its own that is thrown away after: the agent is started as a chat's is
 // (login shell, the chat's folder), asked once, and ended. Nothing is saved, and the chat's own session never sees it.
 // `set`: options to set first, e.g. the chat's model, so the question goes where the chat's messages go.
@@ -128,7 +124,7 @@ export async function askOnce(argv, cwd, text, { set = null, timer = new Promise
       if (asked && session.state.status !== "working") done();
     } });
   let asked = false;
-  (async () => { for (let l; (l = await processNextLine(proc)) != null;) session.feed(l); done(); })();
+  (async () => { for (let l; (l = await processNextLine(proc)) != null;) session.feed(l); done(); })().catch(() => done());
   try {
     if (!(await Promise.race([session.start(), timer.then(() => false)]))) throw new Error(session.state.error ?? "The agent didn't start in time.");
     for (const [id, value] of Object.entries(set ?? {})) await session.setConfig(id, value);
@@ -157,6 +153,10 @@ export function chatLike(from, space = focused()?.space, prompt = null) {
   return true;
 }
 
+// Fork a thread (useTimelineRewind.ts forkFromRun): a new chat tab on the same agent and folder that
+// starts with this chat's messages, all of them or those up to and with item `upto`. ACP has no
+// fork, so the new chat is a new session, told what was said with its first message (session.js
+// `handoff`). Reads the chat as it was last saved (at most a second old). -> the new chat's id, or null.
 export async function forkChat(chatId, upto = null) {
   const root = `${appHome()}/data/ht3-panels/chats`;
   let old;

@@ -1,3 +1,4 @@
+// Changed from herdr-t3 (github.com/JinJieBeWater/herdr-t3, Apache-2.0) for T3 Panels: see NOTICE.
 import { focused, run, shared, setShared, props, notify, openOverlay } from "herdr";
 import { focusAgent, focusPane } from "./zoom.js";
 import { detailsFor } from "./details.js";

@@ -6,11 +6,11 @@ import { div } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { openOverlay } from "herdr";
 import { MOD, tokens, alpha, icon, agentMark, iconButton } from "./look.js";
-import { spaceState, activeSpace, surface, activate, send } from "./side.js";
+import { SURFACES, spaceState, activeSpace, surface, activate, send } from "./side.js";
 import { agentOf } from "./agent-acp.js";
 
-// The `+` menu: eight 28px rows and 4px around them.
-export const ADD_MENU = { w: 216, h: 9 * 28 + 8 };
+// The `+` menu: a 28px row per surface (side.js SURFACES) and 4px around them.
+export const ADD_MENU = { w: 216, h: SURFACES.length * 28 + 8 };
 const stop = (el) => el.on_mouse_down("left", (_e, cx) => cx.stop_propagation());
 
 export class Strip {

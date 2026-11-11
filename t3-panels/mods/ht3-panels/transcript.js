@@ -70,8 +70,6 @@ export function applyUpdate(t, u) {
   }
 }
 
-// A finished turn closes the open plan and stops agent text from merging into
-// the next turn's reply.
 // A thread as Markdown, to paste into an issue, a note or another agent: its name, where it ran, then what was
 // said in order. Tools are one line each, plans a checklist; thoughts and notices are left out.
 export function toMarkdown({ title, agent, cwd, branch, machine, items }) {
@@ -88,6 +86,8 @@ export function toMarkdown({ title, agent, cwd, branch, machine, items }) {
   return out.join("\n").replace(/\n{3,}/g, "\n\n") + "\n";
 }
 
+// A finished turn closes the open plan and stops agent text from merging into
+// the next turn's reply.
 export function endTurn(t) {
   for (const i of t.items) i.open = false;
 }

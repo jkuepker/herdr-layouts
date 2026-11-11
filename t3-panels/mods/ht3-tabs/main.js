@@ -1,3 +1,4 @@
+// Changed from herdr-t3 (github.com/JinJieBeWater/herdr-t3, Apache-2.0) for T3 Panels: see NOTICE.
 import { View, div, svg } from "gpui-kit";
 import { h_flex, Popup } from "gpui-base";
 import { spaces, panes, agents, terminals, run, openOverlay, focused, hc, notify, theme, window, layout, settings, props, shared, setShared, nextCommand } from "herdr";
@@ -6,7 +7,7 @@ import { notNews, ownStatus, stillSettled, subAgents, treeStatus } from "./tree.
 import { tip, glow } from "./tip.js";
 import { detailsFor, detailsAt, detailsWatch } from "./details.js";
 import { programIcon } from "./program.js";
-import { focusAgent } from "./zoom.js";
+import { focusAgent, focusPane } from "./zoom.js";
 import { stopsInit, stopsEnd, stop, focusRoot, within } from "./focus.js";
 import { sidebarParts } from "./sidebar.js";
 import { navigation } from "./navigation.js";
@@ -23,11 +24,10 @@ const cardRows = () => shared(inboxShown() ? "ht3-inbox.rows" : "ht3-agents.rows
 function awake(st, under, inbox) {
   const now = Date.now(), byAddress = new Map(terminals().map((k) => [k.address, k]));
   // A mod pane with a card (a chat) counts as its agent would; a kept one's labels are the Inbox's (ht3-inbox.cards).
-  const labels = shared("ht3-inbox.cards") ?? {};
   const cards = panes().filter((p) => p.mod && programOf(p)?.inbox && modStatus(p) != null).map((p) => {
-    const address = `pane:${p.pane}`;
-    byAddress.set(address, { address, labels: labels[p.pane] ?? {}, turn: shared(`${p.mod}.turns`)?.[p.tab] ?? 0 });
-    return { ...p, address, status: modStatus(p) };
+    const k = cardOf(p);
+    byAddress.set(k.address, k);
+    return { ...p, address: k.address, status: modStatus(p) };
   });
   return [...agents(), ...cards].filter((a) => {
     const k = byAddress.get(a.address), s = st(a);
@@ -35,6 +35,10 @@ function awake(st, under, inbox) {
     return s === "blocked" || (!stillSettled(k, a.status, under(a.address)) && !(Number(k?.labels?.snoozed) > now));
   });
 }
+
+// A chat's card has no terminal to hold its labels: the Inbox keeps them in shared("ht3-inbox.cards")[<pane>], and its
+// turns are what its mod counts. Read as an agent's terminal is (tree.js).
+const cardOf = (p) => ({ address: `pane:${p.pane}`, labels: shared("ht3-inbox.cards")?.[p.pane] ?? {}, turn: shared(`${p.mod}.turns`)?.[p.tab] ?? 0 });
 
 // "Needs you", drawn as the agents list and pane headers draw it.
 const blockedMark = (t) => div().size(14).flex_none().rounded(4).bg(t.blocked + "26").text_size(11).font_bold().text_color(t.blocked).flex().items_center().justify_center().child("!");
@@ -98,6 +102,14 @@ export default class Tabs extends View {
     });
   }
 
+  // A kept chat's labels, as the Inbox writes them (ht3-inbox setLabel): one write for all of `changes` ("" removes one).
+  writeCard(pane, changes) {
+    const cards = { ...(shared("ht3-inbox.cards") ?? {}) }, own = { ...(cards[pane] ?? {}) };
+    for (const [key, value] of Object.entries(changes)) { if (value) own[key] = value; else delete own[key]; }
+    if (Object.keys(own).length) cards[pane] = own; else delete cards[pane];
+    setShared("ht3-inbox.cards", cards);
+  }
+
   async writeLabel(address, key, value, quiet = false) {
     const r = await hc(["label", address, `${key}=${value}`]).catch(e => ({ code: 1, stderr: String(e) }));
     if (r.code === 0) return true;
@@ -114,8 +126,9 @@ export default class Tabs extends View {
     const at = order.indexOf(here);
     const address = order[to === "next" ? (at + 1) % n : to === "prev" ? (at < 0 ? n - 1 : (at - 1 + n) % n) : Number(to) - 1];
     if (!address) return;
-    if (address.startsWith("pane:")) run("pane.focus", { pane: address.slice(5) });
-    else run("agent.focus", { terminal: address });
+    // As a click on the card: a zoom in its tab goes to it first (zoom.js).
+    if (address.startsWith("pane:")) focusPane(address.slice(5));
+    else focusAgent(address);
   }
 
   async settle(cx) {
@@ -125,13 +138,17 @@ export default class Tabs extends View {
     if (p?.mod && programOf(p)?.inbox) {
       const busy = ["working", "blocked"].includes(modStatus(p));
       // A pane its mod keeps (a chat: closing it would end its agent) is settled as the Inbox settles its card, in
-      // shared("ht3-inbox.cards"), and stays open; the key again brings it back.
+      // shared("ht3-inbox.cards"), and stays open; the key again brings it back. Settling ends its snooze and its pin
+      // and can be undone, as an agent's.
       if (programOf(p).keep) {
-        const cards = { ...(shared("ht3-inbox.cards") ?? {}) }, own = { ...(cards[p.pane] ?? {}) };
-        if (own.settled) delete own.settled;
-        else if (!busy) { own.settled = `${Date.now()}:${shared(`${p.mod}.turns`)?.[p.tab] ?? 0}`; delete own.snoozed; }
-        if (Object.keys(own).length) cards[p.pane] = own; else delete cards[p.pane];
-        setShared("ht3-inbox.cards", cards);
+        const address = `pane:${p.pane}`, own = shared("ht3-inbox.cards")?.[p.pane] ?? {};
+        if (own.settled) this.writeCard(p.pane, { settled: "" });
+        else if (!busy) {
+          this.writeCard(p.pane, { settled: `${Date.now()}:${shared(`${p.mod}.turns`)?.[p.tab] ?? 0}`, snoozed: "" });
+          const pins = shared("agents.pins") ?? [];
+          if (pins.includes(address)) setShared("agents.pins", pins.filter(x => x !== address));
+          this.remember("Settled", { address, snoozed: own.snoozed ?? "", pins }, cx);
+        }
       } else if (!busy) await this.navigation.handle(`close-pane-now:${p.pane}`, cx);
       return;
     }
@@ -196,7 +213,10 @@ export default class Tabs extends View {
     let back;
     const failed = [];
     for (const u of [...n.undos].reverse()) {
-      if (n.action !== "Unpinned") {
+      // A chat's card: its labels are shared state, written at once, and it never left the screen.
+      if (n.action !== "Unpinned" && u.address.startsWith("pane:")) {
+        this.writeCard(u.address.slice(5), { settled: "", ...(Number(u.snoozed) > Date.now() ? { snoozed: u.snoozed } : {}) });
+      } else if (n.action !== "Unpinned") {
         if (!await this.writeLabel(u.address, "settled", "")) { failed.unshift(u); continue; }
         back = u.address;
         if (Number(u.snoozed) > Date.now()) await this.writeLabel(u.address, "snoozed", u.snoozed);
@@ -311,7 +331,7 @@ export default class Tabs extends View {
     const ps = panes(), tabName = namer();
     // The tab's most urgent agent, ranked as the app ranks tabs; a done one only while it's still news.
     const statusOf = (c) => {
-      const words = [...every.filter(a => a.tab === c.id).map(a => st(a) === "done" && notNews(all.find(k => k.address === a.address), a.status, under(a.address)) ? "idle" : st(a)), ...ps.filter(p => p.tab === c.id && p.mod).map(p => modStatus(p))];
+      const words = [...every.filter(a => a.tab === c.id).map(a => st(a) === "done" && notNews(all.find(k => k.address === a.address), a.status, under(a.address)) ? "idle" : st(a)), ...ps.filter(p => p.tab === c.id && p.mod).map(p => modStatus(p) === "done" && notNews(cardOf(p), "done", []) ? "idle" : modStatus(p))];
       return words.includes("blocked") ? "blocked"
         : words.includes("done") ? "done"
         : words.includes("working") ? "working" : null;

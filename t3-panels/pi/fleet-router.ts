@@ -16,7 +16,9 @@ const DOWN_FOR_MS = 60_000;
 const PROBE_MS = 1500;
 const HEADROOM = 8192; // tokens kept free for the answer
 
-const order = (process.env.FLEET_ROUTER_ORDER?.split(",").map((s) => s.trim()).filter(Boolean)) ?? DEFAULT_ORDER;
+// An unset or empty FLEET_ROUTER_ORDER means the list above.
+const fromEnv = (process.env.FLEET_ROUTER_ORDER ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+const order = fromEnv.length ? fromEnv : DEFAULT_ORDER;
 const seen = new Map<string, { up: boolean; until: number }>();
 
 function split(ref: string) {
@@ -98,14 +100,18 @@ export default function (pi: ExtensionAPI) {
 
       const tried: string[] = [];
       for (const ref of order) {
+        if (ref.indexOf("/") < 1) { tried.push(`${ref} (not "provider/model-id")`); continue; }
         const { provider, id } = split(ref);
         const model = ctx?.modelRegistry?.find(provider, id);
-        if (!model || !model.baseUrl || model.baseUrl === skip) { tried.push(`${ref} (skipped)`); continue; }
+        if (!model) { tried.push(`${ref} (pi has no such model)`); continue; }
+        if (!model.baseUrl) { tried.push(`${ref} (no baseUrl)`); continue; }
+        if (model.baseUrl === skip) { tried.push(`${ref} (just failed)`); continue; }
         if (!fits(model)) { tried.push(`${ref} (context ${model.contextWindow} < ${need})`); continue; }
         if (await isUp(model.baseUrl, request.signal)) return { model, thinkingLevel: level };
         tried.push(`${ref} (down)`);
       }
-      throw new Error(`fleet/auto: no fleet model is up. Tried ${tried.join(", ")}`);
+      throw new Error(`fleet/auto: no model to answer. Tried ${tried.join(", ")}. ` +
+        "Set FLEET_ROUTER_ORDER (or DEFAULT_ORDER in fleet-router.ts) to names from `pi --list-models`.");
     },
   });
 }

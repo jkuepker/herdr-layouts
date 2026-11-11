@@ -1,3 +1,4 @@
+// Changed from herdr-t3 (github.com/JinJieBeWater/herdr-t3, Apache-2.0) for T3 Panels: see NOTICE.
 // What a terminal is on, one rule for Inbox cards, the agents list, tabs and pane headers:
 // its Pi session while Pi runs, then (agents only) a tab someone named, then a telling terminal title, else the program.
 // A tab's name is its one agent's: with two in the tab, or for a sub-agent, it would name them alike, as Herdr's agents list stopped doing.

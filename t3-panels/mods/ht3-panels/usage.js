@@ -166,7 +166,7 @@ export class Usage {
       return h_flex().h(40).px(12).gap(10).items_center().when(c.id === this.here, (el) => el.bg(alpha(k.accent, 0.6)))
         .child(v_flex().flex_1().min_w(0)
           .child(div().truncate().text_size(13).child(c.title))
-          .child(div().truncate().text_size(11).text_color(k.muted).child(`${c.agent} · ${c.machine ? `${c.machine}:` : ""}${shortPath(c.cwd) ?? "~"} · ${ago(c.at)}`)))
+          .child(div().truncate().text_size(11).text_color(k.muted).child(`${c.agent} · ${c.machine ? `${c.machine}:` : ""}${shortPath(c.cwd) || "~"} · ${ago(c.at)}`)))
         .child(cell(`${c.turns} turn${c.turns === 1 ? "" : "s"}`, 56))
         .child(cell(tk ? `${short(tk.input ?? tk.total)} / ${short(tk.output)}` : "–", 84, tk ? k.foreground : k.muted))
         .child(meter(s))

@@ -20,11 +20,14 @@ async function fromStatic(s) {
 // { query, range, step } to bring `<name>_points` too). url: the server (default: the dashboard's "prometheus",
 // else http://localhost:9090). Asked through curl, a GET-like POST of the query only.
 async function fromPrometheus(s, ctx) {
-  const base = String(s.url ?? ctx.prometheus ?? "http://localhost:9090").replace(/\/+$/, "");
+  const given = String(s.url ?? ctx.prometheus ?? "http://localhost:9090").trim().replace(/\/+$/, "");
+  // Only a web address goes to curl as one (not an option, not a file:// path); "localhost:9090" reads as http://.
+  const base = /^[a-z][a-z0-9+.-]*:\/\//i.test(given) ? given : `http://${given}`;
+  if (!/^https?:\/\//i.test(base)) throw new Error(`A Prometheus server's address starts with http:// or https://, not "${given.slice(0, 60)}"`);
   const one = async (q) => {
     const query = typeof q === "string" ? q : q?.query, range = seconds((typeof q === "object" ? q.range : null) ?? s.range, 0);
     if (!query) throw new Error('A "prometheus" source needs "query" or "queries"');
-    const args = ["-sS", "-m", "10", "--data-urlencode", `query=${query}`];
+    const args = ["-sS", "-g", "-m", "10", "--data-urlencode", `query=${query}`];
     if (range > 0) {
       const end = Math.floor(Date.now() / 1000), step = Math.max(1, Math.round(seconds((typeof q === "object" ? q.step : null) ?? s.step, Math.ceil(range / 60))));
       args.push("--data-urlencode", `start=${end - range}`, "--data-urlencode", `end=${end}`, "--data-urlencode", `step=${step}`);
@@ -64,7 +67,8 @@ async function fromHttp(s) {
   if (!/^https?:\/\//i.test(String(s.url ?? ""))) throw new Error('An "http" source needs a "url" that starts with http:// or https://');
   const t = Math.min(60, Math.max(1, seconds(s.timeout, 10)));
   const heads = Object.entries(s.headers ?? {}).flatMap(([k, v]) => ["-H", `${k}: ${v}`]);
-  const r = await exec("curl", ["-sS", "-f", "-L", "-m", String(t), ...heads, String(s.url)], { timeout: (t + 5) * 1000 });
+  // -g: braces and brackets in the address are the address's own, not curl's ranges of several.
+  const r = await exec("curl", ["-sS", "-g", "-f", "-L", "-m", String(t), ...heads, String(s.url)], { timeout: (t + 5) * 1000 });
   if (r.code !== 0) throw new Error(`${s.url}: ${first(r.stderr) || `curl exited ${r.code}`}`);
   return parse(r.stdout, s.parse);
 }
@@ -91,7 +95,10 @@ async function fromFleetq() {
   }
   if (!r) throw new Error(missing ? "Needs fleetq, which isn't installed here (looked on PATH and in ~/.local/bin)" : "fleetq didn't start");
   if (r.code !== 0) throw new Error(`fleetq: ${first(r.stderr) || first(r.stdout) || `exited ${r.code}`}`);
-  const d = JSON.parse(r.stdout), now = d.now ?? Date.now() / 1000;
+  let d;
+  try { d = JSON.parse(r.stdout); } catch { throw new Error(`fleetq status --json printed something that isn't JSON: ${first(r.stdout) || "nothing"}`); }
+  if (!d || typeof d !== "object") throw new Error("fleetq status --json printed no status");
+  const now = d.now ?? Date.now() / 1000;
   const jobs = new Map(), services = [];
   const hosts = (d.hosts ?? []).map((h) => {
     const free = h.actual_free_gb ?? h.free_gb ?? null, list = h.services ?? [];

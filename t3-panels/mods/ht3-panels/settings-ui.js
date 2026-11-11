@@ -53,7 +53,7 @@ export class Settings {
     if (what === "agent") this.flipAgent(rest);
     else if (what === "default") this.setDefault(rest);
     else if (what === "models") this.open = this.open === rest ? null : rest;
-    else if (what === "model") { const at = rest.indexOf("="); this.flipModel(rest.slice(0, at), rest.slice(at + 1)); }
+    else if (what === "model") { const at = rest.indexOf("="); if (at > 0) this.flipModel(rest.slice(0, at), rest.slice(at + 1)); }
     else if (what === "allmodels") setPref(`agents.${rest}.models`, undefined);
     else if (what === "editor") setPref(`editors.${rest}`, editorOn(rest) ? false : undefined);
     else if (what === "side") this.flipSide();
