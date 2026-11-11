@@ -68,6 +68,23 @@ export function prune() {
   put(PLACES, Object.fromEntries(Object.entries(places).filter(([, at]) => tabs.has(at.tab))));
 }
 
+// A chat started in the background (chat.js sendNew) is never drawn in front for long enough to count on, so the
+// chat that started it says where it is. `known`: the mod's panes from before it was made (paneIds). The one pane
+// that is new and no chat's is the new chat's: kept in the places, where its Reporter finds it (place) without
+// being drawn. -> { pane, tab }, or null while it isn't listed yet (or two are new: then each waits to be drawn).
+export const paneIds = () => new Set(panes().filter((p) => p.mod === MOD).map((p) => p.pane));
+export const tabIds = () => tabsNow();
+export function placeNew(chat, known) {
+  const places = shared(PLACES) ?? {};
+  if (places[chat]) return places[chat];
+  const taken = new Set(Object.values(places).map((at) => at.pane));
+  const fresh = panes().filter((p) => p.mod === MOD && !known.has(p.pane) && !taken.has(p.pane));
+  if (fresh.length !== 1) return null;
+  const at = { pane: fresh[0].pane, tab: fresh[0].tab };
+  setShared(PLACES, { ...places, [chat]: at });
+  return at;
+}
+
 // One chat's reports. `chat`: its id (props.chat).
 export class Reporter {
   constructor(chat) {
@@ -80,6 +97,7 @@ export class Reporter {
     this.where = null; // { branch, machine }: where its agent works
     this.turn = null;
     this.drawnAt = 0;
+    this.fresh = false; // its place was taken in this run, not known from before: a pane new to the chat (a reopened chat's)
   }
 
   // The chat was drawn just now. Only shown panes draw, so a chat that is drawn is in the shown tab.
@@ -89,17 +107,20 @@ export class Reporter {
 
   // Its pane and tab. props() doesn't name them: the place it was last seen at, else, right after it was
   // drawn, the one chat pane of the shown tab that no chat has. A chat in a hidden tab never takes a place
-  // (it could only take another chat's), and two unplaced chats in one tab wait. False until known.
+  // (it could only take another chat's) unless the chat that started it gave it one (placeNew), and two
+  // unplaced chats in one tab wait. False until known.
   place() {
     const ps = panes();
     const here = this.pane && ps.find((p) => p.pane === this.pane && p.mod === MOD);
     if (here) { this.move(here.tab); return true; }
     const places = shared(PLACES) ?? {}, taken = new Set(Object.entries(places).filter(([c]) => c !== this.chat).map(([, at]) => at.pane));
     const f = focused();
-    const p = ps.find((x) => x.pane === places[this.chat]?.pane && x.mod === MOD)
+    const known = ps.find((x) => x.pane === places[this.chat]?.pane && x.mod === MOD);
+    const p = known
       ?? (Date.now() - this.drawnAt < 1000 ? ps.find((x) => x.mod === MOD && x.tab === f?.tab && !taken.has(x.pane)
         && ps.filter((y) => y.mod === MOD && y.tab === x.tab && !taken.has(y.pane)).length === 1) : null);
     if (!p) return false;
+    this.fresh = !known;
     this.pane = p.pane;
     this.move(p.tab);
     if (!same(places[this.chat], { pane: p.pane, tab: p.tab })) setShared(PLACES, { ...places, [this.chat]: { pane: p.pane, tab: p.tab } });

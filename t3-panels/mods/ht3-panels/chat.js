@@ -13,7 +13,7 @@ import { run, openOverlay, appHome, home, exec, layout, settings, shared, setSha
 import { MOD, tokens, alpha, icon, agentMark, button, iconButton, control, badge, workLine, divider, shortPath } from "./look.js";
 import { AcpSource, detect, argvOf, forkChat, agentOf, chatLike, askOnce } from "./agent-acp.js";
 import { TermSource } from "./agent-term.js";
-import { Reporter } from "./report.js";
+import { Reporter, paneIds, tabIds, placeNew } from "./report.js";
 import { fileIcon } from "./fileicons.js";
 import { snapshot, turnStat, undoRevert, prune, chatsWithRefs, safe as refName, KEEP } from "./checkpoint.js";
 import { checkpointsOn, followUp, limitModels, rememberModels, prefs } from "./settings.js";
@@ -148,9 +148,27 @@ function chipsOf(q, cwd) {
   return out.sort((a, b) => a.range.start - b.range.start);
 }
 
+// An attached file as it is kept (a queued message, a parked draft, a new chat's first message), and back from there.
+const fileOf = (a) => ({ name: a.name, path: a.path, image: a.image === true, type: a.type ?? null, thumb: a.thumb ?? null });
+const filesFrom = (list) => (Array.isArray(list) ? list : []).filter((a) => a?.path).slice(0, ATTACH_MAX)
+  .map((a) => { const name = a.name ?? String(a.path).split("/").pop(); return { ...fileOf({ ...a, name }), type: a.type ?? IMAGE_TYPES[String(name).split(".").pop().toLowerCase()] ?? null }; });
+// The chips of `tokens` that sit whole in the first `len` characters of their text.
+const chipsWithin = (tokens, len) => (tokens ?? []).filter((t) => t?.range && t.range.start >= 0 && t.range.end <= len);
+
+// A new chat's first message from its props (agent-acp.js chatLike): `prompt`, its text, and `draft`, what came with
+// it from the message box it was typed in ({ blocks, tokens, files }: its "@" files and attachments). -> a message, or null.
+export function firstMessage(p) {
+  const text = String(p?.prompt ?? "").trim(), d = p?.draft ?? {}, files = filesFrom(d.files);
+  if (!text && !files.length) return null;
+  return { text, blocks: Array.isArray(d.blocks) ? d.blocks : [], files, tokens: Array.isArray(d.tokens) ? d.tokens : [] };
+}
+
 // The prompt stash (T3's ComposerStashMenu): drafts parked to come back to, per project.
-// shared("ht3-panels.stash"): { "<machine or empty>:<project folder>": [{ text, at }] }, newest first, at most 20.
+// shared("ht3-panels.stash"): { "<machine or empty>:<project folder>": [{ text, at, tokens?, files? }] }, newest first,
+// at most 20. `tokens`: the draft's "@" chips ({ range, token }, as a queued message's); `files`: what was attached to it.
 const STASH = `${MOD}.stash`;
+// How long after a background chat was made it may still step back from in front (init `back`).
+const BACK_MS = 5000;
 const since = (ms) => { const m = Math.max(0, Math.round((Date.now() - ms) / 60000)); return m < 1 ? "just now" : m < 60 ? `${m}m ago` : m < 1440 ? `${Math.round(m / 60)}h ago` : `${Math.round(m / 1440)}d ago`; };
 
 // A project's badge, as T3's sidebar and header: two letters of its name ("fleetq" FL, "herdr-layouts" HL).
@@ -177,6 +195,9 @@ export class ChatPanel {
     // A chat tab's agent has no terminal: it tells the layout's lists how it is itself (report.js).
     // A side chat is no tab, and a terminal agent's chat has its terminal to speak for it.
     this.reporter = this.chatId && !p.terminal && !p.side ? new Reporter(this.chatId) : null;
+    // Started in the background (sendNew): this copy began because its new tab was shown. It takes its place and
+    // shows the tab it came from again, at once.
+    if (this.reporter && p.back?.tab && Date.now() - Number(p.back.at) < BACK_MS) this.stepBack(cx, p.back.tab);
 
     this.turnAt = null; // when the running turn of an ACP agent began
     this.hint = HINT;
@@ -220,7 +241,9 @@ export class ChatPanel {
         this.phase = "chat";
         // A new chat's first message (a `prompt` prop: send as new chat, New chat on this branch) goes the way every
         // message does, as the first of the queue, sent once the agent is up: so its turn has a checkpoint too.
-        if (argv && p.prompt && !this.queue?.length) { this.queue = [{ text: String(p.prompt), blocks: [], files: [], tokens: [] }]; this.keepQueue(); }
+        // What was attached and named with "@" in the box it was typed in comes along (`draft`).
+        const first = firstMessage(p);
+        if (argv && first && !this.queue?.length) { this.queue = [first]; this.keepQueue(); }
         if (argv) src.start(cx, argv, p.cwd ?? d.found.HOME ?? home(), null, p.set ?? null);
         else src.startError = d.error ?? `${Array.isArray(p.agent) ? p.agent[0] : p.agent ?? "The agent"} isn't installed.`;
         cx.notify();
@@ -251,8 +274,9 @@ export class ChatPanel {
       if (qt && qt.at !== this.quoteSeen) {
         this.quoteSeen = qt.at;
         if (qt.tab && qt.tab === this.reporter?.tab && Date.now() - qt.at < 10000) {
-          const now = this.input.value().replace(/\s+$/, "");
-          this.input.set_value(`${now ? `${now}\n\n` : ""}${qt.text}\n`);
+          // What is in the box stays as it is, its "@" chips too: the block goes after it.
+          const had = this.input.content(), now = String(had.text ?? "").replace(/\s+$/, "");
+          this.input.set_value({ text: `${now ? `${now}\n\n` : ""}${qt.text}\n`, tokens: chipsWithin(had.tokens, now.length) });
           this.hasText = true;
           this.input.focus();
           cx.notify();
@@ -271,6 +295,7 @@ export class ChatPanel {
       // A finished turn nobody saw is "done" until its tab is looked at.
       if (this.reporter?.tab) this.reporter.seen();
       else this.report();
+      this.termSync(cx);
     });
   }
 
@@ -474,7 +499,8 @@ export class ChatPanel {
       return cx.notify();
     }
     if (item.local && !item.args) {
-      this.input.set_value(before);
+      // The command's word goes; what was typed before it stays, with its "@" chips.
+      this.input.set_value({ text: before, tokens: chipsWithin(this.input.content().tokens, before.length) });
       this.hasText = !!before.trim();
       if (item.name === "model") { const o = this.view?.options.find((x) => (x.category ?? x.id) === "model"); if (o) { this.picker = o.id; this.filter.set_value(""); if (o.choices.length > 8) this.filter.focus(); } }
       if (item.name === "side") run(`${MOD}.add:chat`);
@@ -486,7 +512,7 @@ export class ChatPanel {
       if (item.name === "branch" && this.source.kind === "acp" && this.source.state) chatLike(this.source.state);
       if (item.name === "terminal") this.toggleTerminal(cx);
       if (item.name === "title") this.retitle(cx);
-      if (item.name === "send-new" || item.name === "send-background") return this.sendNew(cx, item.name === "send-background", before);
+      if (item.name === "send-new" || item.name === "send-background") return this.sendNew(cx, item.name === "send-background");
       // With a draft before "/stash" it is parked; alone, the parked drafts open.
       if (item.name === "stash") { if (before.trim()) this.stash(cx); else this.picker = "__stash"; }
     } else {
@@ -684,6 +710,7 @@ export class ChatPanel {
     this.drain(cx);
     this.asking(cx);
     this.pinSync();
+    this.termSync(cx);
     const draw = (cx) => {
       cx.notify();
     };
@@ -752,7 +779,7 @@ export class ChatPanel {
   }
 
   keepQueue() {
-    keep(this.chatId, { queue: (this.queue ?? []).map((q) => ({ text: q.text, blocks: q.blocks, ...(Array.isArray(q.tokens) ? { tokens: q.tokens } : {}), files: q.files.map((a) => ({ name: a.name, path: a.path, image: a.image, type: a.type ?? null, thumb: a.thumb })) })) });
+    keep(this.chatId, { queue: (this.queue ?? []).map((q) => ({ text: q.text, blocks: q.blocks, ...(Array.isArray(q.tokens) ? { tokens: q.tokens } : {}), files: q.files.map(fileOf) })) });
   }
 
   // A queued message's buttons: steer (it goes in now), up and down (its place), edit (back into the message box), drop.
@@ -1039,38 +1066,98 @@ export class ChatPanel {
   toggleTerminal(cx) {
     const pane = this.reporter?.pane, me = pane ? panes().find((p) => p.pane === pane) : null;
     if (!me) return;
-    if (!this.terminals().length) {
-      const cwd = this.view?.cwd ?? this.source.state?.cwd;
-      run("pane.focus", { pane });
-      run("terminal.open", { place: "down", name: "Terminal", ...(cwd ? { folder: cwd } : {}) });
-    } else {
+    if (!this.terminals().length) this.openTerminal(pane);
+    else {
       // Zoomed on the chat: the terminal is hidden. Otherwise it shows, and the toggle hides it.
       run("pane.zoom", { pane });
       if (me.zoomed) { const t = this.terminals()[0]; if (t) cx.timer.after(60, () => run("pane.focus", { pane: t.pane })); }
     }
     cx.notify();
   }
+  openTerminal(pane) {
+    const cwd = this.view?.cwd ?? this.source.state?.cwd;
+    run("pane.focus", { pane });
+    run("terminal.open", { place: "down", name: "Terminal", ...(cwd ? { folder: cwd } : {}) });
+  }
+
+  // The chat's terminal outlives its tab as a note: the chat keeps that it has one (kept `term`, by chat id), and a
+  // chat reopened from Earlier chats, in a new pane with none, gets one again in its folder, once its tab is the shown
+  // one (a split is made in the focused tab). The keyboard goes back to the chat. A pane that was there before (a
+  // reload, the app started again) still has its terminal and opens nothing. From the chat's timer and its changes.
+  termSync(cx) {
+    const r = this.reporter, pane = r?.pane;
+    if (!pane || !this.chatId || this.source?.kind !== "acp" || !this.source.state) return;
+    // Its pane is gone or not listed (the tab is closing, the app is starting): nothing is known, nothing is noted.
+    if (!panes().some((p) => p.pane === pane)) return;
+    const has = this.terminals().length > 0, kept = keptOf(this.chatId).term === true;
+    if (this.termFor !== pane) {
+      // A place just taken, not one known from before: this pane is new to the chat.
+      if (kept && !has && r.fresh && this.termBack == null) this.termBack = Date.now();
+      this.termFor = pane;
+    }
+    if (this.termBack != null) {
+      if (has) this.termBack = null;
+      // A moment after it is placed, so a terminal that is only late to be listed isn't opened twice; then as soon as its tab shows.
+      else if (Date.now() - this.termBack >= 400 && focused()?.tab === r.tab) {
+        this.termBack = null;
+        this.openTerminal(pane);
+        cx.timer.after(150, () => { if (focused()?.tab === r.tab) { run("pane.focus", { pane }); this.input.focus(); } });
+      }
+      return;
+    }
+    // Gone is believed once it has stayed gone for a while: a split takes a moment to be listed, and a tab that is
+    // closing may lose its terminal a moment before its chat.
+    if (has || !kept) this.termGone = null; else this.termGone ??= Date.now();
+    if (has !== kept && (has || Date.now() - this.termGone > 2500)) keep(this.chatId, { term: has });
+  }
 
   // T3's composer.sendAndNewThread and composer.sendBackground: the draft is not sent here. It becomes the first
-  // message of a new chat with this one's agent, in this one's folder. In the background the new chat's tab is made
-  // and this one is shown again at once; a toast says it started.
-  sendNew(cx, background, draft = null) {
-    const text = (draft ?? this.input.value()).trim(), s = this.source.kind === "acp" ? this.source.state : null;
-    if (!text || !s) return;
-    const here = this.reporter?.tab ?? focused()?.tab;
-    if (!chatLike(s, focused()?.space, text)) return;
+  // message of a new chat with this one's agent, in this one's folder, whole: its text, its "@" files and what was
+  // attached to it. In the background the new chat's tab is made, the new chat steps back from in front as soon as it
+  // has started (stepBack) and this chat places it (report.js placeNew); a toast says it started.
+  sendNew(cx, background) {
+    const s = this.source.kind === "acp" ? this.source.state : null;
+    if (!s) return;
+    const m = this.boxMessage(this.view ?? this.source.view());
+    if (!m.text && !m.files.length) return;
+    const here = this.reporter?.tab ?? focused()?.tab, known = paneIds(), tabs = tabIds();
+    const id = chatLike(s, focused()?.space, { text: m.text, blocks: m.blocks, tokens: m.tokens, files: m.files.map(fileOf) }, background && here ? { back: { tab: here, at: Date.now() } } : null);
+    if (!id) return;
     this.input.set_value("");
+    this.attached = [];
     this.hasText = false;
     this.trig = null;
-    // A new chat starts from text alone: files attached to the draft stay here, and are said to.
-    if (this.attached?.length) notify({ title: "Attached files stay here", body: "The new chat got the text only.", level: "warning", timeout: 4000 });
     if (background) {
-      // The new chat learns its pane by being drawn in the shown tab (report.js `place`), so it gets a moment in front
-      // before this tab is shown again; without it its card would have no name or state until it is looked at.
-      if (here) cx.timer.after(450, () => run("tab.select", { id: here }));
-      notify({ title: "Started in the background", body: text.split("\n")[0].slice(0, 120), level: "info", timeout: 3000 });
+      // A copy starts when it first shows, so the new tab is in front until its chat has started: a frame or two.
+      // This chat says which pane is the new one's, so it has its name and state in the lists without being drawn,
+      // and takes the keyboard back. Should the new chat not step back by itself, this one shows its tab again.
+      const began = Date.now(), mine = this.reporter?.pane;
+      const watch = (cx) => {
+        if (this.closed) return;
+        const at = placeNew(id, known), now = focused()?.tab, age = Date.now() - began;
+        if (here && now && now !== here && age > 400 && (at ? now === at.tab : !tabs.has(now))) run("tab.select", { id: here });
+        if (here && at && now === here) { if (mine) run("pane.focus", { pane: mine }); this.input.focus(); return cx.notify(); }
+        if (age < 3000) cx.timer.after(16, watch);
+      };
+      cx.timer.after(0, watch);
+      notify({ title: "Started in the background", body: (m.text.split("\n")[0] || m.files.map((a) => a.name).join(", ")).slice(0, 120), level: "info", timeout: 3000 });
     }
     cx.notify();
+  }
+
+  // A chat started in the background, as its copy begins (its tab was just shown for that): it takes its place, the
+  // one chat pane of the shown tab that no chat has, and shows the tab it was sent from again. Not placed within a
+  // fifth of a second, it goes back all the same.
+  stepBack(cx, tab) {
+    let n = 0;
+    const go = (cx) => {
+      if (this.closed) return;
+      this.reporter.drawn();
+      const placed = this.reporter.place();
+      if (placed ? focused()?.tab === this.reporter.tab : ++n >= 12) return void run("tab.select", { id: tab });
+      if (!placed) cx.timer.after(16, go);
+    };
+    go(cx);
   }
 
   // "/copy": the whole thread as Markdown on the clipboard (transcript.js `toMarkdown`), said by a toast.
@@ -1460,24 +1547,39 @@ export class ChatPanel {
     if (list.length) all[key] = list.slice(0, 20); else delete all[key];
     setShared(STASH, all);
   }
-  // Parks what is in the message box (its text; files attached to it stay where they are) and empties the box.
+  // What is in the message box as a parked draft: its text, its "@" chips and the files attached to it.
+  // `cut`: a word at its end that isn't part of it ("/stash" typed and sent by hand).
+  boxDraft(cut = null) {
+    const m = this.boxMessage(this.view ?? this.source.view());
+    const text = cut ? m.text.replace(cut, "").trimEnd() : m.text, tokens = chipsWithin(m.tokens, text.length), files = m.files.map(fileOf);
+    if (!text && !files.length) return null;
+    return { text, at: Date.now(), ...(tokens.length ? { tokens } : {}), ...(files.length ? { files } : {}) };
+  }
+  // Parks what is in the message box, whole (text, "@" chips, attached files), and empties the box.
   stash(cx) {
-    const text = this.input.value().replace(/\/stash\s*$/, "").trim();
-    if (!text) return;
-    this.putStash([{ text, at: Date.now() }, ...this.stashed().filter((d) => d.text !== text)]);
+    const d = this.boxDraft(/\/stash\s*$/);
+    if (!d) return;
+    const same = (x) => x.text === d.text && JSON.stringify((x.files ?? []).map((a) => a.path)) === JSON.stringify((d.files ?? []).map((a) => a.path));
+    this.putStash([d, ...this.stashed().filter((x) => !same(x))]);
     this.input.set_value("");
+    this.attached = [];
     this.hasText = false;
     this.trig = null;
     cx.notify();
   }
-  // Brings the nth parked draft back into the box and takes it off the stash; a draft in the box changes places with it.
+  // Brings the nth parked draft back into the box, with its chips and files, and takes it off the stash; a draft in
+  // the box changes places with it. A terminal agent's chat takes no files: those stay parked, and a toast says so.
   unstash(cx, i) {
     const list = this.stashed(), d = list[i];
     if (!d) return;
-    const now = this.input.value().trim();
-    this.putStash([...(now ? [{ text: now, at: Date.now() }] : []), ...list.filter((_d, n) => n !== i)]);
-    this.input.set_value(d.text);
-    this.hasText = true;
+    const now = this.boxDraft(), acp = this.source.kind === "acp", files = filesFrom(d.files);
+    const left = !acp && files.length ? [{ text: "", at: d.at, files: files.map(fileOf) }] : [];
+    if (left.length) notify({ title: "Attached files stay parked", body: "This chat's agent runs in a terminal and takes no attachments.", level: "warning", timeout: 4000 });
+    this.putStash([...(now ? [now] : []), ...left, ...list.filter((_d, n) => n !== i)]);
+    this.input.set_value({ text: String(d.text ?? ""), tokens: acp ? chipsOf(d, (this.view ?? this.source.view()).cwd) : [] });
+    this.attached = acp ? files : [];
+    this.hasText = !!String(d.text ?? "").trim();
+    this.trig = null;
     this.picker = null;
     this.input.focus();
     cx.notify();
@@ -1489,19 +1591,20 @@ export class ChatPanel {
 
   // The stash's menu, over the left end of the message box where its button is.
   stashPanel(k) {
-    const list = this.stashed(), can = !!this.input.value().trim();
+    const list = this.stashed(), can = !!this.input.value().trim() || (this.source.kind === "acp" && this.attached?.length > 0);
+    const nFiles = (d) => (d.files?.length ? ` · ${d.files.length} file${d.files.length === 1 ? "" : "s"}` : "");
     const row = (id, body, onClick, enabled = true) => h_flex().id(id).min_h(28).px(8).gap(8).flex_none().items_center().rounded(4).text_size(14)
       .when(enabled, (el) => el.cursor_pointer().role("button").hover((st) => st.bg(k.accent)).on_click((_e, cx) => onClick(cx))).when(!enabled, (el) => el.opacity(0.5)).children(body);
     return h_flex().w_full().flex_none().justify_center().px(16).pb(6)
       .child(h_flex().w_full().max_w(LANE).justify_start()
         .child(v_flex().id("stash-menu").w(360).max_h(300).p(4).rounded(8).border(1).border_color(k.border).bg(k.popover).shadow_lg().overflow_y_scrollbar()
           .child(row("stash-put", [icon("archive").size(14).flex_none().text_color(k.muted), div().flex_1().child("Stash this draft"),
-            div().flex_none().text_size(12).text_color(k.muted).child(can ? "/stash" : "nothing typed")], (cx) => { this.stash(cx); this.picker = null; }, can))
+            div().flex_none().text_size(12).text_color(k.muted).child(can ? "/stash" : "nothing to park")], (cx) => { this.stash(cx); this.picker = null; }, can))
           .when(list.length > 0, (el) => el.child(div().mx(4).my(4).h(1).flex_none().bg(k.border)))
           .children(list.map((d, i) => row(`stash-${i}`, [
             v_flex().flex_1().min_w(0).py(4)
-              .child(div().truncate().child(d.text.split("\n")[0]))
-              .child(div().text_size(11).text_color(k.muted).child(`${since(d.at)}${d.text.includes("\n") ? ` · ${d.text.split("\n").length} lines` : ""}`)),
+              .child(div().truncate().child(d.text.split("\n")[0] || (d.files ?? []).map((a) => a.name).join(", ")))
+              .child(div().text_size(11).text_color(k.muted).child(`${since(d.at)}${d.text.includes("\n") ? ` · ${d.text.split("\n").length} lines` : ""}${nFiles(d)}`)),
             h_flex().id(`stash-x-${i}`).size(22).flex_none().items_center().justify_center().rounded(6).text_color(k.muted).cursor_pointer().role("button").accessibility_label("Delete this draft")
               .hover((st) => st.bg(k.accent).text_color(k.foreground)).on_mouse_down("left", (_e, cx) => cx.stop_propagation()).on_click((_e, cx) => { cx.stop_propagation(); this.dropStash(cx, i); }).child(icon("x").size(12)),
           ], (cx) => this.unstash(cx, i))))

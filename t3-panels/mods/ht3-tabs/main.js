@@ -68,7 +68,8 @@ function fairCap(wants, room) {
 const lit = (view, id, color = theme().dim) => (view.hot === id ? theme().foreground : color);
 
 // A tab nobody named reads as its lead pane: the agent in it, else the focused one.
-const leadOf = (mine) => mine.find(p => p.status != null) ?? mine.find(p => p.focused) ?? mine[0];
+// A chat leads its tab even when its own terminal under it has the focus: the tab keeps the agent's icon and name.
+const leadOf = (mine) => mine.find(p => p.mod && shared(`${p.mod}.programs`)?.[p.tab]) ?? mine.find(p => p.status != null) ?? mine.find(p => p.focused) ?? mine[0];
 const nameOf = (c, lead, name) => c.named ? c.name : lead ? name(lead) : "Terminal";
 
 export default class Tabs extends View {

@@ -5,7 +5,7 @@
 // a message (Copy, Fork), of an Inbox card (Rename, Settle, Pin, …), and the question before a revert.
 
 import { div, image } from "gpui-kit";
-import { v_flex, h_flex, InputState, Input } from "gpui-base";
+import { v_flex, h_flex, InputState, Input, TextareaState, Textarea } from "gpui-base";
 import { closeOverlay, exec, hc, run, appHome, shared, setShared, readTextFile, notify, spaces } from "herdr";
 import { chatLike, forkChat } from "./agent-acp.js";
 import { toMarkdown } from "./transcript.js";
@@ -15,6 +15,7 @@ import { revertTo } from "./checkpoint.js";
 import { editorOn } from "./settings.js";
 import { SURFACES, send, placeOf, activeSpace, surfaceOff, surfacesHere } from "./side.js";
 import { projectOf, scriptsOf, runScript } from "./scripts.js";
+import { write, wroteLine, Cancelled } from "./gitwrite.js";
 
 export class AddMenu {
   init(p, cx) {
@@ -307,8 +308,18 @@ export class ProjectMenu {
     this.git = null; // { changed, ahead, behind, upstream, remote, base }
     this.step = null; // "commit" | "pr"
     this.note = null; // what the last action did
-    this.message = InputState.new({ placeholder: "Commit message (empty: one is made up)" });
-    this.message.on("submit", (_e, cx) => this.commit(cx));
+    // The message field takes a subject and a body (an agent writes both, gitwrite.js). Enter commits a message of
+    // one line, as it did; in one with more lines Enter is a new line and only the Commit button commits.
+    this.message = TextareaState.new({ placeholder: "Commit message (empty: one is made up)" });
+    this.message.set_auto_grow(1, 8);
+    this.message.on("submit", (e, cx) => { if (!e?.shift && !this.message.value().trim().includes("\n")) this.commit(cx); });
+    // Create PR's text: typed, or written by an agent; left empty, gh makes both from the commits (--fill).
+    this.prTitle = InputState.new({ placeholder: "Title (empty: from the commits)" });
+    this.prBody = TextareaState.new({ placeholder: "Description (empty: from the commits)" });
+    this.prBody.set_auto_grow(3, 6);
+    this.writing = null; // { kind: "commit" | "pr", stop, was }: an agent is writing that text
+    this.wrote = null; // { kind, text }: who wrote what is in the field, from what
+    this.writeError = null; // { kind, text }: why nothing was written
     cx.spawn(async (cx) => {
       if (!this.on) {
         const n = await exec("scutil", ["--get", "ComputerName"]).catch(() => null);
@@ -366,11 +377,59 @@ export class ProjectMenu {
       this.changes = null;
     });
   }
-  close() {}
+  close() { this.stopWriting(); }
+
+  // "Write message" and "Write title and body": an agent writes the text of the open step from the changes
+  // (gitwrite.js: the shown chat's agent on its model, else the default one from Settings; one question in a session
+  // of its own, 60 seconds at most). The popover stays usable meanwhile and Cancel stops it. The text only goes into
+  // the fields: Commit and Create stay the person's click. An error shows as one line and the fields keep what they had.
+  write(cx, kind) {
+    if (this.writing || !this.root) return;
+    const fields = kind === "pr" ? [this.prTitle, this.prBody] : [this.message];
+    let stop;
+    const cancel = new Promise((ok) => { stop = ok; });
+    const job = this.writing = { kind, stop, was: fields.map((f) => f.value()) };
+    this.wrote = null;
+    this.writeError = null;
+    cx.notify();
+    cx.spawn(async (cx) => {
+      try {
+        const r = await write(kind, { cwd: this.root, on: this.on, branch: this.branch, base: this.git?.base ?? null },
+          { cancel, after: (ms) => new Promise((ok) => cx.timer.after(ms, () => ok())) });
+        if (this.writing !== job) return;
+        // Typed into while the agent wrote: what the person typed stays.
+        if (fields.some((f, i) => f.value() !== job.was[i])) this.writeError = { kind, text: "You changed the text while the agent wrote, so yours was kept. Write again to replace it." };
+        else {
+          (kind === "pr" ? [r.title, r.body] : [r.message]).forEach((text, i) => fields[i].set_value(text));
+          this.wrote = { kind, text: wroteLine(kind, r, this.on) };
+        }
+      } catch (e) {
+        if (this.writing !== job) return;
+        if (!(e instanceof Cancelled)) this.writeError = { kind, text: String(e?.message ?? e).slice(0, 260) };
+      }
+      this.writing = null;
+      cx.notify();
+    });
+  }
+
+  stopWriting(cx = null) {
+    const w = this.writing;
+    if (!w) return;
+    this.writing = null;
+    w.stop();
+    cx?.notify();
+  }
+
   // `ht3-panels.open:<editor id>` opens the folder in that editor, as its row does, for scripts.
   // `git:commit` (opens the message field), `git:commit:<message>` (commits with it), `git:push`, `git:pr` (shows the
-  // command Create PR would run; only its button runs it).
+  // command Create PR would run; only its button runs it). `git:write:commit` and `git:write:pr` open that step and
+  // have an agent write its text, `git:write:stop` cancels it; `git:title:<text>` and `git:body:<text>` fill Create
+  // PR's fields.
   command(c, cx) {
+    if (c === "git:write:stop") return this.stopWriting(cx);
+    if (c === "git:write:commit" || c === "git:write:pr") { this.step = c.slice(10); return this.write(cx, this.step) ?? cx.notify(); }
+    if (c.startsWith("git:title:")) { this.prTitle.set_value(c.slice(10)); return cx.notify(); }
+    if (c.startsWith("git:body:")) { this.prBody.set_value(c.slice(9)); return cx.notify(); }
     if (c === "git:commit") { this.step = this.step === "commit" ? null : "commit"; this.message.focus(); return cx.notify(); }
     if (c.startsWith("git:commit:")) { this.message.set_value(c.slice(11)); return this.commit(cx); }
     if (c === "git:push") return this.push(cx);
@@ -423,6 +482,7 @@ export class ProjectMenu {
     if (!g?.changed) return;
     const typed = this.message.value().trim();
     const message = typed || (g.changed === 1 ? `Update ${g.names[0]}` : `Update ${g.changed} files`);
+    if (this.writing?.kind === "commit") this.stopWriting();
     this.run(cx, async () => {
       const opt = { cwd: this.root, on: this.on };
       const a = await exec("git", ["add", "-A"], opt);
@@ -430,9 +490,10 @@ export class ProjectMenu {
       const r = await exec("git", ["commit", "-m", message], opt);
       if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim().split("\n").slice(-2).join(" ") || "git commit failed");
       const sha = (await exec("git", ["rev-parse", "--short", "HEAD"], opt)).stdout.trim();
-      this.note = `Committed ${sha}: ${message}`;
+      this.note = `Committed ${sha}: ${message.split("\n")[0]}`;
       this.step = null;
       this.message.set_value("");
+      this.wrote = this.writeError = null;
       this.changes = null;
       await this.status();
     });
@@ -456,26 +517,40 @@ export class ProjectMenu {
     });
   }
 
+  // The text Create PR passes to gh: the title and description in the fields; an empty title (or both empty)
+  // leaves it to `--fill`, which makes them from the branch's commits.
+  prText() {
+    const title = this.prTitle.value().trim().split("\n")[0], body = this.prBody.value().trim();
+    return title ? ["--title", title, "--body", body] : body ? ["--fill", "--body", body] : ["--fill"];
+  }
+
   // What Create PR runs, shown before it does: the branch is pushed first if it has no upstream, then
-  // `gh pr create --fill` makes the pull request from the branch's commits.
+  // `gh pr create` makes the pull request with the text above it (the description is named, not repeated).
   prCommand() {
     const g = this.git, push = !g?.upstream || g.ahead > 0 ? `git ${this.pushArgs().join(" ")} && ` : "";
-    return `${push}gh pr create --fill --head ${this.branch}${g?.base ? ` --base ${g.base}` : ""}`;
+    const q = (t) => `'${t.replace(/'/g, `'\\''`)}'`, lines = this.prBody.value().trim().split("\n").length;
+    const text = this.prText().map((a, i, all) => (all[i - 1] === "--title" ? q(a) : all[i - 1] === "--body" ? (a ? `<the description, ${lines} line${lines === 1 ? "" : "s"}>` : "''") : a)).join(" ");
+    return `${push}gh pr create ${text} --head ${this.branch}${g?.base ? ` --base ${g.base}` : ""}`;
   }
 
   createPr(cx) {
     const g = this.git;
     if (!g || !this.github || !this.branch || this.branch === g.base) return;
+    if (this.writing?.kind === "pr") this.stopWriting();
+    const text = this.prText();
     this.run(cx, async () => {
       const opt = { cwd: this.root, on: this.on, timeout: 120000 };
       if (!g.upstream || g.ahead > 0) {
         const p = await exec("git", this.pushArgs(), opt);
         if (p.code !== 0) throw new Error((p.stderr || p.stdout).trim().split("\n").slice(-2).join(" ") || "git push failed");
       }
-      const r = await exec("gh", ["pr", "create", "--fill", "--head", this.branch, ...(g.base ? ["--base", g.base] : [])], opt);
+      const r = await exec("gh", ["pr", "create", ...text, "--head", this.branch, ...(g.base ? ["--base", g.base] : [])], opt);
       if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim().split("\n").slice(-2).join(" ") || "gh pr create failed");
       this.note = `Pull request created: ${r.stdout.trim().split("\n").pop()}`;
       this.step = null;
+      this.prTitle.set_value("");
+      this.prBody.set_value("");
+      this.wrote = this.writeError = null;
       await this.status();
     });
   }
@@ -564,14 +639,30 @@ export class ProjectMenu {
           const r = row(id, glyph, label, { detail, on, onClick: can && !this.busy ? onClick : null });
           return can ? r : r.opacity(0.5);
         };
+        // The agent's part of a step: its button, or "Writing…" with Cancel while it runs, and under it who wrote
+        // the text or why none was written.
+        const writer = (kind, label) => (this.writing?.kind === kind
+          ? h_flex().gap(6).items_center().child(icon("sparkles").size(14).flex_none().text_color(k.muted)).child(div().text_size(12).text_color(k.muted).child("Writing…"))
+            .child(button(k, "git-write-stop", "Cancel", (cx) => this.stopWriting(cx), { variant: "ghost-muted" }))
+          : button(k, `git-write-${kind}`, label, (cx) => this.write(cx, kind), { glyph: "sparkles", disabled: !!this.writing, tip: "An agent writes it from the changes. Nothing is committed or sent." }));
+        const wrote = (kind) => (e) => e
+          .when(this.wrote?.kind === kind, (x) => x.child(div().text_size(11).line_height("15px").text_color(k.muted).child(this.wrote.text)))
+          .when(this.writeError?.kind === kind, (x) => x.child(div().text_size(11).line_height("15px").text_color(k.destructiveText).child(this.writeError.text)));
+        const field = (el) => div().min_w(0).px(8).py(3).rounded(6).border(1).border_color(k.input).text_size(13).child(el);
         return el.child(div().mx(4).my(4).h(1).flex_none().bg(k.border))
           .child(act("git-commit", "check", "Commit", g.changed > 0, g.changed ? n(g.changed, "file") : "nothing to commit", (cx) => { this.step = this.step === "commit" ? null : "commit"; this.message.focus(); cx.notify(); }, this.step === "commit"))
-          .when(this.step === "commit" && g.changed > 0, (e) => e.child(h_flex().mx(8).my(4).gap(6).items_center()
-            .child(div().flex_1().min_w(0).h(28).px(8).rounded(6).border(1).border_color(k.input).text_size(13).child(Input.new(this.message)))
-            .child(button(k, "git-commit-go", this.busy ? "…" : "Commit", (cx) => this.commit(cx)))))
+          .when(this.step === "commit" && g.changed > 0, (e) => e.child(wrote("commit")(v_flex().mx(8).my(4).gap(6)
+            .child(field(Textarea.new(this.message)))
+            .child(h_flex().gap(6).items_center()
+              .child(writer("commit", "Write message"))
+              .child(div().flex_1())
+              .child(button(k, "git-commit-go", this.busy ? "…" : "Commit", (cx) => this.commit(cx)))))))
           .child(act("git-push", "arrow-up", "Push", canPush, g.behind > 0 ? `${g.behind} behind: pull first` : !g.remote ? "no remote" : g.ahead > 0 ? `${n(g.ahead, "commit")} ahead` : !g.upstream ? "no upstream yet" : "up to date", (cx) => this.push(cx), false))
           .child(act("git-pr", "git-pull-request-arrow", "Create PR", canPr, !this.github ? "no GitHub remote" : this.branch === g.base ? `on ${g.base}` : null, (cx) => { this.step = this.step === "pr" ? null : "pr"; cx.notify(); }, this.step === "pr"))
           .when(this.step === "pr" && canPr, (e) => e.child(v_flex().mx(8).my(4).gap(6)
+            .child(div().min_w(0).h(28).px(8).rounded(6).border(1).border_color(k.input).text_size(13).child(Input.new(this.prTitle)))
+            .child(field(Textarea.new(this.prBody)))
+            .child(wrote("pr")(v_flex().gap(6).child(h_flex().child(writer("pr", "Write title and body")))))
             .child(div().p(8).rounded(6).bg(k.background).border(1).border_color(k.border).font_family(k.mono).text_size(11).line_height("16px").text_color(k.muted).child(this.prCommand()))
             .child(h_flex().justify_end().gap(6)
               .child(button(k, "git-pr-no", "Cancel", (cx) => { this.step = null; cx.notify(); }, { variant: "outline" }))

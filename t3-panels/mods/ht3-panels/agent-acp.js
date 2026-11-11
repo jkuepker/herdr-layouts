@@ -132,7 +132,8 @@ export async function askOnce(argv, cwd, text, { set = null, timer = new Promise
     session.handle({ type: "prompt", text });
     await Promise.race([finished, timer]);
     const said = session.state.transcript.items.filter((m) => m.kind === "agent").map((m) => m.text).join("\n").trim();
-    if (!said) throw new Error(session.state.error ?? "The agent gave no answer.");
+    // No answer: the reason is the agent's own error for the turn (session.js keeps it as an error notice), if it gave one.
+    if (!said) throw new Error(session.state.error ?? session.state.transcript.items.filter((m) => m.kind === "notice" && m.level === "error").pop()?.text ?? "The agent gave no answer.");
     return said;
   } finally {
     processKill(proc);
@@ -141,16 +142,22 @@ export async function askOnce(argv, cwd, text, { set = null, timer = new Promise
 
 // "New chat on this branch" (T3's thread menu): a fresh chat with the same agent in the same folder, which is that
 // branch's checkout (a worktree chat's own folder), as a tab of `space` (default: the shown one). `from`: a chat's state.
-// `prompt`: its first message, sent as soon as the agent is up.
-export function chatLike(from, space = focused()?.space, prompt = null) {
+// `prompt`: its first message, sent as soon as the agent is up: its text, or { text, blocks, tokens, files } with the
+// "@" files and attachments of the box it was typed in (they travel as the `draft` prop; chat.js firstMessage).
+// `more`: further props ({ back: { tab, at } }: started in the background, chat.js stepBack). -> the new chat's id, or false.
+export function chatLike(from, space = focused()?.space, prompt = null, more = null) {
   if (!Array.isArray(from?.agentArgv) || !from.agentArgv.length) return false;
+  const msg = prompt && typeof prompt === "object" ? prompt : { text: prompt };
+  const text = String(msg.text ?? "").trim(), draft = {};
+  for (const key of ["blocks", "tokens", "files"]) if (Array.isArray(msg[key]) && msg[key].length) draft[key] = msg[key];
   const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   // The new chat starts on the model, the effort and the mode this one is on (set before its first message).
   const set = {};
   for (const o of from.configOptions ?? []) if (o.type === "select" && ["model", "mode", "thought_level"].includes(o.category ?? o.id) && o.currentValue != null) set[o.id] = o.currentValue;
   run("tab.new", { mod: "ht3-panels", ...(space ? { space } : {}), name: from.agentInfo?.title ?? from.agentInfo?.name ?? agentOf(from.agentArgv)?.name ?? "Chat",
-    props: { panel: "chat", chat: id, agent: from.agentArgv, cwd: from.cwd ?? null, machine: from.machine ?? null, ...(prompt ? { prompt } : {}), ...(Object.keys(set).length ? { set } : {}) } });
-  return true;
+    props: { panel: "chat", chat: id, agent: from.agentArgv, cwd: from.cwd ?? null, machine: from.machine ?? null, ...(text ? { prompt: text } : {}), ...(Object.keys(draft).length ? { draft } : {}),
+      ...(Object.keys(set).length ? { set } : {}), ...(more ?? {}) } });
+  return id;
 }
 
 // Fork a thread (useTimelineRewind.ts forkFromRun): a new chat tab on the same agent and folder that
