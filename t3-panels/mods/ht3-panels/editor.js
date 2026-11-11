@@ -15,6 +15,7 @@ import { spaces, panes, focused, exec, readTextFile, writeTextFile, watchFolder,
 import { tokens, alpha, icon, button, iconButton, shortPath } from "./look.js";
 import { fileIcon } from "./fileicons.js";
 import { chatPlace, showing, rememberClosed } from "./side.js";
+import { recordRecent } from "./quick.js";
 
 const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", cjs: "js", toml: "yaml", jsonc: "json", svelte: "html", vue: "html", yml: "yaml", htm: "html", markdown: "md", zsh: "sh", bash: "sh" };
 const PER_FOLDER = 500, TOTAL = 5000;
@@ -277,6 +278,7 @@ export class FilePanel {
 
   open(cx, path) {
     const c = this.ctx;
+    recordRecent(c.key, path); // for Quick open's empty box (quick.js)
     const at = c.tabs.findIndex((x) => x.path === path);
     if (at >= 0) { c.active = at; return cx.notify(); }
     if (c.tabs.length >= MAX_TABS) {

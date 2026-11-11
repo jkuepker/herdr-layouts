@@ -34,6 +34,7 @@ import { announce, prune } from "./report.js";
 import { Settings, SETTINGS_SIZE } from "./settings-ui.js";
 import { Usage, USAGE_SIZE } from "./usage.js";
 import { Search, SEARCH_SIZE, showHit, searchOpen } from "./search.js";
+import { QuickOpen, QUICK_SIZE, showLine, quickOpen } from "./quick.js";
 import { Automations, AUTOMATIONS_SIZE, automationsOpen } from "./automations.js";
 import { loadPrefs, setPref, agentOn } from "./settings.js";
 import { SIDE, read, sideShown, bottomShown, reconcile, keep, toggleMax, toggleBottom, toggleSplit, openSurface, openBottom, closeTab, activate, activeSpace, openScript, reopenClosed } from "./side.js";
@@ -93,6 +94,10 @@ class Buttons {
     // does that itself). search:<text> opens it with that typed. goto:<line>:<absolute path>: Files shows that file with the line picked.
     else if (name === "search") { if (!searchOpen()) openOverlay({ mod: MOD, kind: "dialog", ...SEARCH_SIZE, props: { menu: "search", query: c.slice(7) } }); }
     else if (name === "goto") showHit(c.slice(5), cx);
+    // quick-open: Quick open (quick.js), the project's files by fuzzy name; again while it is open closes it (the dialog does that itself).
+    // quick-open:<text> opens it with that typed. quick-line:<n>: Files shows and picks line <n> of its open file.
+    else if (name === "quick-open") { if (!quickOpen()) openOverlay({ mod: MOD, kind: "dialog", ...QUICK_SIZE, props: { menu: "quick", query: c.slice(11) } }); }
+    else if (name === "quick-line") showLine(Number(a), cx);
     // earlier: the New chat dialog as a list of the earlier chats alone, its search focused (the palette's "Earlier chats…").
     else if (name === "earlier") openOverlay({ mod: MOD, kind: "dialog", width: 512, height: 520, props: { find: true } });
     // script: runs the project script the Project popover just picked (scripts.js), if it was picked a moment ago.
@@ -148,7 +153,7 @@ export default class T3Panels extends View {
   init(_props, cx) {
     const p = props() ?? {};
     this.face = p.overlay
-      ? p.menu === "add" ? new AddMenu() : p.menu === "project" ? new ProjectMenu() : p.menu === "settings" ? new Settings() : p.menu === "usage" ? new Usage() : p.menu === "search" ? new Search() : p.menu === "servers" ? new ServersDialog() : p.menu === "worktrees" ? new WorktreesDialog() : p.menu === "copy" ? new CopyMenu() : p.menu === "thread" ? new ThreadMenu() : p.menu === "revert" ? new RevertMenu() : p.menu === "prchat" ? new PrChatDialog() : p.menu === "automations" ? new Automations() : new Launcher()
+      ? p.menu === "add" ? new AddMenu() : p.menu === "project" ? new ProjectMenu() : p.menu === "settings" ? new Settings() : p.menu === "usage" ? new Usage() : p.menu === "search" ? new Search() : p.menu === "quick" ? new QuickOpen() : p.menu === "servers" ? new ServersDialog() : p.menu === "worktrees" ? new WorktreesDialog() : p.menu === "copy" ? new CopyMenu() : p.menu === "thread" ? new ThreadMenu() : p.menu === "revert" ? new RevertMenu() : p.menu === "prchat" ? new PrChatDialog() : p.menu === "automations" ? new Automations() : new Launcher()
       : (FACES[p.panel] ?? (() => new ChatPanel()))();
     this.face.init(p, cx);
     // Key commands from keys.json's "mod:ht3-panels" section (save), and "focus" from pane.go.

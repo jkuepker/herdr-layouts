@@ -63,6 +63,7 @@
     "cmd-j": "ht3-panels.bottom",
     "cmd-shift-p": "mod.open:ht3-palette",
     "cmd-shift-f": "ht3-panels.search",
+    "cmd-o": "ht3-panels.quick-open",
     "ctrl-alt-=": "ht3-panels.chat:effort-up",
     "ctrl-alt--": "ht3-panels.chat:effort-down",
     "ctrl-alt-m": "ht3-panels.chat:mode",
