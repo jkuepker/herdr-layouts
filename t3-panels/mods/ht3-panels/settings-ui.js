@@ -18,7 +18,7 @@ import { importable } from "./detect.js";
 import { tokens, alpha, icon, agentMark, button, iconButton, shortPath, badge } from "./look.js";
 import { AGENTS, detect } from "./agent-acp.js";
 import { EDITORS, editors } from "./menus.js";
-import { prefs, agentOn, modelsOf, knownModels, editorOn, sideStartsHidden, firstAgent, setPref, settingsFile, followUp, checkpointsOn, toastsOn, soundsOn, diffHidesWhitespace } from "./settings.js";
+import { prefs, agentOn, modelsOf, knownModels, editorOn, sideStartsHidden, firstAgent, setPref, settingsFile, followUp, checkpointsOn, toastsOn, soundsOn, diffHidesWhitespace, commitStyle, COMMIT_STYLES } from "./settings.js";
 
 export const SETTINGS_SIZE = { width: 640, height: 680 };
 
@@ -288,6 +288,7 @@ export class Settings {
         .child(this.section(k, "Diff", "How the Diff surface shows changes.",
           [this.row(icon("pilcrow").size(16).flex_none().text_color(k.muted), "Hide whitespace changes", "Runs every diff and commit view with -w, so lines that only changed in whitespace don't show. Also the pilcrow button in Diff's header.",
             [this.toggle(k, "set-diff-ws", diffHidesWhitespace(), "Hide whitespace changes", () => setPref("diffIgnoreWhitespace", diffHidesWhitespace() ? false : undefined))])]))
+        .child(this.section(k, "Commit messages", "What Write message in the Commit step asks the agent for.", [this.row(icon("git-commit-horizontal").size(16).flex_none().text_color(k.muted), "Message style", { plain: "A short imperative subject, then a body if it needs one.", conventional: "type(scope): subject (feat, fix, docs, refactor, test, chore, perf, build, ci). Typed messages that don't match get a warning.", template: "The format of the repository's commit.template, or .gitmessage. Without one: plain." }[commitStyle()], [button(k, "set-commit-style", { plain: "Plain", conventional: "Conventional", template: "Template" }[commitStyle()], () => { const next = COMMIT_STYLES[(COMMIT_STYLES.indexOf(commitStyle()) + 1) % COMMIT_STYLES.length]; setPref("commitStyle", next === "plain" ? undefined : next); }, { size: "sm", variant: "outline", tip: "Click to change" })])]))
         .child(this.section(k, "Side panel", "How the right panel comes up.",
           [this.row(icon("panel-right").size(16).flex_none().text_color(k.muted), "Start hidden in new spaces", "A space shown for the first time comes up without the side panel.",
             [this.toggle(k, "set-side", sideStartsHidden(), "Start hidden in new spaces", () => this.flipSide())])])))

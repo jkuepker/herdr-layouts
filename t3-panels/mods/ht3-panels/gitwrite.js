@@ -11,7 +11,7 @@
 
 import { exec, appHome, home, readTextFile, focused, shared } from "herdr";
 import { askOnce, detect, argvOf, agentOf, AGENTS } from "./agent-acp.js";
-import { firstAgent } from "./settings.js";
+import { firstAgent, commitStyle } from "./settings.js";
 
 const MOD = "ht3-panels";
 // As T3 cuts them (textGenerationPrompts.ts limitSection).
@@ -27,23 +27,30 @@ const lastLine = (r) => String(r?.stderr || r?.stdout || "").trim().split("\n").
 const cut = (text, max) => (text.length > max ? { text: `${text.slice(0, max)}\n\n[truncated]`, cut: true } : { text, cut: false });
 const mark = () => `@@ht3-${Math.random().toString(36).slice(2)}@@`;
 
+// With $2 = 1: the commit template, `commit.template` (a "~/" path, an absolute one, or one relative to the folder or the repository's top), else the repository's .gitmessage.
+const TEMPLATE_READ = 'if [ "$2" = 1 ]; then t=$(git config --get commit.template 2>/dev/null); top=$(git rev-parse --show-toplevel 2>/dev/null); '
+  + 'case "$t" in "~/"*) t="$HOME/$(printf %s "$t" | cut -c3-)";; esac; '
+  + 'for f in "$t" "$top/$t" "$top/.gitmessage"; do [ -n "$f" ] && [ -f "$f" ] && { head -c ' + MAX_TEMPLATE + ' "$f"; break; }; done; fi; ';
+
 // What Commit would commit (`git add -A`: staged, not staged and new files alike) against HEAD, read through a
 // throwaway index so the real one isn't touched. In a repository with no commit yet, against the empty tree.
-// -> { branch, files, summary, patch, truncated }
-export async function commitContext({ cwd, on = null, branch = null }) {
+// `template`: also read the repository's commit template (git config commit.template, else .gitmessage).
+// -> { branch, files, summary, patch, truncated, template }
+export async function commitContext({ cwd, on = null, branch = null, template = false }) {
   const sep = mark();
   const script = 'i=$(mktemp) || exit 1; cp "$(git rev-parse --git-path index)" "$i" 2>/dev/null || rm -f "$i"; '
     + 'h=$(git rev-parse -q --verify HEAD 2>/dev/null) || h=$(git hash-object -t tree /dev/null); '
     + 'export GIT_INDEX_FILE="$i"; git add -N . 2>/dev/null; '
     + 'git diff --no-color --no-ext-diff --name-only "$h" | wc -l; printf \'%s\\n\' "$1"; '
     + `git diff --no-color --no-ext-diff --stat=120 "$h" | head -c ${MAX_STAT + 1}; printf '\\n%s\\n' "$1"; `
+    + TEMPLATE_READ + `printf '\\n%s\\n' "$1"; `
     + `git diff --no-color --no-ext-diff "$h" | head -c ${MAX_PATCH + 1}; rm -f "$i"`;
-  const r = await exec("sh", ["-c", script, "sh", sep], { cwd, on, timeout: 20000 });
+  const r = await exec("sh", ["-c", script, "sh", sep, template ? "1" : "0"], { cwd, on, timeout: 20000 });
   const parts = r.stdout.split(`${sep}\n`);
-  if (parts.length < 3) throw new Error(lastLine(r) || "git couldn't show the changes.");
-  const files = Number(parts[0].trim()) || 0, summary = cut(parts[1].trim(), MAX_STAT), patch = cut(parts.slice(2).join(`${sep}\n`), MAX_PATCH);
+  if (parts.length < 4) throw new Error(lastLine(r) || "git couldn't show the changes.");
+  const files = Number(parts[0].trim()) || 0, summary = cut(parts[1].trim(), MAX_STAT), patch = cut(parts.slice(3).join(`${sep}\n`), MAX_PATCH);
   if (!files || !patch.text.trim()) throw new Error("Nothing changed: there is nothing to write a message for.");
-  return { branch, files, summary: summary.text, patch: patch.text, truncated: summary.cut || patch.cut };
+  return { branch, files, summary: summary.text, patch: patch.text, truncated: summary.cut || patch.cut, template: parts[2].trim() };
 }
 
 // The branch against its base: the commits the base doesn't have and their diff from the merge base. The base is
@@ -72,16 +79,45 @@ export async function prContext({ cwd, on = null, branch = null, base = null }) 
 
 const ALONE = "Do not use any tools: everything you need is below. Reply with only the JSON object, no code fence and no other text.";
 
-// T3's buildCommitMessagePrompt.
+// How a commit message is written: "plain" (T3's), "conventional" (Conventional Commits) or "template" (the repository's).
+// The first line of a conventional message: a type, an optional (scope), an optional ! for a breaking change, ": " and a subject.
+export const CONVENTIONAL = /^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\(.+\))?!?: .+/;
+export const CONVENTIONAL_TYPES = ["feat", "fix", "docs", "refactor", "test", "chore", "perf", "build", "ci"];
+// null when the message's first line is a conventional one (or there is no message yet), else a line to show under the field.
+export function conventionalIssue(message) {
+  const first = String(message ?? "").split(/\r?\n/)[0].trim();
+  if (!first || CONVENTIONAL.test(first)) return null;
+  return "Not a conventional commit: the first line should look like type(scope): subject, with a type such as feat, fix, docs, refactor, test or chore. You can still commit it.";
+}
+// The style a prompt really uses: "template" without a template to follow is "plain".
+export const effectiveStyle = (c) => (c?.style === "conventional" ? "conventional" : c?.style === "template" && String(c.template ?? "").trim() ? "template" : "plain");
+
+// T3's buildCommitMessagePrompt, with `c.style` ("plain" by default) and, for "template", `c.template` (its text).
 export function commitPrompt(c) {
+  const style = effectiveStyle(c);
+  const rules = {
+    plain: ["- subject must be imperative, <= 72 chars, and no trailing period"],
+    conventional: [
+      `- subject must follow Conventional Commits: type(scope): description, where type is one of ${CONVENTIONAL_TYPES.join(", ")}`,
+      "- scope is optional: a short lowercase noun for the area changed; add ! before the colon for a breaking change",
+      "- the whole subject line must be imperative, <= 72 chars, and no trailing period",
+    ],
+    template: [
+      "- the commit message must follow the repository's commit message template below: keep its format, its section headings and its trailers, and fill them in for this change",
+      "- subject is the first line of the message, imperative, <= 72 chars, and no trailing period, in the format the template asks for",
+      "- body is everything after the subject line, laid out the way the template lays it out",
+      "- drop the template's comment lines (those starting with #) and any placeholder text you can't fill in",
+    ],
+  }[style];
   return [
     "You write concise git commit messages.",
     "Return a JSON object with keys: subject, body.",
     "Rules:",
-    "- subject must be imperative, <= 72 chars, and no trailing period",
+    ...rules,
     "- body can be empty string or short bullet points",
     "- capture the primary user-visible or developer-visible change",
     ALONE,
+    ...(style === "template" ? ["", "Commit message template:", String(c.template).trim()] : []),
     "",
     `Branch: ${c.branch ?? "(detached)"}`,
     "",
@@ -200,7 +236,9 @@ export async function write(kind, where, { after, cancel = new Promise(() => {})
   let over = null;
   cancel.then(() => { over ??= "cancel"; });
   const stopped = () => { if (over === "cancel") throw new Cancelled(); };
-  const c = await (kind === "pr" ? prContext(where) : commitContext(where));
+  const style = commitStyle();
+  const c = await (kind === "pr" ? prContext(where) : commitContext({ ...where, template: style === "template" }));
+  if (kind !== "pr") c.style = style;
   // A turn of the event loop, so a Cancel pressed while git ran is seen.
   await null;
   stopped();
@@ -217,7 +255,8 @@ export async function write(kind, where, { after, cancel = new Promise(() => {})
   if (over === "timeout") throw new Error(`${who.name} didn't answer within ${Math.round(timeout / 1000)} seconds.`);
   if (failed) throw new Error(`${who.name}: ${String(failed?.message ?? failed).trim().split("\n")[0].slice(0, 200)}`);
   const text = kind === "pr" ? prFrom(answer) : commitFrom(answer);
-  return { ...text, agent: who.name, from: who.from, truncated: c.truncated, files: c.files ?? null, commits: c.commits ?? null, base: c.base ?? null };
+  const note = kind === "pr" || style !== "template" || effectiveStyle(c) === "template" ? null : "No commit template found (git config commit.template, or .gitmessage), so it is written plain.";
+  return { ...text, note, agent: who.name, from: who.from, truncated: c.truncated, files: c.files ?? null, commits: c.commits ?? null, base: c.base ?? null };
 }
 
 // One line under the field: who wrote it, from what, and whether the agent saw all of it.
@@ -226,5 +265,6 @@ export function wroteLine(kind, r, on = null) {
   const what = kind === "pr" ? `${n(r.commits, "commit")} against ${r.base}` : n(r.files, "changed file");
   return `Written by ${r.agent}${on ? " on this computer" : ""} from ${what}${on ? ` on ${on}` : ""}.`
     + (r.truncated ? ` The diff is long: the agent saw its first ${String(MAX_PATCH).replace(/\B(?=(\d{3})+$)/g, ",")} characters.` : "")
+    + (r.note ? ` ${r.note}` : "")
     + (kind === "pr" ? " Read it, change it, then Create." : " Read it, change it, then Commit.");
 }

@@ -9,6 +9,8 @@
 //   or failed with the time taken and a Stop button (`processKill`: the command and what it started). `spawn` runs on
 //   this computer only: in a space on another machine the command runs through `exec` there, whole (no streaming, ten
 //   minutes at most, no Stop).
+// - "Related tests": with a test tool and changed files (`git status`), a row that runs only the tests the changes touch
+//   (detect.js detectImpact: vitest related, jest --findRelatedTests, pytest's matching files, go test of the packages, cargo test).
 // - Problems (problems-parse.js): file, line, column, message and severity of what tsc, eslint, vitest, jest, pytest,
 //   cargo/rustc and anything printing `path:line:col: message` said. A row opens the file at the line in Files
 //   (main.js `goto:`, the way a Search hit does). "Send to chat" puts a summary into the message box of the shown
@@ -25,6 +27,7 @@ import { exec, spawn, processNextLine, processExited, processKill, run, shared, 
 import { MOD, tokens, alpha, icon, button, iconButton, badge, shortPath } from "./look.js";
 import { activeSpace, placeOf, showing, spaceState, openSurface, GROUPS } from "./side.js";
 import { projectOf, detectProject, customChecksOf, setCustomChecks } from "./scripts.js";
+import { detectImpact, parseImpact, IMPACT_READ } from "./detect.js";
 import { parseProblems, resolveFile, shortFile, summarize, clean } from "./problems-parse.js";
 
 export const KEEP = 2000; // output lines shown
@@ -168,6 +171,9 @@ export class ChecksPanel {
     this.project = null;
     this.detected = null; // detect.js's answer for the folder
     this.adding = false;
+    this.impact = null; // detect.js detectImpact's answer for the changed files: the "Related tests" row
+    this.changed = 0; // files `git status` lists as changed
+    this.impactSig = ""; this.impactBusy = false; this.impactAt = 0;
     this.output = false; // the raw output is open
     this.said = null; // { text, bad }
     this.name = InputState.new({ placeholder: "Name, e.g. Lint" });
@@ -207,6 +213,10 @@ export class ChecksPanel {
     this.where = where.cwd ? { on: where.on ?? null, cwd: where.cwd } : null;
     this.sel = null;
     this.detected = null;
+    this.impact = null;
+    this.impactSig = "";
+    this.impactBusy = false;
+    this.changed = 0;
     this.project = null;
     this.said = null;
     if (!this.where) return;
@@ -220,7 +230,35 @@ export class ChecksPanel {
     if (!where) return;
     cx.spawn(async (cx) => {
       const found = await detectProject(where.cwd, where.on).catch(() => null);
-      if (this.seen === seen) { this.detected = found ?? { checks: [], dev: null, scripts: [] }; cx.notify(); }
+      if (this.seen === seen) { this.detected = found ?? { checks: [], dev: null, scripts: [] }; this.refreshImpact(cx, true); cx.notify(); }
+    });
+  }
+
+  // The changed files (`git status`, untracked ones too) and the command that tests only what they touch: when the surface is
+  // shown (at most every 3 s) and after a run. `git` runs where the folder is.
+  refreshImpact(cx, force = false) {
+    const where = this.where, seen = this.seen;
+    if (!where || !this.detected?.tools?.any || this.impactBusy) return;
+    if (!force && Date.now() - this.impactAt < 3000) return;
+    this.impactBusy = true;
+    this.impactAt = Date.now();
+    const tools = this.detected.tools;
+    cx.spawn(async (cx) => {
+      let found = null;
+      try {
+        const r = await exec("sh", ["-c", IMPACT_READ, "sh", where.cwd, tools.pytest ? "1" : "0"], { cwd: where.cwd, on: where.on ?? undefined, timeout: 10000 });
+        found = parseImpact(r.stdout);
+      } catch { /* not a repository, or git isn't there */ }
+      if (this.seen !== seen) return;
+      this.impactBusy = false;
+      this.impactAt = Date.now();
+      const next = found ? detectImpact(tools, found.changed, { all: found.all }) : null;
+      const sig = JSON.stringify([next, found?.changed.length ?? 0]);
+      if (sig === this.impactSig) return;
+      this.impactSig = sig;
+      this.impact = next;
+      this.changed = found?.changed.length ?? 0;
+      cx.notify();
     });
   }
 
@@ -229,9 +267,14 @@ export class ChecksPanel {
     const found = (this.detected?.checks ?? []).map((c) => ({ id: c.id, name: c.name, command: c.command, kind: c.kind, source: c.source, custom: false }));
     const mine = customChecksOf(this.project?.key).map((c) => ({ id: `c:${c.name}`, name: c.name, command: c.command, kind: null, source: "added", custom: true }));
     const have = new Set(found.map((c) => c.command));
+    const imp = this.impact && { id: "impact", name: this.impact.name, command: this.impact.command, kind: "test", source: `changed files${this.impact.why ? `: ${this.impact.why}` : ""}`, custom: false, impact: true, detail: `${this.impact.files} changed file${this.impact.files === 1 ? "" : "s"}` };
+    // Right after the test commands: the same tests, only the ones the changes touch.
+    const at = imp ? found.reduce((n, c, i) => (c.kind === "test" ? i + 1 : n), 0) : 0;
+    if (imp) found.splice(at, 0, imp);
     return [...found, ...mine.filter((c) => !have.has(c.command))];
   }
-  keyOf(item) { return `${this.where?.on ?? ""}|${this.where?.cwd ?? ""}|${item.command}`; }
+  // The related-tests row keeps one key as its command changes with the changed files, so its result stays with it.
+  keyOf(item) { return `${this.where?.on ?? ""}|${this.where?.cwd ?? ""}|${item.impact ? "#related" : item.command}`; }
   runOf(item) { return this.runs.get(this.keyOf(item)) ?? null; }
   current() { return this.sel ? this.runs.get(this.sel) ?? null : null; }
 
@@ -245,7 +288,7 @@ export class ChecksPanel {
     this.sel = key;
     this.said = null;
     cx.notify();
-    cx.spawn(async (acx) => { r.onChange = () => acx.notify(); await r.start(); acx.notify(); });
+    cx.spawn(async (acx) => { r.onChange = () => acx.notify(); await r.start(); acx.notify(); this.refreshImpact(acx, true); });
   }
 
   addCustom(cx) {
@@ -299,6 +342,7 @@ export class ChecksPanel {
       .on_click((_e, cx) => { if (r) this.sel = key; cx.notify(); })
       .child(r?.running() ? glyph.spin(1000) : glyph)
       .child(div().flex_none().max_w(110).truncate().font_medium().child(item.name))
+      .when(!!item.detail, (el) => el.child(div().flex_none().text_size(11).text_color(k.muted).child(item.detail)))
       .child(div().flex_1().min_w(0).truncate().font_family(k.mono).text_size(11).text_color(k.muted).tooltip(`${item.command}\n${item.source}`).child(item.command))
       .when(!!r && r.state !== "idle", (el) => el.child(div().flex_none().text_size(11).text_color(r.running() ? k.muted : k[TONE[r.state]]).child(clock(r.elapsed()))))
       .when(item.custom, (el) => el.child(iconButton(k, `check-drop-${i}`, "trash-2", (cx) => this.dropCustom(item, cx), { size: "micro", tip: `Remove ${item.name}` })))
@@ -371,6 +415,7 @@ export class ChecksPanel {
     const k = tokens();
     const root = v_flex().id("ht3-checks").size_full().min_h(0).bg(k.background).text_color(k.foreground).text_size(13);
     if (!this.where) return root.child(this.head(k)).child(v_flex().flex_1().items_center().justify_center().px(24).text_size(12).text_color(k.muted).child("No folder: focus a terminal or a chat in a project."));
+    this.refreshImpact(cx);
     const list = this.list(), r = this.current();
     return root.child(this.head(k))
       .when(this.adding, (el) => el.child(this.addForm(k)))
