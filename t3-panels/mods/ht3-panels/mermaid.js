@@ -48,11 +48,13 @@ function sizeOf(out) {
   return w > 0 && h > 0 ? { w: w / SCALE, h: h / SCALE } : null;
 }
 
-// Where mmdc is: the path given (settings' `mermaidCli`, or $HT3_MMDC), PATH, then where npm and
+// Where mmdc is: the path given (settings' `mermaidCli`, or $HT3_MMDC), PATH, the login shell's PATH, then where npm and
 // Homebrew put it. Never npx, never an install.
 const FIND = `
 for p in "$1" "$HT3_MMDC"; do [ -n "$p" ] && [ -x "$p" ] && { echo "$p"; exit 0; }; done
 p=$(command -v mmdc 2>/dev/null) && [ -n "$p" ] && { echo "$p"; exit 0; }
+# Herdr started from the Dock has a bare PATH: ask the login shell, as chats do to find their agents.
+p=$("\${SHELL:-/bin/sh}" -lic 'command -v mmdc' 2>/dev/null </dev/null | tail -n 1) && [ -x "$p" ] && { echo "$p"; exit 0; }
 for p in "$HOME/.local/bin/mmdc" /opt/homebrew/bin/mmdc /usr/local/bin/mmdc "$HOME/.npm-global/bin/mmdc" "$(npm prefix -g 2>/dev/null)/bin/mmdc"; do
   [ -x "$p" ] && { echo "$p"; exit 0; }
 done
