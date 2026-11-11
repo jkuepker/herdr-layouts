@@ -12,11 +12,11 @@ import { toMarkdown } from "./transcript.js";
 import { agentName } from "./report.js";
 import { MOD, tokens, icon, button, iconButton, badge, shortPath, alpha } from "./look.js";
 import { revertTo } from "./checkpoint.js";
-import { editorOn } from "./settings.js";
+import { editorOn, commitStyle } from "./settings.js";
 import { SURFACES, send, placeOf, activeSpace, surfaceOff, surfacesHere } from "./side.js";
 import { projectOf, scriptsOf, runScript, detectProject } from "./scripts.js";
 import { devCommand } from "./detect.js";
-import { write, wroteLine, Cancelled } from "./gitwrite.js";
+import { write, wroteLine, Cancelled, conventionalIssue } from "./gitwrite.js";
 import { holdForSecrets, guardStep } from "./secretguard.js";
 import { discover, startDevServer } from "./servers.js";
 import { readBranches, switchRow, pullFastForward, pickerRows, rowBlocked } from "./branches.js";
@@ -335,6 +335,7 @@ export class ProjectMenu {
     // one line, as it did; in one with more lines Enter is a new line and only the Commit button commits.
     this.message = TextareaState.new({ placeholder: "Commit message (empty: one is made up)" });
     this.message.set_auto_grow(1, 8);
+    this.message.on("change", (_e, cx) => cx.notify()); // the style warning under it follows what is typed
     this.message.on("submit", (e, cx) => { if (!e?.shift && !this.message.value().trim().includes("\n")) this.commit(cx); });
     // Create PR's text: typed, or written by an agent; left empty, gh makes both from the commits (--fill).
     this.prTitle = InputState.new({ placeholder: "Title (empty: from the commits)" });
@@ -926,6 +927,8 @@ export class ProjectMenu {
           .child(act("git-commit", "check", "Commit", g.changed > 0, g.changed ? n(g.changed, "file") : "nothing to commit", (cx) => { this.step = this.step === "commit" ? null : "commit"; this.message.focus(); cx.notify(); }, this.step === "commit"))
           .when(this.step === "commit" && g.changed > 0, (e) => e.child(wrote("commit")(v_flex().mx(8).my(4).gap(6)
             .child(field(Textarea.new(this.message)))
+            // Style "conventional": a first line that isn't type(scope): subject is warned about, not stopped.
+            .when(commitStyle() === "conventional" && !!conventionalIssue(this.message.value()), (x) => x.child(div().text_size(11).line_height("15px").text_color(k.warningText).child(conventionalIssue(this.message.value()))))
             .child(h_flex().gap(6).items_center()
               .child(writer("commit", "Write message"))
               .child(div().flex_1())

@@ -15,6 +15,9 @@
 // - followUp ("queue"): "steer" makes a message sent while the agent works interrupt it.
 // - notifications (true): a toast when a chat that isn't looked at finishes or needs an approval; sounds (false): a sound then.
 // - diffIgnoreWhitespace (true, as T3's): the Diff surface puts -w on every diff and show it runs; false shows whitespace changes.
+// - commitStyle ("plain"): what "Write message" asks the agent for: "plain" (a short imperative subject), "conventional"
+//   (type(scope): subject), or "template" (the repository's commit.template or .gitmessage as the format). The Commit step
+//   warns, without blocking, when a typed message's first line isn't Conventional Commits and the style is "conventional".
 // - sidePanelHiddenInNewSpaces (false): a space shown for the first time starts with the side panel hidden.
 // Anything left out is its default; unknown keys are kept as they are.
 
@@ -51,6 +54,9 @@ export const diffHidesWhitespace = () => prefs().diffIgnoreWhitespace !== false;
 // "sounds": true: Herdr's done / blocked sound with it (or alone).
 export const toastsOn = () => prefs().notifications !== false;
 export const soundsOn = () => prefs().sounds === true;
+// "commitStyle": "plain" | "conventional" | "template" (see the header); anything else is "plain".
+export const COMMIT_STYLES = ["plain", "conventional", "template"];
+export const commitStyle = () => (COMMIT_STYLES.includes(prefs().commitStyle) ? prefs().commitStyle : "plain");
 // "followUp": "steer" makes a message sent while the agent works interrupt it; the default queues it.
 export const followUp = () => (prefs().followUp === "steer" ? "steer" : "queue");
 
