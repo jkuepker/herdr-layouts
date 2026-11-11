@@ -3,6 +3,8 @@
 //
 // Item kinds: user, agent, thought, tool, plan, notice.
 
+import { toolPaths } from "./secrets.js";
+
 export function emptyTranscript() {
   return { items: [], dropped: 0, usage: null, commands: [], nextId: 1 };
 }
@@ -195,6 +197,7 @@ function upsertTool(t, u, isNew, now = Date.now()) {
   if (u.kind != null) item.toolKind = u.kind;
   const detail = toolDetail(u.content);
   if (detail != null) item.detail = detail;
+  { const ps = toolPaths(u); if (ps.length) item.paths = ps; } // secrets.js: for the "secret file" chip
   if (u.locations?.length && !item.detail) item.detail = u.locations.map((l) => l.path).join("\n");
 }
 

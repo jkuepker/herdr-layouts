@@ -19,6 +19,7 @@ import { snapshot, turnStat, undoRevert, prune, chatsWithRefs, safe as refName, 
 import { checkpointsOn, followUp, limitModels, rememberModels, prefs } from "./settings.js";
 import { Diagrams, isMermaid, fit, INSTALL } from "./mermaid.js";
 import { addNotice, toMarkdown, subagents } from "./transcript.js";
+import { touchesSecret } from "./secrets.js";
 import { repoOf } from "./launcher.js";
 import { ServerWatch, serversStrip } from "./servers.js";
 
@@ -2055,6 +2056,7 @@ export class ChatPanel {
         const open = (this.expanded[m.id] || (found && !!m.detail && detailOf(m).toLowerCase().includes(this.findQuery()))) && (m.detail || m.lazy);
         const can = !!(m.detail || m.lazy);
         const trail = [];
+        if (touchesSecret(m)) trail.push(badge(k, "secret file", "warning")); // secrets.js
         if (failed) trail.push(icon("x").size(12).flex_none().text_color(k.destructive));
         if (can) trail.push(chevron(open));
         const detail = m.detail ?? (m.loading ? "Loading…" : "");

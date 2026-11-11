@@ -14,6 +14,7 @@ import { v_flex, h_flex, Editor, EditorState, InputState, Input, TextareaState, 
 import { spaces, panes, focused, exec, readTextFile, writeTextFile, watchFolder, theme, pickFolder, shared, setShared } from "herdr";
 import { tokens, alpha, icon, button, iconButton, shortPath } from "./look.js";
 import { fileIcon } from "./fileicons.js";
+import { isSecretPath } from "./secrets.js";
 import { chatPlace, showing, rememberClosed } from "./side.js";
 import { recordRecent } from "./quick.js";
 
@@ -592,13 +593,15 @@ export class FilePanel {
     const mark = c.marks[path];
     const hidden = name.startsWith(".");
     const ignored = this.isIgnored(c, path);
+    const secret = !dir && isSecretPath(path);
     return h_flex().id(`f-${path}`).h(ROW).flex_none().mx(2).pl(6 + depth * 12).pr(6).gap(4).items_center().rounded(6).cursor_pointer()
       .bg(selected ? alpha(k.foreground, 0.12) : "#00000000").hover((s) => s.bg(alpha(k.foreground, selected ? 0.12 : 0.07)))
       .role("button").accessibility_label(path)
       .on_click((_e, cx) => (dir ? this.toggle(cx, path) : this.open(cx, path)))
       .child(dir ? icon(isOpen ? "chevron-down" : "chevron-right").size(12).flex_none().text_color(k.muted) : div().w(12).flex_none())
       .child(dir ? icon(isOpen ? "folder-open" : "folder").size(14).flex_none().text_color(ignored ? alpha(k.muted, 0.5) : k.muted) : fileIcon(name, k.dark, 14).opacity(ignored ? 0.5 : 1))
-      .child(div().flex_shrink(detail ? 0 : 1).min_w(0).truncate().text_color(mark === "D" ? k.destructiveText : ignored ? alpha(k.muted, 0.7) : hidden ? k.muted : k.foreground).child(name))
+      .child(div().flex_shrink(detail ? 0 : 1).min_w(0).truncate().text_color(mark === "D" ? k.destructiveText : secret ? k.warningText : ignored ? alpha(k.muted, 0.7) : hidden ? k.muted : k.foreground).child(name))
+      .when(secret, (el) => el.child(icon("lock").size(12).flex_none().text_color(k.warningText)))
       .when(!!detail, (el) => el.child(div().flex_1().min_w(0).truncate().text_size(11).text_color(k.muted).child(detail)))
       .when(!detail, (el) => el.child(div().flex_1()))
       .when(loading, (el) => el.child(icon("refresh-cw").size(12).flex_none().text_color(k.muted).spin(1000)))
