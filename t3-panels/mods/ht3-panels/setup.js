@@ -203,7 +203,7 @@ export function setupCard(k, run) {
       .child(icon("square-terminal").size(14).flex_none().text_color(k.muted))
       .child(badge(k, run.script.name))
       .child(div().flex_1().min_w(0).truncate().text_size(12).font_family(k.mono).text_color(k.muted).child(run.script.command)))
-    .child(div().text_size(12).text_color(k.dim).truncate().child(`in ${run.on ? `${run.on}:` : ""}${shortPath(run.cwd)}`))
+    .child(div().flex_none().text_size(12).text_color(k.dim).truncate().child(`in ${run.on ? `${run.on}:` : ""}${shortPath(run.cwd)}`))
     .child(v_flex().id("ht3-setup-output").min_h(64).max_h(190).px(8).py(6).rounded(6).bg(k.background ?? k.popover).border(1).border_color(alpha(k.border, 0.7)).overflow_y_scrollbar()
       .text_size(12).font_family(k.mono).text_color(k.muted)
       .when(!run.lines.length, (el) => el.child(div().text_color(k.dim).child(s === "running" ? "No output yet." : "No output.")))
