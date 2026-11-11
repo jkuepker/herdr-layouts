@@ -36,7 +36,7 @@ export function sharedOutline(since = 0) {
 export function openOutline(cx, tab, change) {
   const box = InputState.new({ placeholder: "Filter symbols…" });
   const o = tab.outline = { box, symbols: outlineOf(tab.path, tab.state.value()), at: 0, q: null, rows: [], scroll: VirtualListScrollHandle.new(), range: null };
-  box.on("change", (_e, cx) => { o.at = 0; if (o.rows.length) o.scroll.scroll_to_item(0, "top"); change(cx); });
+  box.on("change", (_e, cx) => { o.at = 0; change(cx); });
   cx.timer.after(0, () => box.focus());
   return o;
 }
@@ -56,7 +56,6 @@ export function outlineKey(o, key, cx, { pick, close }) {
   if ((key !== "up" && key !== "down") || !n) return;
   o.at = (o.at + (key === "down" ? 1 : -1) + n) % n;
   const r = o.range;
-  if (!r || o.at - 1 < r.start || o.at + 1 >= r.end) o.scroll.scroll_to_item(o.at, !r || o.at < r.start ? "top" : "center");
   cx.notify();
 }
 
@@ -97,10 +96,8 @@ export function outlineView(k, tab, { close, pick }) {
       .child(div().flex_none().text_size(11).child(o.filtered ? `${n} of ${total}` : `${total} symbol${total === 1 ? "" : "s"}`))
       .child(button(k, "outline-close", "Close", (cx) => close(cx), { variant: "ghost-muted" })))
     .when(!!note, (el) => el.child(div().px(12).py(8).text_size(12).text_color(k.muted).child(note)))
-    .when(!note, (el) => el.child(v_flex().relative().flex_1().min_h(0).py(4)
-      .child(v_virtual_list("ht3-outline-list", n, ROW, (i) => `o:${i}:${rows[i].sym.line}`,
-        (range) => { o.range = { start: range.start, end: range.end }; return Array.from({ length: range.end - range.start }, (_, i) => row(range.start + i)); })
-        .track_scroll(o.scroll).size_full()
-        .on_item_click((key, cx) => { const i = Number(key.split(":")[1]); if (rows[i]) { o.at = i; pick(cx, rows[i].sym.line); } }))
-      .child(Scrollbar.vertical("ht3-outline-list").absolute().inset_0())));
+    // A plain list (as History): a virtual list gets no height in the editor's column. 500 rows at most are drawn.
+    .when(!note, (el) => el.child(v_flex().id("ht3-outline-list").flex_1().min_h(0).overflow_y_scrollbar().py(4)
+      .children(Array.from({ length: Math.min(n, 500) }, (_, i) => row(i)))
+      .when(n > 500, (e) => e.child(div().px(16).py(6).text_size(11).text_color(k.muted).child(`${n - 500} more: type to narrow.`)))));
 }
