@@ -1,7 +1,8 @@
 // The file panel: T3 Code's Files surface (apps/web/src/components/files and
-// RightPanelTabs.tsx) in gpui-kit. A strip of tabs (Files, then one per open file, a dot on
-// an unsaved one), the open file in an editor on the left and the file explorer on the
-// right; with no file open the explorer fills the panel.
+// RightPanelTabs.tsx) in gpui-kit. One row: a button that shows or hides the file explorer,
+// then a tab per open file (a dot on an unsaved one). The explorer sits on the left of the
+// open file; with no file open it fills the panel. The side panel's own Files tab already
+// names this surface, so the row has no Files tab of its own.
 //
 // The listing, the git marks and the folder watch are the shipped `files` mod's (Herdr,
 // Apache-2.0), as Shepherdr's and xo-files' panels use them. New here: tabs, editing and
@@ -72,7 +73,7 @@ export class FilePanel {
 
   close() {}
 
-  // "save" (Cmd+S from keys.json), and "open:<path>" so a key, a script or another mod can
+  // "save" (Cmd+S from keys.json), "tree" (shows or hides the explorer beside an open file), and "open:<path>" so a key, a script or another mod can
   // show a file: a path in the shown folder, or an absolute one anywhere (outside the shown folder,
   // Files moves to that file's repository, else its folder, as if picked with Open folder…).
   // For the Lines view (linesView): "lines" shows or hides it, "line:<n>" or "line:<a>-<b>" picks lines ("line:" lets go),
@@ -80,6 +81,7 @@ export class FilePanel {
   command(c, cx) {
     const t = this.tab();
     if (c === "save") this.save(cx, t);
+    else if (c === "tree") { if (this.ctx) this.ctx.tree = !this.ctx.tree; }
     else if (c === "lines") { if (t?.state) { t.lines = !t.lines; this.pickLine(cx, t, null); } }
     else if (c.startsWith("line:")) {
       const m = /^(\d+)(?:-(\d+))?$/.exec(c.slice(5));
@@ -491,8 +493,8 @@ export class FilePanel {
     return root
       .when(c.tabs.length > 0, (el) => el.child(this.strip(k, c)))
       .child(h_flex().flex_1().min_h(0).items_stretch()
-        .when(!!tab, (el) => el.child(this.fileView(k, c, tab)))
-        .when(!tab || c.tree, (el) => el.child(this.explorer(k, c, !tab))));
+        .when(!tab || c.tree, (el) => el.child(this.explorer(k, c, !tab)))
+        .when(!!tab, (el) => el.child(this.fileView(k, c, tab))));
   }
 
   // RightPanelTabs.tsx: 24px tabs, 6 round, the active one filled.
@@ -513,8 +515,10 @@ export class FilePanel {
         .hover((s) => s.bg(k.input)).on_click((_e, cx) => { cx.stop_propagation?.(); close(cx); }).child(icon("x").size(12)));
       return el;
     };
-    return h_flex().id("ht3-files-tabs").h(32).flex_none().pl(8).pr(12).gap(4).items_center().overflow_hidden()
-      .child(tabEl("tab-files", c.active < 0, "files", "Files", { select: (cx) => { c.active = -1; cx.notify(); }, tip: c.on ? `${c.on}:${c.root}` : shortPath(c.root) }))
+    const where = c.on ? `${c.on}:${c.root}` : shortPath(c.root);
+    return h_flex().id("ht3-files-tabs").h(32).flex_none().pl(8).pr(12).gap(4).items_center().overflow_hidden().border_b(1).border_color(alpha(k.border, 0.6))
+      .child(iconButton(k, "file-tree", "panel-left", (cx) => { c.tree = !c.tree; cx.notify(); }, { on: c.tree, tip: `${c.tree ? "Hide" : "Show"} file explorer · ${where}` }))
+      .child(div().w(1).h(16).mx(2).flex_none().bg(alpha(k.border, 0.8)))
       .children(c.tabs.map((t, i) => tabEl(`tab-${t.path}`, c.active === i, "file", t.path.split("/").pop(), {
         dirty: t.dirty, tip: t.dirty ? `${t.path} · unsaved` : t.path,
         select: (cx) => { if (c.tabs[i] === t) c.active = i; cx.notify(); }, close: (cx) => this.shut(cx, i) })));
@@ -536,8 +540,7 @@ export class FilePanel {
       .when(!tab.readonly && !!tab.state, (el) => el.child(button(k, "file-save", tab.saving ? "Saving…" : "Save", (cx) => this.save(cx, tab),
         { variant: tab.dirty ? "default" : "outline", disabled: !tab.dirty || tab.saving, glyph: "save", tip: "Save file (Cmd+S)" })))
       .when(!!tab.state, (el) => el.child(iconButton(k, "file-lines", "list-plus", (cx) => { tab.lines = !tab.lines; this.pickLine(cx, tab, null); }, { on: !!tab.lines, tip: tab.lines ? "Back to the editor" : "Lines: a + beside each line, to insert after it or add it to the chat" })))
-      .child(iconButton(k, "file-wrap", "text-wrap", (cx) => this.setWrap(cx), { on: this.wrap, tip: this.wrap ? "Disable word wrap" : "Enable word wrap" }))
-      .child(iconButton(k, "file-tree", "panel-right", (cx) => { c.tree = !c.tree; cx.notify(); }, { on: c.tree, tip: c.tree ? "Hide file explorer" : "Show file explorer" }));
+      .child(iconButton(k, "file-wrap", "text-wrap", (cx) => this.setWrap(cx), { on: this.wrap, tip: this.wrap ? "Disable word wrap" : "Enable word wrap" }));
     return v_flex().flex_1().min_w(0).min_h(0)
       .child(head)
       .when(c.on != null, (el) => el.child(banner(`Read-only: this space is on ${c.on}, and Herdr can only write files on this computer.`, k.muted)))
@@ -615,7 +618,7 @@ export class FilePanel {
         .when(c.limited, (el) => el.child(say(`Showing at most ${PER_FOLDER} entries per folder and ${TOTAL.toLocaleString("en-US")} in all.`)));
     }
     let el = v_flex().min_h(0).bg(k.background);
-    el = fill ? el.flex_1().min_w(0) : el.w(256).flex_none().border_l(1).border_color(alpha(k.border, 0.6));
+    el = fill ? el.flex_1().min_w(0) : el.w(224).flex_none().border_r(1).border_color(alpha(k.border, 0.6));
     return el
       .child(h_flex().h(36).flex_none().px(8).gap(4).items_center()
         .child(iconButton(k, "files-refresh", "refresh-cw", (cx) => { c.files = null; this.refresh(cx); this.index(cx); }, { tip: c.loading ? "Refreshing…" : "Refresh files" }))
