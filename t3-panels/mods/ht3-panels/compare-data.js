@@ -120,10 +120,11 @@ export function keepCheck(side, main) {
 }
 
 // Merges `branch` into the main checkout's current branch (`git merge --no-edit`). A conflict is aborted at once.
+// `opts.noFf` with `opts.message` (the Tasks surface's Merge): `git merge --no-ff <branch> -m <message>`, always a merge commit.
 // -> { ok: true, upToDate, head } | { ok: false, conflict: true, files, aborted } | { ok: false, error }.
-export async function mergeBranch(exec, main, branch) {
+export async function mergeBranch(exec, main, branch, opts = {}) {
   const ctx = { cwd: main.folder, on: main.on };
-  const r = await git(exec, ctx, ["merge", "--no-edit", branch], 120000);
+  const r = await git(exec, ctx, opts.noFf ? ["merge", "--no-ff", branch, "-m", String(opts.message ?? `Merge ${branch}`)] : ["merge", "--no-edit", branch], 120000);
   if (r.code === 0) {
     const h = await git(exec, ctx, ["rev-parse", "--short", "HEAD"], 15000);
     return { ok: true, upToDate: /Already up to date/i.test(r.stdout), head: h.stdout.trim() };

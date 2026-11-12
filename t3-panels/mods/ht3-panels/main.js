@@ -136,6 +136,8 @@ class Buttons {
     // {"op":"run"|"done"|"delete","project":"<folder>","id":"…"} ("machine": a project on another machine; done: false reopens),
     // {"op":"answer","project":"<folder>","id":"…","ask":"<the ask's id in state.json>","option":"<one of its optionIds>"}: answers
     // the approval that task's chat waits for, once (a stale ask, an unknown option and an "always" option are refused).
+    // {"op":"ready","project":"<folder>","id":"…","note":"…"}: the task's work was looked at and can be merged; the Tasks row says
+    // so and the person is told. Merging is the person's (the row's Merge button, tasks.js): no op commits or merges.
     // How each went is in the coordinator's state.json (`ops`), which the keeper keeps up to date.
     // coord-post:<text>: posts that text to the coordinator chat as a message (shared "ht3-panels.post"; chat.js sends it when
     // the chat is shown: at once if its agent is ready, else queued). The keeper's own task notices go the same way.

@@ -8,6 +8,11 @@
 // - it acts through the keeper's commands: `coord:<json>` adds, runs, marks done and deletes tasks of any project
 //   (coord-data.js `parseOp`), the tasks the Tasks surface shows (tasks.js), run as that surface runs them (`startTask`);
 //   its `answer` answers the approval a task's chat waits for, once, as the Inbox card does (chat.js `asking`);
+//   its `ready` marks a task's work as looked at and good to merge (`run.ready`): the Tasks row shows "Ready to merge" and
+//   the person is told. Merging is the person's (the row's Merge button, tasks.js): no command here commits or merges;
+// - the keeper reads each run task's worktree (commits ahead of the branch it came from, uncommitted files): when its
+//   chat's state changed and every 15 seconds for an open task, once for a done one; kept in shared "ht3-panels.work"
+//   for the Tasks surface and written into state.json as `ahead` and `dirty`;
 // - the keeper tells it what happened: when a task's chat finished, failed, waits for an approval or was closed, one
 //   short message goes into the coordinator chat (shared "ht3-panels.post", which chat.js takes), at most one in 45
 //   seconds, unless settings.js `coordinatorNotify` is off. `coord-post:<text>` posts any text to it the same way.
@@ -18,10 +23,10 @@ import { MOD } from "./look.js";
 import { AGENTS, detect } from "./agent-acp.js";
 import { repoOf } from "./launcher.js";
 import { roleAgent, roleSet, coordinatorNotify } from "./settings.js";
-import { tasksOf, taskKeys, update, newId, startTask, observe } from "./tasks.js";
-import { newTask, patch, remove, keyOf, chatState } from "./tasklist.js";
+import { tasksOf, taskKeys, update, newId, startTask, observe, workAll, setWork, WORK_EVERY_MS } from "./tasks.js";
+import { newTask, patch, remove, keyOf, chatState, readWork } from "./tasklist.js";
 import { lastReply } from "./compare-data.js";
-import { parseOp, logOp, snapshot, templateDue, pickAnswer, taskStates, noticeDiff, noticeText } from "./coord-data.js";
+import { parseOp, logOp, snapshot, templateDue, pickAnswer, readyCheck, taskStates, noticeDiff, noticeText } from "./coord-data.js";
 import { VERSION, roleText, SETTINGS } from "./coord-template.js";
 
 export const CHAT = "coordinator", SPACE = "Coordinator";
@@ -40,6 +45,8 @@ let writing = false;
 let seen = null; // each task's state at the last pass (coord-data.js taskStates); null until the first one
 const due = new Map(); // the tasks whose news waits to be told: "<key>\n<task id>" -> the state it came into
 let noticedAt = 0; // when the last notice went
+const looked = new Map(); // "<key>\n<task id>" -> { at, state, chat }: when its worktree was last read, and its chat's state then
+const looking = new Set(); // the ones being read now
 
 // What chatState reads, as things are now, and the approvals that wait (tab -> ask).
 const facts = () => ({ places: shared(`${MOD}.places`) ?? {}, status: shared(`${MOD}.status`) ?? {}, turns: shared(`${MOD}.turns`) ?? {},
@@ -81,6 +88,13 @@ export async function coordCommand(text) {
       entry.option = pick.name;
       setShared(`${MOD}.answers`, { ...(shared(`${MOD}.answers`) ?? {}), [tab]: { ask: pick.ask, optionId: pick.optionId } });
     }
+    // The task's work was looked at and can be merged: the row says so and the person is told. Merging stays theirs.
+    if (o.op === "ready") {
+      const t = find(), no = readyCheck(t, workAll()[`${key}\n${t.id}`]);
+      if (no) throw new Error(no);
+      update(key, (l) => patch(l, o.id, (x) => (x.run ? { run: { ...x.run, ready: { at: Date.now(), note: o.note } } } : {})));
+      notify({ title: "Ready to merge", body: `${t.title} is ready to merge`, level: "info" });
+    }
     if (o.op === "run" || o.run) await runOne(key, find());
     entry.ok = true;
   } catch (e) {
@@ -115,6 +129,25 @@ async function replyOf(chat, stamp, working) {
   return text;
 }
 
+// Each pass of writeState: reads the worktrees that are due (not awaited: the next pass writes what they found). A
+// task that was run and isn't merged is read when it wasn't yet, when its chat's state changed, and every
+// WORK_EVERY_MS while it is open; a done one is not read again on the clock.
+function lookAtWork(tasks, f) {
+  const now = Date.now(), have = new Set();
+  for (const [key, list] of Object.entries(tasks)) for (const t of list) {
+    if (!t.run?.path || t.run.merged) continue;
+    const mark = `${key}\n${t.id}`, state = chatState(t.run, f).state, had = looked.get(mark);
+    have.add(mark);
+    if (looking.has(mark) || (had && had.chat === t.run.chat && had.state === state && (t.done || now - had.at < WORK_EVERY_MS))) continue;
+    looking.add(mark);
+    looked.set(mark, { at: now, state, chat: t.run.chat });
+    readWork(exec, t.run).then((w) => setWork(mark, w)).catch(() => null).finally(() => looking.delete(mark));
+  }
+  for (const mark of looked.keys()) if (!have.has(mark)) looked.delete(mark);
+  const all = workAll(), gone = Object.keys(all).filter((mark) => !have.has(mark));
+  if (gone.length) for (const mark of gone) setWork(mark, null);
+}
+
 // The keeper's, every two seconds and after each command: state.json as things are now, written when it changed.
 export async function writeState() {
   if (writing) return;
@@ -124,6 +157,7 @@ export async function writeState() {
     for (const key of keys) observe(key);
     const tasks = Object.fromEntries(keys.map((key) => [key, tasksOf(key)]));
     const f = facts(), { turns, places, status } = f;
+    lookAtWork(tasks, f);
     const said = {};
     for (const t of Object.values(tasks).flat()) {
       if (!t.run) continue;
@@ -131,7 +165,7 @@ export async function writeState() {
       said[t.run.chat] = await replyOf(t.run.chat, `${word}:${turns[tab] ?? 0}`, word === "working");
     }
     for (const chat of replies.keys()) if (!(chat in said)) replies.delete(chat);
-    const body = snapshot({ spaces: spaces(), tasks, facts: f, replies: said, making: Object.fromEntries(making), ops, skip: coordDir() });
+    const body = snapshot({ spaces: spaces(), tasks, facts: f, replies: said, making: Object.fromEntries(making), ops, skip: coordDir(), work: workAll() });
     const text = JSON.stringify(body, null, 2) + "\n";
     if (text !== written) {
       await exec("mkdir", ["-p", coordDir()]).catch(() => null);

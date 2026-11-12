@@ -14,11 +14,21 @@
 //   The row then says "on <branch>" with the chat's state, read where the Inbox reads it (report.js: shared
 //   "ht3-panels.places", ".status", ".turns"): working, waiting for you (the agent asks), done or failed; a click on the
 //   row shows that chat. Marking a task done is the person's: a finished chat doesn't do it.
+// - Merge: the agent is told to commit on its branch (tasklist.js PROMPT_RULES), and the person takes the work in with
+//   one click. A run task's row says what its worktree holds ("2 commits, 3 uncommitted files": shared
+//   "ht3-panels.work", which the keeper reads, coordinator.js) and, once the coordinator marked it, "Ready to merge".
+//   Merge asks once in a row at the foot ("Merge task-x into main: 2 commits, commits 3 changed files first?" Yes / No),
+//   then (tasklist.js mergeTask) commits what is uncommitted in the worktree and runs `git merge --no-ff <branch>
+//   -m "Merge task: <title>"` in the folder that is on the branch the task was made from. Refused with the reason when
+//   that branch is checked out nowhere, that folder has uncommitted files, or the agent still works; a conflict is
+//   aborted. A merged task is marked done, keeps `run.merged = { at, commit }` and offers Remove worktree
+//   (`git worktree remove`, `git branch -d`; kept while it has uncommitted files). How each went is said at the foot.
 // - Notes: plain text per folder (a worktree is a folder of its own), saved a moment after the last change to
 //   `data/ht3-panels/notes/<name from the folder>.txt` in the app's folder, never in the repository.
 // For scripts: with the surface shown, `tasks-add:<title>`, `tasks-run:<n>` (the nth task, from 0, in the list's order),
 // `tasks-done:<n>` (toggles), `tasks-delete:<n>` (twice deletes), `tasks-up:<n>`, `tasks-down:<n>`, `tasks-tab:<tasks|notes>`,
-// `tasks-notes:<text>` (replaces the notes).
+// `tasks-notes:<text>` (replaces the notes), `tasks-merge:<task id>` (asks), `tasks-yes` / `tasks-no` (answer it),
+// `tasks-cleanup:<task id>` (Remove worktree).
 
 import { div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea } from "gpui-base";
@@ -29,7 +39,8 @@ import { projectOf } from "./scripts.js";
 import { addWorktree, repoOf } from "./launcher.js";
 import { AGENTS, detect } from "./agent-acp.js";
 import { roleAgent, roleSet } from "./settings.js";
-import { cleanTasks, newTask, patch, remove, move, canMove, promptOf, branchFor, chatState, STATE_LABEL, notesFile, TITLE_MAX, parseKey, spaceIn } from "./tasklist.js";
+import { cleanTasks, newTask, patch, remove, move, canMove, promptOf, branchFor, chatState, STATE_LABEL, notesFile, TITLE_MAX, parseKey, spaceIn,
+  readWork, workWords, hasWork, BUSY_STATES, mergePlan, mergeTask, mergeWords, cleanupTask } from "./tasklist.js";
 
 const KEY = `${MOD}.tasks`;
 const NOTES_SAVE_MS = 800; // after the last change
@@ -46,6 +57,20 @@ function setTasks(key, list) {
 export const update = (key, fn) => setTasks(key, fn(tasksOf(key)));
 // Every project's key that has tasks.
 export const taskKeys = () => Object.keys(shared(KEY) ?? {});
+
+// What the run tasks' worktrees hold, as last read (tasklist.js readWork): shared "ht3-panels.work",
+// { "<project key>\n<task id>": { ahead, dirty, branch } | { missing: true } }. The keeper reads them (coordinator.js),
+// an open task's at most every WORK_EVERY_MS; this surface reads one again after it changed it.
+const WORK = `${MOD}.work`;
+export const WORK_EVERY_MS = 15000;
+export const workAll = () => shared(WORK) ?? {};
+export function setWork(mark, w) {
+  const all = workAll();
+  if (w == null ? !(mark in all) : JSON.stringify(all[mark]) === JSON.stringify(w)) return;
+  const next = { ...all };
+  if (w == null) delete next[mark]; else next[mark] = w;
+  setShared(WORK, next);
+}
 
 // The notes' folder and file; the folder is made with `mkdir -p` (a mod's fs has no mkdir).
 const notesDir = () => `${appHome()}/data/${MOD}/notes`;
@@ -139,6 +164,9 @@ export class TasksPanel {
     this.errors = new Map(); // task id -> why the last run didn't start
     this.editing = null; // task id
     this.armed = null; // task id whose bin was pressed once
+    this.asking = null; // Merge's question: { id (the task's), text }
+    this.busy = new Map(); // task id -> "merging" | "removing"
+    this.said = null; // how the last merge or removal went: { text, bad, offer? (a merged task's id, to remove its worktree) }
     this.doneOpen = false;
     this.showNote = false; // the add box's note field
     this.title = InputState.new({ placeholder: "Add a task" });
@@ -182,6 +210,8 @@ export class TasksPanel {
     this.project = null;
     this.editing = null;
     this.armed = null;
+    this.asking = null;
+    this.said = null;
     this.noteLoaded = false;
     this.notePath = null;
     this.notes.set_value("");
@@ -285,6 +315,71 @@ export class TasksPanel {
     if (s.pane) run("pane.focus", { pane: s.pane });
   }
 
+  // ---- Merge and Remove worktree ----
+
+  workOf(t) { return this.project ? workAll()[`${this.project.key}\n${t.id}`] ?? null : null; }
+  byId(id) { return this.list().find((t) => t.id === id) ?? null; }
+  // Merge, first click: what it would do is read now and asked in the row at the foot; a refusal is said there instead.
+  askMerge(t, cx) {
+    const project = this.project;
+    if (!project || this.busy.has(t.id)) return;
+    this.busy.set(t.id, "merging");
+    this.said = null;
+    this.asking = null;
+    cx.notify();
+    // The click's cx goes stale at the first await: the spawn's own is used after it.
+    cx.spawn(async (acx) => {
+      let plan;
+      try { plan = await mergePlan(exec, { root: project.root, t, state: this.stateOf(t)?.state ?? null }); } catch (e) { plan = { ok: false, why: String(e?.message ?? e).split("\n").pop() }; }
+      this.busy.delete(t.id);
+      if (this.project?.key === project.key) {
+        if (plan.ok) this.asking = { id: t.id, text: plan.text }; else this.said = { text: plan.why, bad: true };
+      }
+      acx.notify();
+    });
+  }
+  // The question's answer. Yes merges, if things still stand as the question said; if not, it asks again with what is true now.
+  answerMerge(yes, cx) {
+    const q = this.asking, project = this.project, t = q ? this.byId(q.id) : null;
+    this.asking = null;
+    if (!yes || !q || !project || !t || this.busy.has(t.id)) return cx.notify();
+    this.busy.set(t.id, "merging");
+    cx.notify();
+    cx.spawn(async (acx) => {
+      const mark = `${project.key}\n${t.id}`;
+      let r;
+      try { r = await mergeTask(exec, { root: project.root, t, state: this.stateOf(t)?.state ?? null, expect: q.text }); } catch (e) { r = { ok: false, refused: true, error: String(e?.message ?? e).split("\n").pop() }; }
+      if (r.ok) {
+        update(project.key, (l) => patch(l, t.id, (x) => (x.run ? { done: true, run: { ...x.run, merged: { at: Date.now(), commit: r.commit } } } : {})));
+        setWork(mark, null);
+      } else if (r.committed) setWork(mark, await readWork(exec, t.run));
+      this.busy.delete(t.id);
+      if (this.project?.key === project.key) {
+        if (r.changed) this.asking = { id: t.id, text: r.plan.text };
+        else this.said = { ...mergeWords(r), ...(r.ok ? { offer: t.id } : {}) };
+      }
+      acx.notify();
+    });
+  }
+  // Remove worktree, for a merged task: its folder and its branch (tasklist.js cleanupTask).
+  cleanup(t, cx) {
+    const project = this.project;
+    if (!project || this.busy.has(t.id)) return;
+    this.busy.set(t.id, "removing");
+    this.said = null;
+    cx.notify();
+    cx.spawn(async (acx) => {
+      let r;
+      try { r = await cleanupTask(exec, { root: project.root, t }); } catch (e) { r = { ok: false, error: String(e?.message ?? e).split("\n").pop() }; }
+      if (r.ok) update(project.key, (l) => patch(l, t.id, (x) => (x.run?.merged ? { run: { ...x.run, merged: { ...x.run.merged, removed: true } } } : {})));
+      this.busy.delete(t.id);
+      if (this.project?.key === project.key) {
+        this.said = r.ok ? { bad: false, text: `Removed the worktree of ${t.run.branch}${r.branch === "deleted" ? " and deleted the branch." : `. The branch was kept: ${r.why}`}` } : { bad: true, text: r.error };
+      }
+      acx.notify();
+    });
+  }
+
   // ---- notes ----
 
   onNoteChange(cx) {
@@ -325,6 +420,9 @@ export class TasksPanel {
     else if (c.startsWith("tasks-up:")) { const t = at(c.slice(9)); if (t) this.shift(t, -1, cx); }
     else if (c.startsWith("tasks-down:")) { const t = at(c.slice(11)); if (t) this.shift(t, 1, cx); }
     else if (c === "tasks-tab:notes" || c === "tasks-tab:tasks") this.tab = c.slice(10);
+    else if (c.startsWith("tasks-merge:")) { const t = this.byId(c.slice(12)); if (t) this.askMerge(t, cx); }
+    else if (c === "tasks-yes" || c === "tasks-no") this.answerMerge(c === "tasks-yes", cx);
+    else if (c.startsWith("tasks-cleanup:")) { const t = this.byId(c.slice(14)); if (t) this.cleanup(t, cx); }
     else if (c.startsWith("tasks-notes:")) { this.notes.set_value(c.slice(12)); this.onNoteChange(cx); } // set_value sends no change event
     cx.notify();
   }
@@ -393,12 +491,56 @@ export class TasksPanel {
       .when(state === "failed" && !!s.why, (el) => el.tooltip(s.why));
   }
 
+  // What the task's worktree holds and the person's step with it: "2 commits, 3 uncommitted files", "Ready to merge"
+  // once the coordinator said so, and Merge; after the merge, where it went and Remove worktree. Null when there is nothing to say.
+  mergeLine(k, t) {
+    const r = t.run, doing = this.busy.get(t.id);
+    if (!r) return null;
+    if (r.merged) {
+      return h_flex().pl(24).gap(6).items_center().min_w(0).text_size(12)
+        .child(icon("git-merge").size(14).flex_none().text_color(k.successText))
+        .child(div().flex_1().min_w(0).truncate().text_color(k.muted).child(`merged into ${r.from ?? "its branch"}${r.merged.commit ? ` (${r.merged.commit})` : ""}${r.merged.removed ? ", worktree removed" : ""}`))
+        .when(!r.merged.removed, (el) => el.child(button(k, `task-cleanup-${t.id}`, doing === "removing" ? "Removing…" : "Remove worktree", (cx) => this.cleanup(t, cx),
+          { variant: "outline", size: "xs", glyph: "trash-2", disabled: !!doing, tip: "Removes the task's worktree folder and deletes its branch (git branch -d). Kept while it has uncommitted files." })));
+    }
+    const w = this.workOf(t), words = workWords(w), state = this.stateOf(t)?.state;
+    if (!words && !r.ready) return null;
+    const wait = BUSY_STATES.includes(state) || this.making.has(t.id);
+    return h_flex().pl(24).gap(6).items_center().min_w(0).text_size(12)
+      .child(icon("git-commit-horizontal").size(14).flex_none().text_color(k.muted))
+      .child(div().min_w(0).truncate().text_color(k.muted).child(words || "nothing to merge yet"))
+      .when(!!r.ready, (el) => el.child(div().id(`task-ready-${t.id}`).flex_none().tooltip(r.ready.note ? `The coordinator: ${r.ready.note}` : "The coordinator looked at it and says it can be merged").child(badge(k, "Ready to merge", "success"))))
+      .child(div().flex_1())
+      .when(hasWork(w) || !!r.ready, (el) => el.child(button(k, `task-merge-${t.id}`, doing === "merging" ? "Merging…" : "Merge", (cx) => this.askMerge(t, cx),
+        { variant: r.ready ? "default" : "outline", size: "xs", glyph: "git-merge", disabled: !!doing || wait || !this.project,
+          tip: wait ? "Its agent is still at work" : `Merges ${r.branch} into ${r.from ?? "the branch it was made from"}${w?.dirty > 0 ? ", committing its uncommitted files first" : ""}. Asks once.` })));
+  }
+
+  // The foot: Merge's question, or how the last merge or removal went (with Remove worktree after a merge).
+  foot(k) {
+    const q = this.asking, said = this.said, offer = said?.offer ? this.byId(said.offer) : null;
+    if (q) {
+      return h_flex().id("tasks-ask").flex_none().px(12).py(6).gap(8).items_center().border_t(1).border_color(k.border).bg(k.card).text_size(12)
+        .child(icon("git-merge").size(14).flex_none().text_color(k.muted))
+        .child(div().flex_1().min_w(0).child(q.text))
+        .child(button(k, "tasks-merge-no", "No", (cx) => this.answerMerge(false, cx), { variant: "outline" }))
+        .child(button(k, "tasks-merge-yes", "Yes", (cx) => this.answerMerge(true, cx), { variant: "default" }));
+    }
+    if (!said) return null;
+    return h_flex().id("tasks-said").flex_none().px(12).py(6).gap(8).items_center().border_t(1).border_color(k.border).bg(k.card).text_size(12)
+      .child(icon(said.bad ? "circle-alert" : "circle-check").size(14).flex_none().text_color(said.bad ? k.destructiveText : k.successText))
+      .child(div().flex_1().min_w(0).text_color(said.bad ? k.destructiveText : k.foreground).child(said.text))
+      .when(!!offer && !!offer.run?.merged && !offer.run.merged.removed, (el) => el.child(button(k, "tasks-said-cleanup", this.busy.get(offer.id) === "removing" ? "Removing…" : "Remove worktree", (cx) => this.cleanup(offer, cx),
+        { variant: "outline", glyph: "trash-2", disabled: this.busy.has(offer.id), tip: "Removes the task's worktree folder and deletes its branch (git branch -d)" })))
+      .child(iconButton(k, "tasks-said-close", "x", (cx) => { this.said = null; cx.notify(); }, { size: "micro", tip: "Dismiss" }));
+  }
+
   taskRow(k, t, i, list) {
     if (this.editing === t.id) return this.editForm(k, t);
     const idle = !this.making.has(t.id), s = this.stateOf(t), again = !!t.run && ["failed", "closed"].includes(s?.state);
     const live = !!s?.tab;
     const first = !canMove(list, t.id, -1), last = !canMove(list, t.id, 1);
-    const note = t.note.replace(/\s+/g, " ");
+    const note = t.note.replace(/\s+/g, " "), ml = this.mergeLine(k, t);
     return v_flex().id(`task-${t.id}`).flex_none().mx(8).px(8).py(6).gap(4).rounded(8).hover((x) => x.bg(alpha(k.foreground, 0.04)))
       .child(h_flex().gap(8).items_center()
         .child(this.checkbox(k, `task-done-${t.id}`, t.done, t.done ? `Reopen ${t.title}` : `Mark ${t.title} done`, (cx) => this.toggleDone(t, cx)))
@@ -416,6 +558,7 @@ export class TasksPanel {
         .when(live, (e) => e.cursor_pointer().role("button").accessibility_label(`Show the chat of ${t.title}`).on_click((_e, cx) => { this.focusChat(t); cx.notify(); }))
         .child(note)))
       .child(div().pl(18).child(this.runLine(k, t) ?? div()))
+      .when(!!ml, (el) => el.child(ml))
       .when(!t.done, (el) => el.child(h_flex().pl(24).gap(6).items_center()
         .child(button(k, `task-run-btn-${t.id}`, this.making.has(t.id) ? "Working…" : again ? "Run again" : t.run ? "Run again" : "Run with agent", (cx) => this.runTask(t, cx),
           { variant: !t.run || again ? "outline" : "ghost-muted", size: "xs", glyph: "play", disabled: !idle || !this.project,
@@ -426,6 +569,7 @@ export class TasksPanel {
 
   tasksBody(k) {
     const list = this.list(), open = list.filter((t) => !t.done), done = list.filter((t) => t.done);
+    const foot = this.foot(k);
     return v_flex().flex_1().min_h(0)
       .child(this.addBox(k))
       .child(v_flex().id("ht3-tasks-list").flex_1().min_h(0).py(6).gap(2).overflow_y_scrollbar()
@@ -437,7 +581,8 @@ export class TasksPanel {
           .on_click((_e, cx) => { this.doneOpen = !this.doneOpen; cx.notify(); })
           .child(icon(this.doneOpen ? "chevron-down" : "chevron-right").size(14).flex_none())
           .child(div().child(`Done (${done.length})`))))
-        .when(this.doneOpen, (el) => el.children(done.map((t, i) => this.taskRow(k, t, i, list)))));
+        .when(this.doneOpen, (el) => el.children(done.map((t, i) => this.taskRow(k, t, i, list)))))
+      .when(!!foot, (el) => el.child(foot));
   }
 
   notesBody(k) {

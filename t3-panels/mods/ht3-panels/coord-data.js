@@ -1,8 +1,8 @@
 // The coordinator's logic (coordinator.js), as pure functions: no Herdr imports, so node can test it.
 
-import { chatState, clip, TITLE_MAX, NOTE_MAX, parseKey } from "./tasklist.js";
+import { chatState, clip, TITLE_MAX, NOTE_MAX, READY_NOTE_MAX, parseKey, hasWork } from "./tasklist.js";
 
-export const OPS = ["add", "run", "done", "delete", "answer"];
+export const OPS = ["add", "run", "done", "delete", "answer", "ready"];
 export const OPS_KEPT = 20;
 // A task id the caller may choose: letters, digits, ".", "_" and "-", at most 64.
 export const cleanId = (id) => (typeof id === "string" || typeof id === "number") && /^[\w.-]{1,64}$/.test(String(id)) ? String(id) : null;
@@ -16,7 +16,8 @@ export function expandHome(path, home) {
 
 // What `coord:<json>` carries -> { op, project (a folder, absolute), machine, id, title, note, run, done }, or { error }.
 // add: { project, title, note?, run?, id?, machine? }; run, done, delete: { project, id, machine? } (done: false reopens);
-// answer: { project, id, ask, option, machine? } -> { op, project, machine, id, ask, option } (the ids as strings).
+// answer: { project, id, ask, option, machine? } -> { op, project, machine, id, ask, option } (the ids as strings);
+// ready: { project, id, note?, machine? } -> { op, project, machine, id, note } (the task's work can be merged, and why).
 export function parseOp(text, home = "") {
   let o;
   try { o = JSON.parse(text); } catch (e) { return { error: `Not JSON: ${String(e?.message ?? e)}` }; }
@@ -35,6 +36,7 @@ export function parseOp(text, home = "") {
     if (!option) return { op: o.op, project, id, error: "option is missing: one of the ask's optionIds." };
     return { op: "answer", project, machine, id, ask, option };
   }
+  if (o.op === "ready") return id ? { op: "ready", project, machine, id, note: clip(String(o.note ?? "").replace(/\s+/g, " "), READY_NOTE_MAX) } : { op: o.op, project, error: "id is missing." };
   if (o.op !== "add") return id ? { op: o.op, project, machine, id, done: o.done !== false } : { op: o.op, project, error: "id is missing." };
   const title = clip(String(o.title ?? "").split("\n")[0], TITLE_MAX);
   if (!title) return { op: o.op, project, error: "title is missing." };
@@ -54,16 +56,30 @@ export function pickAnswer(pending, ask, option) {
   return { ask: pending.id, optionId: o.optionId, title: String(pending.title ?? ""), name: String(o.name ?? o.optionId) };
 }
 
+// Whether `ready` may mark a task (`work`: its worktree as last read, or undefined when it wasn't read yet): it was run,
+// isn't merged, and has something to merge as far as is known. -> null, or the reason it may not.
+export function readyCheck(t, work) {
+  if (!t?.run) return "This task was never run: there is nothing to merge.";
+  if (t.run.merged) return "This task is merged already.";
+  if (work?.missing) return "This task's worktree is gone.";
+  if (work && !hasWork(work)) return "This task's branch has no commits ahead of the branch it was made from and no uncommitted changes: there is nothing to merge.";
+  return null;
+}
+
 // The last results, newest last, for the state file: what was asked and how it went.
 export const logOp = (log, entry) => [...(log ?? []), entry].slice(-OPS_KEPT);
 
 // The state file's body. `tasks`: shared "ht3-panels.tasks" cleaned ({ key: [task] }); `facts`: what chatState reads
 // ({ places, status, turns, tabs, now }, and `asks`: shared "ht3-panels.asks", tab -> the approval its chat waits for);
 // `replies`: chat id -> its last reply's first line; `making`: "<key>\n<task id>" ->
-// what a run that hasn't made its chat yet is doing; `skip`: a folder whose space isn't a project's (the coordinator's own).
+// what a run that hasn't made its chat yet is doing; `skip`: a folder whose space isn't a project's (the coordinator's own);
+// `work`: "<key>\n<task id>" -> its worktree as last read (tasklist.js readWork).
 // A task's state: "none" (never run), "making", or chatState's: starting, working, waiting, done, failed, closed.
 // A task whose chat waits for an approval has it as `ask`: { id, title, options: [{ optionId, name, kind }] }.
-export function snapshot({ spaces = [], tasks = {}, facts = {}, replies = {}, making = {}, ops = [], skip = null } = {}) {
+// A task that was run also says how its work stands: `from` (the branch its own was made from), `ahead` (its commits
+// ahead of that; null: not read yet, or its worktree is gone), `dirty` (it has uncommitted changes), `ready` (marked
+// ready to merge) and `merged` (the person merged it).
+export function snapshot({ spaces = [], tasks = {}, facts = {}, replies = {}, making = {}, ops = [], skip = null, work = {} } = {}) {
   return {
     spaces: spaces.filter((s) => !skip || s.folder !== skip).map((s) => ({ name: String(s.name ?? "").replace(/​/g, ""), folder: s.folder ?? "", machine: s.machine ?? null })),
     projects: Object.keys(tasks).sort().map((key) => {
@@ -73,10 +89,12 @@ export function snapshot({ spaces = [], tasks = {}, facts = {}, replies = {}, ma
         tasks: tasks[key].map((t) => {
           const busy = making[`${key}\n${t.id}`], s = t.run ? chatState(t.run, facts) : null;
           const ask = !busy && s?.tab ? facts.asks?.[s.tab] : null;
+          const w = t.run && !t.run.merged ? work[`${key}\n${t.id}`] : null;
           return { id: t.id, title: t.title, note: t.note, done: t.done, state: busy ? "making" : s?.state ?? "none",
             ...(s?.why && !busy ? { why: s.why } : {}),
             ...(ask?.id && Array.isArray(ask.options) ? { ask: { id: String(ask.id), title: String(ask.title ?? ""), options: ask.options.map((o) => ({ optionId: o.optionId, name: o.name ?? null, kind: o.kind ?? null })) } } : {}),
-            branch: t.run?.branch ?? null, path: t.run?.path ?? null, chat: t.run?.chat ?? null, lastReply: (t.run && replies[t.run.chat]) || null };
+            branch: t.run?.branch ?? null, from: t.run?.from ?? null, ahead: w && !w.missing ? w.ahead ?? null : null, dirty: !!w && !w.missing && w.dirty > 0,
+            ready: !!t.run?.ready, merged: !!t.run?.merged, path: t.run?.path ?? null, chat: t.run?.chat ?? null, lastReply: (t.run && replies[t.run.chat]) || null };
         }),
       };
     }).filter(Boolean),
