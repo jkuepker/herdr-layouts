@@ -42,7 +42,9 @@ export class LogsPanel {
     this.where = null; // { on, cwd }
     this.seen = null;
     this.path = null; // the file followed, as typed
-    this.paths = new Map(); // folder key -> the file last followed there
+    // folder key -> the file last followed there; kept in shared "ht3-panels.logPaths" too, so a mod reload or a second
+    // copy of the surface follows the same file again.
+    this.paths = new Map(Object.entries(shared(`${MOD}.logPaths`) ?? {}).filter(([, v]) => typeof v === "string"));
     this.tail = new Tailer();
     this.ver = 0; // changes whenever the lines do
     this.paused = false;
@@ -95,6 +97,7 @@ export class LogsPanel {
     if (!p || !this.where) return;
     this.path = p;
     this.pathBox.set_value(p);
+    if (this.seen != null) { this.paths.delete(this.seen); this.paths.set(this.seen, p); setShared(`${MOD}.logPaths`, Object.fromEntries([...this.paths].slice(-50))); }
     this.tail = new Tailer();
     this.ver++;
     this.said = null;

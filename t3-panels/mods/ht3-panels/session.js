@@ -147,6 +147,10 @@ export class ChatSession {
       this.state.configOptions = configFrom(r);
       // The replay holds the messages but not what they cost: the chat's token count (budget, Usage) carries over.
       if (kept.tokens) this.state.transcript.tokens = kept.tokens;
+      // So does the context window last reported (the header's "N% context", Usage), until the agent sends a new one.
+      const t = this.state.transcript;
+      if (!t.usage && kept.usage) t.usage = kept.usage;
+      if (!t.usageLog?.length && kept.usageLog?.length) t.usageLog = kept.usageLog;
       endTurn(this.state.transcript);
       addNotice(this.state.transcript, "Resumed the agent's session.");
       return true;

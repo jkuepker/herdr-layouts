@@ -284,7 +284,7 @@ export class TasksPanel {
     else if (c.startsWith("tasks-up:")) { const t = at(c.slice(9)); if (t) this.shift(t, -1, cx); }
     else if (c.startsWith("tasks-down:")) { const t = at(c.slice(11)); if (t) this.shift(t, 1, cx); }
     else if (c === "tasks-tab:notes" || c === "tasks-tab:tasks") this.tab = c.slice(10);
-    else if (c.startsWith("tasks-notes:")) this.notes.set_value(c.slice(12));
+    else if (c.startsWith("tasks-notes:")) { this.notes.set_value(c.slice(12)); this.onNoteChange(cx); } // set_value sends no change event
     cx.notify();
   }
   command(c, cx) { if (showing(this.group, "tasks")) this.command_(c, cx); }

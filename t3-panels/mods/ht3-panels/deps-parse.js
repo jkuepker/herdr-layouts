@@ -235,6 +235,23 @@ const PY = 'PY=python3; [ -x .venv/bin/python ] && PY=.venv/bin/python; ';
 const names = (rows) => rows.map((r) => shq(r.name));
 const at = (rows, sep = "@") => rows.map((r) => shq(`${r.name}${sep}${r.latest}`));
 
+// package.json's packages pinned to one exact version ("4.17.15", "=4.17.15", "v4.17.15"): an update keeps them exact, as the
+// package managers would otherwise write their default range (npm, pnpm and bun "^", yarn "^") over the pin.
+export function exactPins(pkg) {
+  const out = new Set();
+  for (const key of ["dependencies", "devDependencies", "optionalDependencies"]) {
+    for (const [name, spec] of Object.entries(pkg?.[key] ?? {})) if (typeof spec === "string" && /^[=v]?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(spec.trim())) out.add(name);
+  }
+  return out;
+}
+// One update command for the ranged rows and one for the exact ones (`pinned`), joined with &&.
+function keepPins(exact, rows, ranged, pinned) {
+  const p = rows.filter((r) => exact.has(r.name)), r = rows.filter((x) => !exact.has(x.name));
+  return [r.length ? ranged(r) : null, p.length ? pinned(p) : null].filter(Boolean).join(" && ");
+}
+// pnpm add and bun add put a package in dependencies unless told -D / -d: the dev ones go in a command of their own.
+const byDev = (rows, cmd) => [rows.filter((r) => !r.dev), rows.filter((r) => r.dev)].filter((g) => g.length).map((g) => cmd(g, g[0].dev)).join(" && ");
+
 function declaredPython(files) {
   const out = new Set();
   for (const l of String(files["requirements.txt"] ?? "").split("\n")) {
@@ -262,13 +279,18 @@ export function detectEcosystems(files = {}) {
     const devNames = Object.keys(pkg.devDependencies ?? {});
     const any = Object.keys(pkg.dependencies ?? {}).length + devNames.length + Object.keys(pkg.optionalDependencies ?? {}).length > 0;
     if (any) {
-      const base = { devNames, berry };
-      if (pm === "pnpm") out.push({ id: "pnpm", label: "pnpm", tool: "pnpm", check: guard("pnpm", "pnpm outdated --format json"), ...base, update: (rows) => `pnpm update ${names(rows).join(" ")} --latest` });
-      else if (pm === "bun") out.push({ id: "bun", label: "bun", tool: "bun", check: guard("bun", "bun outdated"), ...base, update: (rows) => `bun update --latest ${names(rows).join(" ")}` });
-      else if (pm === "yarn" && !berry) out.push({ id: "yarn", label: "yarn", tool: "yarn", check: guard("yarn", "yarn outdated --json"), ...base, update: (rows) => `yarn upgrade ${at(rows).join(" ")}` });
+      const base = { devNames, berry }, exact = exactPins(pkg), keep = (ranged, pinned) => (rows) => keepPins(exact, rows, ranged, pinned);
+      if (pm === "pnpm") out.push({ id: "pnpm", label: "pnpm", tool: "pnpm", check: guard("pnpm", "pnpm outdated --format json"), ...base,
+        update: keep((rows) => `pnpm update ${names(rows).join(" ")} --latest`, (rows) => byDev(rows, (g, dev) => `pnpm add --save-exact${dev ? " -D" : ""} ${at(g).join(" ")}`)) });
+      else if (pm === "bun") out.push({ id: "bun", label: "bun", tool: "bun", check: guard("bun", "bun outdated"), ...base,
+        update: keep((rows) => `bun update --latest ${names(rows).join(" ")}`, (rows) => byDev(rows, (g, dev) => `bun add --exact${dev ? " -d" : ""} ${at(g).join(" ")}`)) });
+      else if (pm === "yarn" && !berry) out.push({ id: "yarn", label: "yarn", tool: "yarn", check: guard("yarn", "yarn outdated --json"), ...base,
+        update: keep((rows) => `yarn upgrade ${at(rows).join(" ")}`, (rows) => `yarn upgrade --exact ${at(rows).join(" ")}`) });
       // yarn 2+ has no `outdated`: npm reads package.json and node_modules (a Plug'n'Play project has none: it says so).
-      else if (berry) out.push({ id: "npm", label: "yarn (read with npm)", tool: "npm", check: guard("npm", "npm outdated --json"), ...base, update: (rows) => `yarn up ${at(rows).join(" ")}` });
-      else out.push({ id: "npm", label: "npm", tool: "npm", check: guard("npm", "npm outdated --json"), ...base, update: (rows) => `npm install ${at(rows).join(" ")}` });
+      else if (berry) out.push({ id: "npm", label: "yarn (read with npm)", tool: "npm", check: guard("npm", "npm outdated --json"), ...base,
+        update: keep((rows) => `yarn up ${at(rows).join(" ")}`, (rows) => `yarn up --exact ${at(rows).join(" ")}`) });
+      else out.push({ id: "npm", label: "npm", tool: "npm", check: guard("npm", "npm outdated --json"), ...base,
+        update: keep((rows) => `npm install ${at(rows).join(" ")}`, (rows) => `npm install --save-exact ${at(rows).join(" ")}`) });
     }
   }
   const py = files["pyproject.toml"];

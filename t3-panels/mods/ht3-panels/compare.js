@@ -21,7 +21,7 @@ import { exec, closeOverlay, openOverlay, run, appHome, readTextFile, shared, se
 import { MOD, tokens, alpha, icon, button, iconButton, badge, shortPath } from "./look.js";
 import { activeSpace, spaceState, GROUPS, send } from "./side.js";
 import { agentName } from "./report.js";
-import { compareSides, keepCheck, keepSide, removeWorktreeFolder, lastReply, plural } from "./compare-data.js";
+import { compareSides, lookAt, keepCheck, keepSide, removeWorktreeFolder, lastReply, plural } from "./compare-data.js";
 
 export const COMPARE_SIZE = { width: 1040, height: 700 };
 const OPEN = `${MOD}.compare-open`, LAST = `${MOD}.compare-last`;
@@ -118,8 +118,17 @@ export class CompareDialog {
     });
   }
 
+  // The saved chats for the picker, and, with one side known, its repository's main checkout (`repoGuess`), so the picker
+  // lists that repository's chats first before both sides are read.
   loadChats(cx) {
-    cx.spawn(async (acx) => { try { this.chats = await readChats(); } catch { this.chats = []; } acx.notify(); });
+    const known = this.ids.a ?? this.ids.b;
+    cx.spawn(async (acx) => {
+      try { this.chats = await readChats(); } catch { this.chats = []; }
+      acx.notify();
+      if (!known || this.data?.main?.folder) return;
+      try { const i = await chatInfo(known); this.repoGuess = (await lookAt(exec, { cwd: i.folder, on: i.on })).main ?? null; } catch { this.repoGuess = null; }
+      acx.notify();
+    });
   }
 
   pick(side, cx) {
@@ -236,7 +245,7 @@ export class CompareDialog {
   // ---- drawing ----
 
   pickerBody(k) {
-    const key = this.picking, otherId = this.ids[this.other(key)], main = this.data?.main?.folder;
+    const key = this.picking, otherId = this.ids[this.other(key)], main = this.data?.main?.folder ?? this.repoGuess ?? null;
     const quiet = (t) => div().px(12).py(8).text_size(12).line_height("16px").text_color(k.muted).child(t);
     const list = (this.chats ?? []).filter((c) => c.id !== otherId);
     // The ones that work inside the main checkout we already know of (its worktrees) first.
