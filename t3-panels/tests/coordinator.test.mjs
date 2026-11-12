@@ -71,12 +71,12 @@ assert.deepEqual(s.spaces, [{ name: "app", folder: "/a", machine: null }]);
 assert.equal(s.projects.length, 1);
 assert.deepEqual([s.projects[0].project, s.projects[0].machine], ["/a", null]);
 assert.deepEqual(s.projects[0].tasks.map((t) => t.state), ["none", "working", "done", "failed", "making"]);
-assert.deepEqual(s.projects[0].tasks[1], { id: "t2", title: "Two", note: "n", done: false, state: "working", branch: "task-c2", from: "main", ahead: 2, dirty: true, ready: false, merged: false, path: "/a/.worktrees/task-c2", chat: "c2", lastReply: "Reading the code" });
+assert.deepEqual(s.projects[0].tasks[1], { id: "t2", title: "Two", note: "n", done: false, state: "working", branch: "task-c2", from: "main", ahead: 2, dirty: true, ready: false, merged: false, conflict: null, path: "/a/.worktrees/task-c2", chat: "c2", lastReply: "Reading the code" });
 // A worktree not read yet, or gone: ahead null. A merged or ready task says so, and a merged one's old reading is not shown.
 assert.deepEqual(s.projects[0].tasks.map((t) => [t.ahead, t.dirty]), [[null, false], [2, true], [null, false], [null, false], [null, false]]);
 const marked = snapshot({ tasks: { ":/a": [{ id: "m", title: "M", note: "", done: true, at: 1, run: run("c9", { worked: true, ready: { at: 1, note: "ok" }, merged: { at: 2, commit: "abc1234" } }) }] }, facts: { now }, work: { ":/a\nm": { ahead: 1, dirty: 1, branch: "task-c9" } } }).projects[0].tasks[0];
 assert.deepEqual([marked.ready, marked.merged, marked.ahead, marked.dirty], [true, true, null, false]);
-assert.deepEqual(s.projects[0].tasks[0], { id: "t1", title: "One", note: "", done: false, state: "none", branch: null, from: null, ahead: null, dirty: false, ready: false, merged: false, path: null, chat: null, lastReply: null });
+assert.deepEqual(s.projects[0].tasks[0], { id: "t1", title: "One", note: "", done: false, state: "none", branch: null, from: null, ahead: null, dirty: false, ready: false, merged: false, conflict: null, path: null, chat: null, lastReply: null });
 assert.equal(s.projects[0].tasks[3].why, "The chat never started.");
 assert.deepEqual(s.ops, [{ op: "add", ok: true }]);
 // A task whose chat waits for an approval carries it; what the agent sent besides id, title and the options' three fields stays out.
@@ -122,9 +122,9 @@ const text = roleText("/coord", "/chats");
 assert.match(text, /herdr-app do 'ht3-panels\.coord:\{"op":"add"/); assert.match(text, /\/coord\/state\.json/); assert.match(text, /\/chats\/<chat>\/state\.json/);
 // Every command it shows is one parseOp takes.
 const shown = [...text.matchAll(/ht3-panels\.coord:(\{.*\})'/g)].map((m) => parseOp(m[1]));
-assert.deepEqual(shown.map((o) => o.error ?? o.op), ["add", "run", "done", "ready", "delete", "answer"]);
+assert.deepEqual(shown.map((o) => o.error ?? o.op), ["add", "run", "done", "ready", "update", "tell", "delete", "answer"]);
 assert.match(text, /mark it ready/); assert.match(text, /Merge commits them first/); assert.match(text, /never commit, merge or push/);
-assert.equal(VERSION, 6); assert.match(text, /takes the mark back/); assert.match(text, /## Approvals/); assert.match(text, /select\(\.ask\)/); assert.match(text, /Task updates \(from Herdr\):/);
+assert.equal(VERSION, 7); assert.match(text, /Never run the task again for a conflict/); assert.match(text, /git rebase --continue/); assert.match(text, /in four cases only/); assert.match(text, /takes the mark back/); assert.match(text, /## Approvals/); assert.match(text, /select\(\.ask\)/); assert.match(text, /Task updates \(from Herdr\):/);
 assert.deepEqual(JSON.parse(SETTINGS).permissions.allow, ["Bash(herdr-app do:*)", "Bash(jq:*)", "Bash(cat:*)", "Bash(git -C * status*)", "Bash(git -C * diff*)", "Bash(git -C * log*)"]);
 
 // ---- Round 24: commit and merge ----
@@ -140,7 +140,7 @@ assert.deepEqual(parseOp('{"op":"ready","project":"/a","id":"x","note":" Diff is
 assert.deepEqual(parseOp('{"op":"ready","project":"/a","id":"x","machine":"spark1"}'), { op: "ready", project: "/a", machine: "spark1", id: "x", note: "" });
 assert.equal(parseOp('{"op":"ready","project":"/a"}').error, "id is missing.");
 assert.equal(parseOp(JSON.stringify({ op: "ready", project: "/a", id: "x", note: "n".repeat(900) })).note.length, 400);
-assert.match(parseOp('{"op":"merge","project":"/a","id":"x"}').error, /Unknown op "merge": one of add, run, done, delete, answer, ready\./);
+assert.match(parseOp('{"op":"merge","project":"/a","id":"x"}').error, /Unknown op "merge": one of add, run, done, delete, answer, ready, tell, update\./);
 const ran = { id: "x", title: "X", run: run("c1") };
 assert.equal(readyCheck(ran, undefined), null); assert.equal(readyCheck(ran, { ahead: 0, dirty: 2, branch: "task-c1" }), null); assert.equal(readyCheck(ran, { ahead: 1, dirty: 0 }), null);
 assert.match(readyCheck({ id: "x", title: "X" }, undefined), /never run/);
@@ -189,7 +189,7 @@ assert.match(no(mt, { work: w(1, 0), trees, targetDirty: 2 }), /The checkout of 
 assert.match(no({ ...mt, run: { ...mt.run, branch: "-x" } }, { work: w(1, 0, "-x"), trees }), /starts with a dash/);
 // How it went, for the status line.
 assert.equal(mergeWords({ ok: true, branch: "task-x", into: "main", commit: "abc1234", committed: 3 }).text, "Merged task-x into main (abc1234). Its 3 changed files were committed on task-x. The task is done.");
-assert.match(mergeWords({ ok: false, conflict: true, aborted: true, files: ["a.js"], branch: "task-x", into: "main", committed: 0 }).text, /^task-x conflicts with main in a\.js\. The merge was aborted: main is as it was\. Ask the task's agent to rebase onto main, then merge again\.$/);
+assert.match(mergeWords({ ok: false, conflict: true, aborted: true, files: ["a.js"], branch: "task-x", into: "main", committed: 0 }).text, /^task-x conflicts with main in a\.js\. The merge was aborted: main is as it was\. Ask agent to update \(on its row\) sends it back to its agent to rebase onto main; then merge again\.$/);
 assert.deepEqual(mergeWords({ ok: false, refused: true, error: "Why." }), { bad: true, text: "Why." });
 
 // session.js setConfig: an option is found by its id, else by what it is for, and the agent gets the option's real id.

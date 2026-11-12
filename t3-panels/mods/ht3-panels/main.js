@@ -92,7 +92,8 @@ class Buttons {
     // made at the folder when there is none), then its Tasks surface.
     // tasks-show:{"project":"<folder>","machine":"…","id":"<task id>"}: the same, with that task's row drawn first and
     // framed. The "ready to merge" notification's click and the Agents list's "Ready to merge" rows send this one.
-    // (tasks-add:…, tasks-merge:… and the other tasks-<word> commands are the shown Tasks surface's own, tasks.js.)
+    // (tasks-add:…, tasks-merge:…, tasks-update:<task id> (Ask agent to update: after a Merge that conflicted, its own agent
+    // is told in its chat to rebase and commit) and the other tasks-<word> commands are the shown Tasks surface's own, tasks.js.)
     else if (name === "tasks" || name === "tasks-show") cx.spawn(async (cx) => {
       try { const o = parseShow(c); if (o.error) throw new Error(o.error); await (o.project ? showTasks(o) : openTasks(o.group ?? undefined)); } catch (e) { fail(e); }
       cx.notify();
@@ -149,6 +150,10 @@ class Buttons {
     // the approval that task's chat waits for, once (a stale ask, an unknown option and an "always" option are refused).
     // {"op":"ready","project":"<folder>","id":"…","note":"…"}: the task's work was looked at and can be merged; the Tasks row says
     // so and the person is told. Merging is the person's (the row's Merge button, tasks.js): no op commits or merges.
+    // {"op":"tell","project":"<folder>","id":"…","text":"…"}: posts that text into the task's own chat, as a message to its agent
+    // (at most 2000 characters; refused for a task never run or merged; a closed chat's tab is opened again for it).
+    // {"op":"update","project":"<folder>","id":"…"}: for a task whose Merge conflicted (state.json `conflict`): posts the fixed
+    // message that has its agent rebase onto the branch it conflicts with, resolve, run the check and commit (tasklist.js updateText).
     // How each went is in the coordinator's state.json (`ops`), which the keeper keeps up to date.
     // coord-post:<text>: posts that text to the coordinator chat as a message (shared "ht3-panels.post"; chat.js sends it when
     // the chat is shown: at once if its agent is ready, else queued). The keeper's own task notices go the same way.

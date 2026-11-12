@@ -21,14 +21,18 @@
 //   then (tasklist.js mergeTask) commits what is uncommitted in the worktree and runs `git merge --no-ff <branch>
 //   -m "Merge task: <title>"` in the folder that is on the branch the task was made from. Refused with the reason when
 //   that branch is checked out nowhere, that folder has uncommitted files, or the agent still works; a conflict is
-//   aborted. A merged task is marked done, keeps `run.merged = { at, commit }` and offers Remove worktree
+//   aborted. After a conflict the task is no longer "Ready to merge" and keeps `run.conflict = { at, files, onto, head }`
+//   (tasklist.js conflictMark): its row says "Conflicts with <branch>" (the files in the tooltip) with the button
+//   Ask agent to update, which posts tasklist.js updateText into the task's own chat (`askUpdate`: rebase onto that
+//   branch in the worktree, resolve, run the check, commit; a closed chat's tab is opened again for it). The mark goes
+//   when the branch has moved (the keeper, coordinator.js) or a later Merge went through. A merged task is marked done, keeps `run.merged = { at, commit }` and offers Remove worktree
 //   (`git worktree remove`, `git branch -d`; kept while it has uncommitted files). How each went is said at the foot.
 // - Notes: plain text per folder (a worktree is a folder of its own), saved a moment after the last change to
 //   `data/ht3-panels/notes/<name from the folder>.txt` in the app's folder, never in the repository.
 // For scripts: with the surface shown, `tasks-add:<title>`, `tasks-run:<n>` (the nth task, from 0, in the list's order),
 // `tasks-done:<n>` (toggles), `tasks-delete:<n>` (twice deletes), `tasks-up:<n>`, `tasks-down:<n>`, `tasks-tab:<tasks|notes>`,
 // `tasks-notes:<text>` (replaces the notes), `tasks-merge:<task id>` (asks), `tasks-yes` / `tasks-no` (answer it),
-// `tasks-cleanup:<task id>` (Remove worktree).
+// `tasks-cleanup:<task id>` (Remove worktree), `tasks-update:<task id>` (Ask agent to update, after a conflict).
 // To get here (the keeper takes these, main.js; they work whatever is shown): `tasks[:<a|b>]` shows the surface in the shown
 // space, `tasks:<project folder>` shows the space that works in that repository first, and `tasks-show:<json>`
 // ({"project":"<folder>","machine"?,"id"?}) also brings that task into view: its row is drawn first in its section, with a frame, until
@@ -46,7 +50,8 @@ import { addWorktree, repoOf } from "./launcher.js";
 import { AGENTS, detect } from "./agent-acp.js";
 import { roleAgent, roleSet } from "./settings.js";
 import { cleanTasks, newTask, patch, remove, move, canMove, promptOf, branchFor, chatState, STATE_LABEL, notesFile, TITLE_MAX, parseKey, spaceIn,
-  readWork, workWords, hasWork, BUSY_STATES, mergePlan, mergeTask, mergeWords, cleanupTask, keyOf } from "./tasklist.js";
+  readWork, workWords, hasWork, BUSY_STATES, mergePlan, mergeTask, mergeWords, cleanupTask, keyOf,
+  conflictMark, unconflict, askedMark, tellCheck, updateCheck, updateText, SENT_WORDS, TELL_MAX, clip } from "./tasklist.js";
 
 const KEY = `${MOD}.tasks`;
 const NOTES_SAVE_MS = 800; // after the last change
@@ -180,6 +185,60 @@ export function observe(key) {
   if (need.length) update(key, (l) => l.map((t) => (need.some((n) => n.id === t.id) && t.run ? { ...t, run: { ...t.run, worked: true } } : t)));
 }
 
+// ---- a message for a task's own agent ----
+
+// A message for a chat, by its id (a tab's id changes over a restart): it waits in shared "ht3-panels.post" until that
+// chat is shown and takes it (chat.js `takePosts`), which sends it as a message of the chat's own.
+const POSTS_KEPT = 20;
+export function postTo(chat, text) {
+  const body = String(text ?? "").trim();
+  if (!chat || !body) return;
+  const all = shared(`${MOD}.post`) ?? {};
+  setShared(`${MOD}.post`, { ...all, [chat]: [...(all[chat] ?? []), { text: body, at: Date.now() }].slice(-POSTS_KEPT) });
+}
+
+// Makes sure a task's chat can take what was posted to it. -> "open" (its tab is there: it takes it), "reopened" (its
+// tab was closed: a new one is opened on the chat's saved state, as Earlier chats does, in the project's space;
+// `back`: a tab to show again once it began), "shown" (a tab of its name from before a restart stands unshown: with
+// `show` it is selected), or "waiting" (nothing cheap to do: the post waits until the person opens the chat).
+async function wakeChat(key, t, { back = null, show = false } = {}) {
+  if (taskState(t)?.tab) return "open";
+  const at = parseKey(key), name = t.title.slice(0, 60);
+  // (A tab some chat has placed is that chat's, an earlier run's of the same title: not this one's.)
+  const placed = new Set(Object.values(shared(`${MOD}.places`) ?? {}).map((x) => x?.tab));
+  const old = spaces().filter((s) => (s.machine ?? null) === (t.run.on ?? null)).flatMap((s) => s.tabs).find((c) => c.name === name && !placed.has(c.id));
+  if (old) { if (show) run("tab.select", { id: old.id }); return show ? "shown" : "waiting"; }
+  let saved = null;
+  try { saved = JSON.parse(await readTextFile(`${appHome()}/data/${MOD}/chats/${t.run.chat}/state.json`)); } catch {}
+  if (!at || !Array.isArray(saved?.agentArgv) || !saved.agentArgv.length) return "waiting";
+  const space = await spaceFor(at.root, at.on);
+  if (taskState(tasksOf(key).find((x) => x.id === t.id) ?? t)?.tab) return "open"; // opened meanwhile
+  run("tab.new", { mod: MOD, ...(space ? { space } : {}), name,
+    props: { panel: "chat", chat: t.run.chat, agent: saved.agentArgv, cwd: saved.cwd ?? t.run.path, machine: t.run.on ?? null, ...(back ? { back: { tab: back, at: Date.now() } } : {}) } });
+  return "reopened";
+}
+// `tell`: posts `text` into the chat of the task `id` of the project `key`, as a message of that chat (refused for a
+// task never run or merged). -> how it went out (wakeChat's word). Throws with the reason when it may not.
+export async function tellTask(key, id, text, opts = {}) {
+  const t = tasksOf(key).find((x) => x.id === id), body = clip(text, TELL_MAX);
+  if (!t) throw new Error(`This project has no task ${id}.`);
+  const no = tellCheck(t) ?? (body ? null : "There is nothing to tell.");
+  if (no) throw new Error(no);
+  postTo(t.run.chat, body);
+  return wakeChat(key, t, opts);
+}
+// "Ask agent to update", for this surface and the coordinator's `update`: after a Merge that conflicted, the task's own
+// agent is told to rebase its branch (tasklist.js updateText) and the conflict is marked as asked.
+export async function askUpdate(key, id, opts = {}) {
+  const t = tasksOf(key).find((x) => x.id === id);
+  if (!t) throw new Error(`This project has no task ${id}.`);
+  const no = updateCheck(t);
+  if (no) throw new Error(no);
+  postTo(t.run.chat, updateText(t));
+  update(key, (l) => patch(l, id, askedMark(Date.now())));
+  return wakeChat(key, t, opts);
+}
+
 const TONE = { starting: "secondary", working: "info", waiting: "warning", done: "success", failed: "error", closed: "secondary", making: "info" };
 
 export class TasksPanel {
@@ -194,7 +253,7 @@ export class TasksPanel {
     this.editing = null; // task id
     this.armed = null; // task id whose bin was pressed once
     this.asking = null; // Merge's question: { id (the task's), text }
-    this.busy = new Map(); // task id -> "merging" | "removing"
+    this.busy = new Map(); // task id -> "merging" | "removing" | "asking"
     this.said = null; // how the last merge or removal went: { text, bad, offer? (a merged task's id, to remove its worktree) }
     this.doneOpen = false;
     this.lit = null; // the task a click elsewhere asked to see (takeFocus): its id
@@ -396,14 +455,38 @@ export class TasksPanel {
       let r;
       try { r = await mergeTask(exec, { root: project.root, t, state: this.stateOf(t)?.state ?? null, expect: q.text }); } catch (e) { r = { ok: false, refused: true, error: String(e?.message ?? e).split("\n").pop() }; }
       if (r.ok) {
-        update(project.key, (l) => patch(l, t.id, (x) => (x.run ? { done: true, run: { ...x.run, merged: { at: Date.now(), commit: r.commit } } } : {})));
+        update(project.key, (l) => patch(l, t.id, (x) => (x.run ? { done: true, run: { ...unconflict(x).run ?? x.run, merged: { at: Date.now(), commit: r.commit } } } : {})));
         setWork(mark, null);
+      } else if (r.conflict) {
+        // Not ready any more, and marked with where it stood: the row offers Ask agent to update (and the coordinator is told).
+        const w = await readWork(exec, t.run).catch(() => ({ missing: true }));
+        setWork(mark, w);
+        update(project.key, (l) => patch(l, t.id, conflictMark(r, w.head ?? null, Date.now())));
       } else if (r.committed) setWork(mark, await readWork(exec, t.run));
       this.busy.delete(t.id);
       if (this.project?.key === project.key) {
         if (r.changed) this.asking = { id: t.id, text: r.plan.text };
         else this.said = { ...mergeWords(r), ...(r.ok ? { offer: t.id } : {}) };
       }
+      acx.notify();
+    });
+  }
+  // Ask agent to update, after a conflict: the fixed message goes into the task's own chat (askUpdate).
+  sendBack(t, cx) {
+    const project = this.project;
+    if (!project || this.busy.has(t.id)) return;
+    this.busy.set(t.id, "asking");
+    this.said = null;
+    cx.notify();
+    // The click's cx goes stale at the first await: the spawn's own is used after it.
+    cx.spawn(async (acx) => {
+      let said;
+      try {
+        const how = await askUpdate(project.key, t.id, { show: true });
+        said = { bad: false, text: `Asked the agent of "${t.title}" to rebase ${t.run.branch} onto ${t.run.conflict?.onto ?? t.run.from ?? "its branch"} and commit.${SENT_WORDS[how] ?? ""} Merge again when it is done.` };
+      } catch (e) { said = { bad: true, text: String(e?.message ?? e).split("\n").pop() }; }
+      this.busy.delete(t.id);
+      if (this.project?.key === project.key) this.said = said;
       acx.notify();
     });
   }
@@ -472,6 +555,7 @@ export class TasksPanel {
     else if (c.startsWith("tasks-merge:")) { const t = this.byId(c.slice(12)); if (t) this.askMerge(t, cx); }
     else if (c === "tasks-yes" || c === "tasks-no") this.answerMerge(c === "tasks-yes", cx);
     else if (c.startsWith("tasks-cleanup:")) { const t = this.byId(c.slice(14)); if (t) this.cleanup(t, cx); }
+    else if (c.startsWith("tasks-update:")) { const t = this.byId(c.slice(13)); if (t) this.sendBack(t, cx); }
     else if (c.startsWith("tasks-notes:")) { this.notes.set_value(c.slice(12)); this.onNoteChange(cx); } // set_value sends no change event
     cx.notify();
   }
@@ -553,16 +637,31 @@ export class TasksPanel {
           { variant: "outline", size: "xs", glyph: "trash-2", disabled: !!doing, tip: "Removes the task's worktree folder and deletes its branch (git branch -d). Kept while it has uncommitted files." })));
     }
     const w = this.workOf(t), words = workWords(w), state = this.stateOf(t)?.state;
-    if (!words && !r.ready) return null;
+    if (!words && !r.ready && !r.conflict) return null;
     const wait = BUSY_STATES.includes(state) || this.making.has(t.id);
     return h_flex().pl(24).gap(6).items_center().min_w(0).text_size(12)
       .child(icon("git-commit-horizontal").size(14).flex_none().text_color(k.muted))
       .child(div().min_w(0).truncate().text_color(k.muted).child(words || "nothing to merge yet"))
       .when(!!r.ready, (el) => el.child(div().id(`task-ready-${t.id}`).flex_none().tooltip(r.ready.note ? `The coordinator: ${r.ready.note}` : "The coordinator looked at it and says it can be merged").child(badge(k, "Ready to merge", "success"))))
       .child(div().flex_1())
-      .when(hasWork(w) || !!r.ready, (el) => el.child(button(k, `task-merge-${t.id}`, doing === "merging" ? "Merging…" : "Merge", (cx) => this.askMerge(t, cx),
+      .when(hasWork(w) || !!r.ready || !!r.conflict, (el) => el.child(button(k, `task-merge-${t.id}`, doing === "merging" ? "Merging…" : "Merge", (cx) => this.askMerge(t, cx),
         { variant: r.ready ? "default" : "outline", size: "xs", glyph: "git-merge", disabled: !!doing || wait || !this.project,
           tip: wait ? "Its agent is still at work" : `Merges ${r.branch} into ${r.from ?? "the branch it was made from"}${w?.dirty > 0 ? ", committing its uncommitted files first" : ""}. Asks once.` })));
+  }
+
+  // After a Merge that conflicted: "Conflicts with <branch>" (the files in the tooltip) and Ask agent to update. Null without one.
+  conflictLine(k, t) {
+    const c = t.run?.conflict, doing = this.busy.get(t.id);
+    if (!c || t.run.merged) return null;
+    const onto = c.onto ?? t.run.from ?? "its branch", files = c.files.length ? c.files.join("\n") : "some files";
+    return h_flex().pl(24).gap(6).items_center().min_w(0).text_size(12)
+      .child(icon("triangle-alert").size(14).flex_none().text_color(k.destructiveText))
+      .child(div().id(`task-conflict-${t.id}`).flex_none().tooltip(`The merge was aborted. Conflicts in:\n${files}${c.asked ? "\nIts agent was asked to update the branch." : ""}`).child(badge(k, `Conflicts with ${onto}`, "error")))
+      .when(!!c.asked, (el) => el.child(div().min_w(0).truncate().text_color(k.muted).child("agent asked")))
+      .child(div().flex_1())
+      .child(button(k, `task-update-${t.id}`, doing === "asking" ? "Asking…" : c.asked ? "Ask again" : "Ask agent to update", (cx) => this.sendBack(t, cx),
+        { variant: c.asked ? "outline" : "default", size: "xs", glyph: "refresh-cw", disabled: !!doing || !this.project,
+          tip: `Tells the task's own agent, in its chat, to rebase ${t.run.branch} onto ${onto} in its worktree, resolve the conflicts, run the check and commit. Then merge again.` }));
   }
 
   // The foot: Merge's question, or how the last merge or removal went (with Remove worktree after a merge).
@@ -589,7 +688,7 @@ export class TasksPanel {
     const idle = !this.making.has(t.id), s = this.stateOf(t), again = !!t.run && ["failed", "closed"].includes(s?.state);
     const live = !!s?.tab;
     const first = !canMove(list, t.id, -1), last = !canMove(list, t.id, 1);
-    const note = t.note.replace(/\s+/g, " "), ml = this.mergeLine(k, t);
+    const note = t.note.replace(/\s+/g, " "), ml = this.mergeLine(k, t), cl = this.conflictLine(k, t);
     return v_flex().id(`task-${t.id}`).flex_none().mx(8).px(8).py(6).gap(4).rounded(8).hover((x) => x.bg(alpha(k.foreground, 0.04)))
       .when(this.lit === t.id, (el) => el.border(1).border_color(k.primary).bg(alpha(k.foreground, 0.04)))
       .child(h_flex().gap(8).items_center()
@@ -609,6 +708,7 @@ export class TasksPanel {
         .child(note)))
       .child(div().pl(18).child(this.runLine(k, t) ?? div()))
       .when(!!ml, (el) => el.child(ml))
+      .when(!!cl, (el) => el.child(cl))
       .when(!t.done, (el) => el.child(h_flex().pl(24).gap(6).items_center()
         .child(button(k, `task-run-btn-${t.id}`, this.making.has(t.id) ? "Working…" : again ? "Run again" : t.run ? "Run again" : "Run with agent", (cx) => this.runTask(t, cx),
           { variant: !t.run || again ? "outline" : "ghost-muted", size: "xs", glyph: "play", disabled: !idle || !this.project,

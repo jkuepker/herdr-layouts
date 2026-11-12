@@ -118,7 +118,7 @@ await test("a conflict is aborted: the checkout is as it was, and what was commi
   assert.deepEqual(sansHead(await readWork(exec, t.run)), { ahead: 1, dirty: 0, branch: "task-three" });
   const said = mergeWords(r);
   assert.equal(said.bad, true);
-  assert.match(said.text, /^task-three conflicts with main in src\/app\.js\. The merge was aborted: main is as it was\. Its 2 changed files were committed on task-three\. Ask the task's agent to rebase onto main, then merge again\.$/);
+  assert.match(said.text, /^task-three conflicts with main in src\/app\.js\. The merge was aborted: main is as it was\. Its 2 changed files were committed on task-three\. Ask agent to update \(on its row\) sends it back to its agent to rebase onto main; then merge again\.$/);
   // The agent rebased (here: took main's line): the same button merges now.
   await g(t.run.path, "reset", "-q", "--hard", "main"); put(t.run.path, "extra.txt", "e\n"); await g(t.run.path, "add", "-A"); await g(t.run.path, "commit", "-qm", "extra");
   const again = await mergeTask(exec, { root, t });

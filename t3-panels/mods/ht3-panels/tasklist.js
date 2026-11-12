@@ -5,6 +5,9 @@
 // worked? (the chat was seen working, so an idle chat after that is a finished one), error?,
 // ready? ({ at, note, head? }: the coordinator looked at the work and says it can be merged; head: the commit the task's
 // branch was at then, so a branch that moved since is not called ready any more: readyStale),
+// conflict? ({ at, files, onto, head?, asked? }: the person's Merge into `onto` was aborted on a conflict in those files;
+// head: the commit the task's branch was at then, so a branch that moved since (its agent rebased) no longer says so:
+// conflictGone; asked: when its agent was asked to update the branch),
 // merged? ({ at, commit, removed? }: the person merged the branch into `from`; removed: its worktree and branch are gone) }.
 //
 // The git side of Merge and Remove worktree is at the end: functions that take `exec(cmd, args, { cwd, on, timeout })`
@@ -15,6 +18,9 @@ import { mergeBranch, removeWorktreeFolder, plural } from "./compare-data.js";
 export const TITLE_MAX = 200;
 export const NOTE_MAX = 8000;
 export const READY_NOTE_MAX = 400;
+// A conflict's files as kept with the task, and the longest text `tell` posts into a task's chat.
+export const CONFLICT_FILES_MAX = 20;
+export const TELL_MAX = 2000;
 // An idle chat that never worked for this long, and a chat that never got a place for this long, are called failed.
 export const IDLE_FAIL_MS = 120000;
 export const PLACE_FAIL_MS = 60000;
@@ -38,6 +44,10 @@ export function spaceIn(spaces, root, on = null, cwds = {}) {
 const SHA = /^[0-9a-f]{40,64}$/;
 export const clip = (s, n) => { const t = String(s ?? "").trim(); return t.length > n ? t.slice(0, n) : t; };
 
+// A saved conflict mark, cleaned.
+const cleanConflict = (c) => ({ at: Number(c.at) || 0, files: (Array.isArray(c.files) ? c.files : []).map((f) => String(f ?? "").trim()).filter(Boolean).slice(0, CONFLICT_FILES_MAX),
+  onto: c.onto == null ? null : String(c.onto), ...(SHA.test(c.head ?? "") ? { head: c.head } : {}), ...(Number(c.asked) > 0 ? { asked: Number(c.asked) } : {}) });
+
 // What was saved -> a clean list (a bad entry is dropped, not repaired).
 export function cleanTasks(raw) {
   if (!Array.isArray(raw)) return [];
@@ -52,6 +62,7 @@ export function cleanTasks(raw) {
       ...(r ? { run: { chat: String(r.chat), branch: String(r.branch ?? ""), path: String(r.path ?? ""), on: r.on ?? null, from: r.from ?? null, at: Number(r.at) || 0,
         ...(r.worked ? { worked: true } : {}), ...(r.error ? { error: String(r.error) } : {}),
         ...(r.ready && typeof r.ready === "object" ? { ready: { at: Number(r.ready.at) || 0, note: clip(r.ready.note, READY_NOTE_MAX), ...(SHA.test(r.ready.head ?? "") ? { head: r.ready.head } : {}) } } : {}),
+        ...(r.conflict && typeof r.conflict === "object" && !(r.merged && typeof r.merged === "object") ? { conflict: cleanConflict(r.conflict) } : {}),
         ...(r.merged && typeof r.merged === "object" ? { merged: { at: Number(r.merged.at) || 0, commit: String(r.merged.commit ?? ""), ...(r.merged.removed ? { removed: true } : {}) } } : {}) } } : {}),
     });
   }
@@ -174,6 +185,56 @@ export function readyStale(run, work, state = null) {
 }
 // The task without its ready mark (for patch).
 export const unready = (t) => { if (!t.run?.ready) return {}; const { ready: _was, ...run } = t.run; return { run }; };
+
+// ---- a merge that conflicted: back to the task's agent ----
+
+// The change (for patch) a conflicted Merge leaves on its task (`res`: mergeTask's { conflict: true, files, into }): the
+// ready mark goes (what was called ready can't be merged as it is) and `run.conflict` says where it stood. `head`: the
+// commit the task's branch is at now (readWork's, read after the merge: what was uncommitted is committed by then).
+export const conflictMark = (res, head, at) => (t) => {
+  if (!t.run || t.run.merged) return {};
+  const { ready: _was, conflict: _old, ...run } = t.run;
+  return { run: { ...run, conflict: cleanConflict({ at, files: res?.files, onto: res?.into ?? run.from, head }) } };
+};
+// Why a task's conflict mark no longer holds, or null while it does (or there is none). `work`: its worktree as last
+// read. The mark was made at a commit (`conflict.head`): a branch at another commit was rebased or changed since, and
+// whether it still conflicts is for the next Merge to say. A worktree that is not on its branch is in the middle of
+// that rebase (git detaches HEAD for it): the mark stays until the branch itself has moved. Unread or gone: nothing.
+export function conflictGone(run, work) {
+  const c = run?.conflict;
+  if (!c) return null;
+  if (run.merged) return `${run.branch} is merged.`;
+  if (c.head && work && !work.missing && work.head && work.branch === run.branch && work.head !== c.head) return `${run.branch} moved since its merge conflicted.`;
+  return null;
+}
+// The task without its conflict mark, and with its agent marked as asked (both for patch).
+export const unconflict = (t) => { if (!t.run?.conflict) return {}; const { conflict: _was, ...run } = t.run; return { run }; };
+export const askedMark = (at) => (t) => (t.run?.conflict ? { run: { ...t.run, conflict: { ...t.run.conflict, asked: at } } } : {});
+
+// The check a task's note names, when it says so on a line of its own ("Check: npm test"); else null.
+export function checkOf(note) {
+  const m = /^[ \t>*-]*(?:the )?check(?: to run| command)?[ \t]*:[ \t]*(.+)$/im.exec(String(note ?? ""));
+  const c = m ? m[1].trim().replace(/\.$/, "").replace(/^`+|`+$/g, "").trim() : "";
+  return c && c.length <= 200 && !c.includes("`") ? c : null;
+}
+// Whether a message may go into a task's chat (`tell`), and whether its agent may be asked to update its branch
+// (`update`: only after a conflict). -> null, or the reason it may not.
+export function tellCheck(t) {
+  if (!t?.run?.chat) return "This task was never run: it has no agent to tell.";
+  if (t.run.merged) return "This task is merged already.";
+  return null;
+}
+export const updateCheck = (t) => tellCheck(t) ?? (t.run.conflict ? null : "This task has no merge conflict: there is nothing to update. (It is set when the person's Merge was aborted on a conflict.)");
+// What "Ask agent to update" and the coordinator's `update` say to a task's agent after a conflict. The one place.
+export function updateText(t) {
+  const c = t.run?.conflict ?? {}, onto = c.onto ?? t.run?.from ?? "the branch this one was made from", check = checkOf(t.note);
+  return `${onto} moved on since this task started and your branch conflicts with it in ${c.files?.length ? c.files.join(", ") : "some files"}. `
+    + `In this worktree run \`git rebase ${onto}\`, resolve the conflicts keeping both changes' intent, run the check again (${check ? `\`${check}\`` : "the task's check"}), and commit. `
+    + "Don't push, don't merge, don't switch branches.";
+}
+// How a message for a task's chat went out (tasks.js wakeChat's word), for the status line and the coordinator's log.
+export const SENT_WORDS = { open: "", reopened: " Its chat was opened again.", shown: " Its chat is shown to send it.", waiting: " Its chat is closed: open its chat to send it." };
+
 // Every task that is ready to merge and isn't merged, of every project (`all`: shared "ht3-panels.tasks", as saved), in
 // the projects' order and each list's own: [{ key, id, title, project (the folder's name), root, on }].
 export function readyTasks(all) {
@@ -282,7 +343,7 @@ export function mergeWords(r) {
   const did = r.committed ? ` Its ${plural(r.committed, "changed file")} ${r.committed === 1 ? "was" : "were"} committed on ${r.branch}.` : "";
   if (r.ok) return { bad: false, text: `Merged ${r.branch} into ${r.into} (${r.commit}).${did} The task is done.` };
   if (r.refused) return { bad: true, text: r.error };
-  if (r.conflict) return { bad: true, text: `${r.branch} conflicts with ${r.into} in ${r.files?.length ? r.files.join(", ") : "some files"}. ${r.aborted ? `The merge was aborted: ${r.into} is as it was.` : `The merge could not be aborted (${r.error}): look at that checkout.`}${did} Ask the task's agent to rebase onto ${r.into}, then merge again.` };
+  if (r.conflict) return { bad: true, text: `${r.branch} conflicts with ${r.into} in ${r.files?.length ? r.files.join(", ") : "some files"}. ${r.aborted ? `The merge was aborted: ${r.into} is as it was.` : `The merge could not be aborted (${r.error}): look at that checkout.`}${did} Ask agent to update (on its row) sends it back to its agent to rebase onto ${r.into}; then merge again.` };
   return { bad: true, text: `${r.error ?? "git merge failed"}${did}` };
 }
 
