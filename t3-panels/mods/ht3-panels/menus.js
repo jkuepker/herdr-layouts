@@ -19,6 +19,7 @@ import { devCommand } from "./detect.js";
 import { write, wroteLine, Cancelled, conventionalIssue } from "./gitwrite.js";
 import { holdForSecrets, guardStep } from "./secretguard.js";
 import { discover, startDevServer } from "./servers.js";
+import { outdatedCount } from "./deps.js";
 import { readBranches, switchRow, pullFastForward, pickerRows, rowBlocked } from "./branches.js";
 import { stashView, conflictView, showStash, readStashes, readConflicts, stashPush, stashRun, stashAndPull, takeSide, markResolved, continueOp, abortOp } from "./stash.js";
 import { conflictRow } from "./gitstate.js";
@@ -995,6 +996,11 @@ export class ProjectMenu {
         onClick: () => { closeOverlay(this.overlay); run(`${MOD}.servers`); } })))
       // Compare chats (compare.js): two chats' work side by side, to keep one.
       .child(row("proj-compare", "columns-2", "Compare chats", { detail: "two worktrees, pick one", onClick: () => { closeOverlay(this.overlay); run(`${MOD}.compare`); } }))
+      // The outdated dependencies of this folder (deps.js): the row opens their dialog.
+      .when(!!this.folder, (el) => {
+        const n = outdatedCount({ on: this.on, cwd: this.folder });
+        return el.child(row("proj-deps", "package", "Dependencies", { detail: n == null ? "check for updates" : n ? `${n} outdated` : "up to date", onClick: () => { closeOverlay(this.overlay); run(`${MOD}.deps`); } }));
+      })
       .child(row("proj-settings", "settings-2", "Settings", { detail: "Agents, models, editors", onClick: () => { closeOverlay(this.overlay); run(`${MOD}.settings`); } }));
   }
 }
