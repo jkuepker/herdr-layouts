@@ -22,6 +22,10 @@
 //   false opens it as text. The Preview button still switches one file, and the choice is kept for the session.
 // - chatTokenBudget (0 = off; 100000, 250000, 500000, 1000000 or 2000000): a chat whose reported input + output tokens reach
 //   80% of it gets a warning line over the message box, and at 100% the line offers Stop and New session (token-budget.js).
+// - taskAgent, taskModel (absent: the default agent, on its own model): the agent a task's chat starts on (Tasks' "Run with
+//   agent", the coordinator's tasks) and the model it is set to before the task is sent, e.g. "omp" and
+//   "fleetq-tatooine-r9700-8080/Qwen3.8". An agent that is off or not installed falls back to the default one, on its own model.
+// - coordinatorAgent ("claude"), coordinatorModel (absent: the agent's own): the same for the coordinator chat (coordinator.js).
 // - sidePanelHiddenInNewSpaces (false): a space shown for the first time starts with the side panel hidden.
 // Anything left out is its default; unknown keys are kept as they are.
 
@@ -43,6 +47,24 @@ export const enabledAgents = () => AGENTS.filter((a) => agentOn(a.id));
 export function firstAgent(found) {
   const can = enabledAgents().filter((a) => found?.[a.argv[0]]);
   return (can.find((a) => a.id === prefs().defaultAgent) ?? can[0])?.id ?? null;
+}
+// A role's agent ("task": a task's chat; "coordinator": the coordinator chat): the one set for it (`<role>Agent`; the
+// coordinator's is Claude Code unless set) if it is offered and installed, else the one New chat comes up with.
+const ROLE_DEFAULT = { coordinator: "claude" };
+export function roleAgent(role, found) {
+  const want = prefs()[`${role}Agent`] ?? ROLE_DEFAULT[role] ?? null;
+  return enabledAgents().find((a) => a.id === want && found?.[a.argv[0]])?.id ?? firstAgent(found);
+}
+// The role's model (`<role>Model`), or null for the agent's own.
+export function roleModel(role) {
+  const m = prefs()[`${role}Model`];
+  return typeof m === "string" && m.trim() ? m.trim() : null;
+}
+// What a role's chat is set to before its first message (the chat's `set` prop): its model, when `id`, the agent it
+// starts on, is the role's own (another agent's models are not its), else null.
+export function roleSet(role, id) {
+  const model = roleModel(role);
+  return model && id && id === (prefs()[`${role}Agent`] ?? ROLE_DEFAULT[role] ?? id) ? { model } : null;
 }
 // The model ids an agent's picker is limited to, or null for all it offers.
 export function modelsOf(id) {

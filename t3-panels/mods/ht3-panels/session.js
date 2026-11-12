@@ -280,15 +280,18 @@ export class ChatSession {
   }
 
   async setConfig(configId, value) {
-    const opt = this.state.configOptions.find((o) => o.id === configId);
+    // By its id, else by what it is for ("model", "mode": agents differ in the id they give that option); the agent gets its real id.
+    const all = this.state.configOptions;
+    const opt = all.find((o) => o.id === configId) ?? all.find((o) => (o.category ?? o.id) === configId);
+    const id = opt?.id ?? configId;
     try {
       if (opt?.legacyMode) {
         await this.conn.request("session/set_mode", { sessionId: this.state.sessionId, modeId: value });
-        this.setCurrent(configId, value);
+        this.setCurrent(id, value);
       } else {
-        const r = await this.conn.request("session/set_config_option", { sessionId: this.state.sessionId, configId, value });
+        const r = await this.conn.request("session/set_config_option", { sessionId: this.state.sessionId, configId: id, value });
         if (r?.configOptions) this.state.configOptions = r.configOptions;
-        else this.setCurrent(configId, value);
+        else this.setCurrent(id, value);
       }
     } catch (e) {
       addNotice(this.state.transcript, `Couldn't change ${opt?.name ?? configId}: ${e.message}`, "error");

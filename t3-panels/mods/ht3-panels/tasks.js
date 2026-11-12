@@ -7,8 +7,10 @@
 //   the way scripts.js keeps scripts (a worktree's chat shares its repository's project, so its tasks show there too).
 //   The task's shape and the pure logic (order, branch names, chat state) are in tasklist.js.
 // - Run with agent: makes a worktree on a new branch from the branch the person is on (launcher.js `addWorktree`, so the
-//   project's setup script runs there too) and starts a chat in it, on the agent New chat comes up with (settings.js
-//   `firstAgent`, as pr.js starts one), the task's title and note as its first message, sent (the chat's `prompt` prop).
+//   project's setup script runs there too) and starts a chat in it, on the tasks' agent (settings.js `taskAgent`, set to
+//   `taskModel` first; neither set: the agent New chat comes up with), the task's title and note as its first message,
+//   sent (the chat's `prompt` prop). `startTask` does it, for this surface and for the coordinator (coordinator.js),
+//   which names the project by its key alone: the chat's tab then goes to the space that works in that repository.
 //   The row then says "on <branch>" with the chat's state, read where the Inbox reads it (report.js: shared
 //   "ht3-panels.places", ".status", ".turns"): working, waiting for you (the agent asks), done or failed; a click on the
 //   row shows that chat. Marking a task done is the person's: a finished chat doesn't do it.
@@ -20,18 +22,18 @@
 
 import { div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea } from "gpui-base";
-import { exec, run, shared, setShared, focused, spaces, appHome, readTextFile, writeTextFile } from "herdr";
+import { exec, run, shared, setShared, focused, spaces, panes, appHome, readTextFile, writeTextFile } from "herdr";
 import { MOD, tokens, alpha, icon, button, iconButton, badge, shortPath } from "./look.js";
 import { activeSpace, placeOf, showing } from "./side.js";
 import { projectOf } from "./scripts.js";
 import { addWorktree, repoOf } from "./launcher.js";
 import { AGENTS, detect } from "./agent-acp.js";
-import { firstAgent } from "./settings.js";
-import { cleanTasks, newTask, patch, remove, move, canMove, promptOf, branchFor, chatState, STATE_LABEL, notesFile, TITLE_MAX } from "./tasklist.js";
+import { roleAgent, roleSet } from "./settings.js";
+import { cleanTasks, newTask, patch, remove, move, canMove, promptOf, branchFor, chatState, STATE_LABEL, notesFile, TITLE_MAX, parseKey, spaceIn } from "./tasklist.js";
 
 const KEY = `${MOD}.tasks`;
 const NOTES_SAVE_MS = 800; // after the last change
-const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+export const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
 export const tasksOf = (key) => (key ? cleanTasks((shared(KEY) ?? {})[key]) : []);
 function setTasks(key, list) {
@@ -41,7 +43,9 @@ function setTasks(key, list) {
   setShared(KEY, all);
 }
 // Changes the project's list as it is now (never from a copy held across an await).
-const update = (key, fn) => setTasks(key, fn(tasksOf(key)));
+export const update = (key, fn) => setTasks(key, fn(tasksOf(key)));
+// Every project's key that has tasks.
+export const taskKeys = () => Object.keys(shared(KEY) ?? {});
 
 // The notes' folder and file; the folder is made with `mkdir -p` (a mod's fs has no mkdir).
 const notesDir = () => `${appHome()}/data/${MOD}/notes`;
@@ -60,6 +64,66 @@ async function writeNotes(path, text, expected) {
 async function currentRef(cwd, on) {
   const r = await exec("sh", ["-c", 'b=$(git rev-parse --abbrev-ref HEAD 2>/dev/null); if [ "$b" = HEAD ] || [ -z "$b" ]; then git rev-parse HEAD 2>/dev/null; else printf %s "$b"; fi'], { cwd, on: on ?? undefined, timeout: 10000 }).catch(() => null);
   return r?.code === 0 ? r.stdout.trim() || null : null;
+}
+
+const nap = (ms) => exec("sleep", [String(ms / 1000)], { timeout: ms + 5000 }).catch(() => null);
+
+// The space a project's chats go to (tasklist.js spaceIn); with none, one is made at the repository's folder. -> its id, or null.
+async function spaceFor(root, on) {
+  const cwds = {}, all = spaces();
+  for (const p of panes()) { const sp = all.find((s) => s.tabs.some((t) => t.id === p.tab)); if (sp && p.cwd) (cwds[sp.id] ??= []).push(p.cwd); }
+  const have = spaceIn(all, root, on, cwds);
+  if (have) return have;
+  const known = new Set(all.map((s) => s.id));
+  run("space.new", { folder: root, machine: on ?? "" });
+  for (let i = 0; i < 30; i++) {
+    const made = spaces().find((s) => !known.has(s.id) && s.folder === root);
+    if (made) return made.id;
+    await nap(100);
+  }
+  return null;
+}
+
+// "Run with agent" for the task `t` of the project `key` ("<machine or empty>:<repo root>"): a worktree on a new branch,
+// and a chat in it on the tasks' agent and model with the task as its first message. `opts.cwd`: the folder the person
+// is in (the new branch starts from its branch; default: the repository's main checkout); `opts.space`: the space the
+// chat's tab goes to (default: the one that works in the repository, made when there is none: never just the shown
+// one); `opts.back`: a tab to show again once the chat has started (chat.js stepBack); `opts.step(words)`: told what
+// it is doing now. Throws with the reason when it can't start.
+export async function startTask(key, t, opts = {}) {
+  const at = parseKey(key);
+  if (!at) throw new Error("No project.");
+  const on = at.on, cwd = opts.cwd ?? at.root;
+  const repo = await repoOf(cwd, on);
+  if (!repo) throw new Error("This folder isn't in a Git repository.");
+  const from = await currentRef(cwd, on);
+  const found = await detect(on);
+  const agent = AGENTS.find((a) => a.id === roleAgent("task", found.found));
+  if (!agent) throw new Error(found.error ?? "No chat agent is installed and turned on (Settings).");
+  const branch = branchFor(t.title, Date.now().toString(36).slice(-4));
+  const path = await addWorktree(repo, branch, on, { ...(from ? { from } : {}) });
+  const chat = newId();
+  opts.step?.("starting the chat");
+  const space = opts.space ?? (await spaceFor(at.root, on));
+  const set = roleSet("task", agent.id);
+  update(key, (l) => patch(l, t.id, { run: { chat, branch, path, on, from, at: Date.now() } }));
+  run("tab.new", { mod: MOD, ...(space ? { space } : {}), name: t.title.slice(0, 60),
+    props: { panel: "chat", chat, agent: [found.found[agent.argv[0]], ...agent.argv.slice(1)], cwd: path, machine: on, prompt: promptOf(t),
+      ...(set ? { set } : {}), ...(opts.back ? { back: { tab: opts.back, at: Date.now() } } : {}) } });
+  return { chat, branch, path };
+}
+
+// The chat's state for a task (tasklist.js chatState) from what the chat tabs report, or null when it was never run.
+export function taskState(t) {
+  if (!t.run) return null;
+  const tabs = new Set(spaces().flatMap((s) => s.tabs.map((c) => c.id)));
+  return chatState(t.run, { places: shared(`${MOD}.places`) ?? {}, status: shared(`${MOD}.status`) ?? {}, turns: shared(`${MOD}.turns`) ?? {}, tabs });
+}
+// A chat seen working is remembered with its task: an idle chat after that is a finished one, and a closed tab a closed chat.
+export function observe(key) {
+  if (!key) return;
+  const need = tasksOf(key).filter((t) => t.run && !t.run.worked && taskState(t)?.worked);
+  if (need.length) update(key, (l) => l.map((t) => (need.some((n) => n.id === t.id) && t.run ? { ...t, run: { ...t.run, worked: true } } : t)));
 }
 
 const TONE = { starting: "secondary", working: "info", waiting: "warning", done: "success", failed: "error", closed: "secondary", making: "info" };
@@ -195,27 +259,14 @@ export class TasksPanel {
   runTask(t, cx) {
     const project = this.project, where = this.where;
     if (!project || !where || this.making.has(t.id)) return;
-    const on = where.on, space = focused()?.space ?? activeSpace()?.id ?? null;
+    const space = focused()?.space ?? activeSpace()?.id ?? null;
     this.errors.delete(t.id);
     this.making.set(t.id, "making the worktree");
     cx.notify();
     // The click's cx goes stale at the first await: the run reports through the spawn's own.
     cx.spawn(async (acx) => {
       try {
-        const repo = await repoOf(where.cwd, on);
-        if (!repo) throw new Error("This folder isn't in a Git repository.");
-        const from = await currentRef(where.cwd, on);
-        const found = await detect(on);
-        const agent = AGENTS.find((a) => a.id === firstAgent(found.found));
-        if (!agent) throw new Error(found.error ?? "No chat agent is installed and turned on (Settings).");
-        const branch = branchFor(t.title, Date.now().toString(36).slice(-4));
-        const path = await addWorktree(repo, branch, on, { ...(from ? { from } : {}) });
-        const chat = newId();
-        this.making.set(t.id, "starting the chat");
-        acx.notify();
-        update(project.key, (l) => patch(l, t.id, { run: { chat, branch, path, on, from, at: Date.now() } }));
-        run("tab.new", { mod: MOD, ...(space ? { space } : {}), name: t.title.slice(0, 60),
-          props: { panel: "chat", chat, agent: [found.found[agent.argv[0]], ...agent.argv.slice(1)], cwd: path, machine: on, prompt: promptOf(t) } });
+        await startTask(project.key, t, { cwd: where.cwd, space, step: (words) => { this.making.set(t.id, words); acx.notify(); } });
       } catch (e) {
         this.errors.set(t.id, String(e?.message ?? e).split("\n").pop());
       }
@@ -225,18 +276,8 @@ export class TasksPanel {
   }
 
   // The chat's state for a task (tasklist.js chatState) from what the chat tabs report.
-  stateOf(t) {
-    if (!t.run) return null;
-    const tabs = new Set(spaces().flatMap((s) => s.tabs.map((c) => c.id)));
-    return chatState(t.run, { places: shared(`${MOD}.places`) ?? {}, status: shared(`${MOD}.status`) ?? {}, turns: shared(`${MOD}.turns`) ?? {}, tabs });
-  }
-  // A chat seen working is remembered with its task: an idle chat after that is a finished one, and a closed tab a closed chat.
-  observe() {
-    const key = this.project?.key;
-    if (!key) return;
-    const need = this.list().filter((t) => t.run && !t.run.worked && this.stateOf(t)?.worked);
-    if (need.length) update(key, (l) => l.map((t) => (need.some((n) => n.id === t.id) && t.run ? { ...t, run: { ...t.run, worked: true } } : t)));
-  }
+  stateOf(t) { return taskState(t); }
+  observe() { observe(this.project?.key); }
   focusChat(t) {
     const s = this.stateOf(t);
     if (!s?.tab) return;

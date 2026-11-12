@@ -31,6 +31,7 @@ const NAMED = [
   ["ht3-panels.add:diff", {}, "T3", "Diff", "changes git side panel review"],
   ["ht3-panels.add:files", {}, "T3", "Files", "side panel editor open"],
   ["ht3-panels.earlier", {}, "T3", "Earlier chats…", "history threads search reopen archived"],
+  ["ht3-panels.coordinator", {}, "T3", "Coordinator: one chat for every project's tasks", "manage plan tasks agents all projects orchestrate"],
   ["ht3-tabs.settle", {}, "T3", "Settle this chat or agent", "archive done inbox put away"],
   ["ht3-panels.menu:project", {}, "T3", "Project: branch, commit, scripts", "git push pull request editor worktree"],
   ["ht3-panels.new:here", {}, "T3", "New chat on this branch", "thread same agent folder worktree"],

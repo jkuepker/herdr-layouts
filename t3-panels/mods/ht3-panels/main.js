@@ -46,6 +46,7 @@ import { ServersDialog, openServers, serversOpen } from "./servers.js";
 import { WorktreesDialog, openWorktrees, worktreesOpen } from "./worktrees.js";
 import { CompareDialog, openCompare, compareOpen } from "./compare.js";
 import { DepsDialog, openDeps, depsOpen } from "./deps.js";
+import { coordCommand, openCoordinator, writeState } from "./coordinator.js";
 
 export { SIDE };
 
@@ -58,7 +59,8 @@ class Buttons {
     cx.timer.after(0, () => announce());
     // The settings file, now and whenever it is edited by hand (settings.js).
     cx.spawn(() => loadPrefs());
-    cx.timer.every(2000, (cx) => { prune(); cx.spawn(() => loadPrefs()); });
+    // And the coordinator's state file, when what it holds changed (coordinator.js).
+    cx.timer.every(2000, (cx) => { prune(); cx.spawn(() => loadPrefs()); cx.spawn(() => writeState()); });
     cx.spawn((cx) => keep(cx));
   }
   close() {}
@@ -128,6 +130,13 @@ class Buttons {
     // does that itself). While it is open: deps-refresh, deps-stop, deps-update:<package>, deps-filter:<text>, deps-select:<package>,
     // deps-all (asks), deps-yes, deps-no, deps-ask, deps-eco:<id> (the dialog takes these).
     else if (name === "deps") { if (!depsOpen()) openDeps(); }
+    // coordinator: shows the coordinator chat (coordinator.js), the one chat that manages every project's tasks; it is made, with
+    // its space, when it isn't there. coord:<json> is how that chat acts, on any project's tasks (the ones Tasks shows):
+    // {"op":"add","project":"<folder>","title":"…","note":"…","id":"<its own name for it>","run":true},
+    // {"op":"run"|"done"|"delete","project":"<folder>","id":"…"} ("machine": a project on another machine; done: false reopens).
+    // How each went is in the coordinator's state.json (`ops`), which the keeper keeps up to date.
+    else if (c === "coordinator") cx.spawn(async (cx) => { try { await openCoordinator(); } catch (e) { fail(e); } cx.notify(); });
+    else if (name === "coord") cx.spawn(async (cx) => { await coordCommand(c.slice(6)); cx.notify(); });
     // blame / history: Files shows or hides blame in its open file's Lines view / the file's commit history (editor.js, blame.js; they reach Files while it is shown).
     // (Nothing to run here: the Files copy takes them, like lines and open:<path>.)
     // reopen-closed: brings back the newest closed side-panel surface, file or chat tab (side.js reopenClosed; T3's mod+shift+t).

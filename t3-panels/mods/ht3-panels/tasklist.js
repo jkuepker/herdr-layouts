@@ -10,6 +10,21 @@ export const NOTE_MAX = 8000;
 export const IDLE_FAIL_MS = 120000;
 export const PLACE_FAIL_MS = 60000;
 
+// A project's key, "<machine or empty>:<repo root>" (scripts.js projectOf), and back: { on, root }, or null when it names no folder.
+export const keyOf = (on, root) => `${on ?? ""}:${root}`;
+export function parseKey(key) {
+  const s = String(key ?? ""), at = s.indexOf(":");
+  if (at < 0 || !s.slice(at + 1).startsWith("/")) return null;
+  return { on: s.slice(0, at) || null, root: s.slice(at + 1) };
+}
+// The space a project's chats go to: the first on that machine whose folder is in the repository (its root, or a folder
+// under it, a worktree's too), else the first with a pane working there (`cwds`: space id -> its panes' folders). -> its id, or null.
+export function spaceIn(spaces, root, on = null, cwds = {}) {
+  const inside = (f) => !!f && (f === root || String(f).startsWith(`${root}/`));
+  const mine = (spaces ?? []).filter((s) => (s.machine ?? null) === (on ?? null));
+  return (mine.find((s) => inside(s.folder)) ?? mine.find((s) => (cwds[s.id] ?? []).some(inside)))?.id ?? null;
+}
+
 export const clip = (s, n) => { const t = String(s ?? "").trim(); return t.length > n ? t.slice(0, n) : t; };
 
 // What was saved -> a clean list (a bad entry is dropped, not repaired).
