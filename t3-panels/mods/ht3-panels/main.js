@@ -44,6 +44,7 @@ import { SIDE, read, sideShown, bottomShown, reconcile, keep, toggleMax, toggleB
 import { pendingScript } from "./scripts.js";
 import { ServersDialog, openServers, serversOpen } from "./servers.js";
 import { WorktreesDialog, openWorktrees, worktreesOpen } from "./worktrees.js";
+import { CompareDialog, openCompare, compareOpen } from "./compare.js";
 
 export { SIDE };
 
@@ -118,11 +119,15 @@ class Buttons {
     // worktrees: the repository's worktrees to clean up, as a dialog (worktrees.js); worktrees:<folder> for that folder's repository.
     // Again while it is open closes it (the dialog does that itself).
     else if (name === "worktrees") { if (!worktreesOpen()) openWorktrees(c.slice(10)); }
+    // compare[:<chat>[:<chat>]]: Compare chats (compare.js): two chats' folders, branches and changed files side by side, to keep
+    // one (merge its branch into the main checkout). Alone it comes up on the last pair, or a picker; with one chat id the other
+    // is picked. Again while it is open, the dialog takes the new ids itself (its cmp:* commands are its own).
+    else if (name === "compare") { if (!compareOpen()) openCompare(a ?? "", b ?? ""); }
     // blame / history: Files shows or hides blame in its open file's Lines view / the file's commit history (editor.js, blame.js; they reach Files while it is shown).
     // (Nothing to run here: the Files copy takes them, like lines and open:<path>.)
     // reopen-closed: brings back the newest closed side-panel surface, file or chat tab (side.js reopenClosed; T3's mod+shift+t).
     else if (c === "reopen-closed") cx.spawn(async (cx) => { try { await reopenClosed(cx); } catch (e) { fail(e); } cx.notify(); });
-    else if (name === "menu") openOverlay({ mod: MOD, kind: "popup", at: { x: 900, y: 48 }, width: a === "project" ? 344 : ADD_MENU.w, height: a === "project" ? 724 : ADD_MENU.h, props: { menu: a, group: b ?? "a" } });
+    else if (name === "menu") openOverlay({ mod: MOD, kind: "popup", at: { x: 900, y: 48 }, width: a === "project" ? 344 : ADD_MENU.w, height: a === "project" ? 752 : ADD_MENU.h, props: { menu: a, group: b ?? "a" } });
     cx.notify();
   }
 
@@ -163,7 +168,7 @@ export default class T3Panels extends View {
   init(_props, cx) {
     const p = props() ?? {};
     this.face = p.overlay
-      ? p.menu === "add" ? new AddMenu() : p.menu === "project" ? new ProjectMenu() : p.menu === "settings" ? new Settings() : p.menu === "usage" ? new Usage() : p.menu === "search" ? new Search() : p.menu === "quick" ? new QuickOpen() : p.menu === "servers" ? new ServersDialog() : p.menu === "worktrees" ? new WorktreesDialog() : p.menu === "copy" ? new CopyMenu() : p.menu === "thread" ? new ThreadMenu() : p.menu === "revert" ? new RevertMenu() : p.menu === "prchat" ? new PrChatDialog() : p.menu === "automations" ? new Automations() : new Launcher()
+      ? p.menu === "add" ? new AddMenu() : p.menu === "project" ? new ProjectMenu() : p.menu === "settings" ? new Settings() : p.menu === "usage" ? new Usage() : p.menu === "search" ? new Search() : p.menu === "quick" ? new QuickOpen() : p.menu === "servers" ? new ServersDialog() : p.menu === "worktrees" ? new WorktreesDialog() : p.menu === "compare" ? new CompareDialog() : p.menu === "copy" ? new CopyMenu() : p.menu === "thread" ? new ThreadMenu() : p.menu === "revert" ? new RevertMenu() : p.menu === "prchat" ? new PrChatDialog() : p.menu === "automations" ? new Automations() : new Launcher()
       : (FACES[p.panel] ?? (() => new ChatPanel()))();
     this.face.init(p, cx);
     // Key commands from keys.json's "mod:ht3-panels" section (save), and "focus" from pane.go.

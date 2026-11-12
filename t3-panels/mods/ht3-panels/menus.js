@@ -22,6 +22,7 @@ import { discover, startDevServer } from "./servers.js";
 import { readBranches, switchRow, pullFastForward, pickerRows, rowBlocked } from "./branches.js";
 import { stashView, conflictView, showStash, readStashes, readConflicts, stashPush, stashRun, stashAndPull, takeSide, markResolved, continueOp, abortOp } from "./stash.js";
 import { conflictRow } from "./gitstate.js";
+import { removeWorktreeFolder } from "./compare-data.js";
 
 export class AddMenu {
   init(p, cx) {
@@ -208,6 +209,8 @@ export class ThreadMenu {
       }
       closeOverlay(this.overlay);
     }
+    // Compare with another chat: Compare chats (compare.js) with this chat on side A and a picker for B.
+    if (key === "c" && this.p.chat && /^[\w-]+$/.test(this.p.chat)) { closeOverlay(this.overlay); run(`${MOD}.compare:${this.p.chat}`); }
     // Mark unread: the chat takes the mark and says "done" again (report.js `marked`).
     if (key === "u" && this.p.chat && this.p.tab) { setShared(`${MOD}.unread`, { ...(shared(`${MOD}.unread`) ?? {}), [this.p.tab]: Date.now() }); closeOverlay(this.overlay); }
     // A chat's Copy group (T3's thread menu: Copy > Path, Branch; the whole thread as Markdown is ours).
@@ -239,6 +242,7 @@ export class ThreadMenu {
         .when(!!this.p.chat, (e) => e.child(row("thread-title", "sparkles", "Regenerate title", "g")))
         .child(row("thread-settle", "check", this.p.settled ? "Bring back" : "Settle", "s"))
         .when(!!this.p.address, (e) => e.child(row("thread-pin", (shared("agents.pins") ?? []).includes(this.p.address) ? "pin-off" : "pin", (shared("agents.pins") ?? []).includes(this.p.address) ? "Unpin" : "Pin", "i")))
+        .when(!!this.p.chat, (e) => e.child(row("thread-compare", "columns-2", "Compare with…", "c")))
         .when(!!this.p.chat, (e) => e.child(row("thread-unread", "circle-dot", "Mark unread", "u"))
           .child(row("thread-new", "git-branch", (shared(`${MOD}.programs`)?.[this.p.tab] ?? {}).branch ? "New chat on this branch" : "New chat in this folder", "n")))
         .when(!!this.p.chat, (e) => {
@@ -412,8 +416,7 @@ export class ProjectMenu {
     if (!this.main || !this.root) return;
     this.run(cx, async () => {
       const gone = this.root;
-      const r = await exec("git", ["worktree", "remove", gone], { cwd: this.main, on: this.on, timeout: 60000 });
-      if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim().split("\n").pop().replace(/^fatal: /, "") || "git worktree remove failed");
+      await removeWorktreeFolder(exec, { main: this.main, folder: gone, on: this.on });
       this.note = `Removed the worktree ${shortPath(gone)}. Its branch${this.branch ? ` ${this.branch}` : ""} is kept.`;
       this.step = null;
       this.root = null;
@@ -990,6 +993,8 @@ export class ProjectMenu {
       // The servers started from this folder (servers.js): the row opens their dialog.
       .when(!!this.folder, (el) => el.child(row("proj-servers", "server", "Servers", { detail: this.servers == null ? null : this.servers.length ? this.servers.map((s) => `:${s.port}`).join(" ") : "none running",
         onClick: () => { closeOverlay(this.overlay); run(`${MOD}.servers`); } })))
+      // Compare chats (compare.js): two chats' work side by side, to keep one.
+      .child(row("proj-compare", "columns-2", "Compare chats", { detail: "two worktrees, pick one", onClick: () => { closeOverlay(this.overlay); run(`${MOD}.compare`); } }))
       .child(row("proj-settings", "settings-2", "Settings", { detail: "Agents, models, editors", onClick: () => { closeOverlay(this.overlay); run(`${MOD}.settings`); } }));
   }
 }
