@@ -2,7 +2,9 @@
 // runs on it.
 //
 // What counts: only the tokens the agent reports with an answer (session.js `usage`: input and output), added up per chat in
-// the transcript's `tokens` = { input, output, total, turns }. An agent that sends none has no total, so no budget line.
+// the transcript's `tokens` = { input, output, total, turns, cached }. An agent that sends none has no total, so no budget line.
+// Cache reads are left out of the total (kept apart in `cached`): Claude Code's adapter counts them in its totalTokens, and
+// as every tool call re-reads the whole cached prompt, one small turn came to ~100k of them, so a 100k budget filled at once.
 // `budgetNotice` says what the line over the message box shows for a total and a budget:
 //   - below 80% of the budget: nothing;
 //   - from 80%: "This chat used N of M tokens" (level 1, a warning);
@@ -26,17 +28,22 @@ export function nextBudget(budget) {
 export const budgetLabel = (n) => (!n ? "Off" : n >= 1e6 ? `${n / 1e6}M` : `${Math.round(n / 1e3)}k`);
 export const grouped = (n) => String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 
-// Adds one answer's `usage` ({ inputTokens, outputTokens, totalTokens } or snake_case) to a chat's `tokens`; returns it.
-// Nothing is added for a usage with no number in it.
+// Adds one answer's `usage` ({ inputTokens, outputTokens, totalTokens, cachedReadTokens, cachedWriteTokens } or snake_case)
+// to a chat's `tokens`; returns it. Nothing is added for a usage with no number in it. With cache counts given, the total is
+// input + output + cache writes (cache reads go to `cached`); without them it is the agent's totalTokens, else input + output.
 export function addUsage(tokens, usage) {
   if (!usage || typeof usage !== "object") return tokens ?? null;
   const n = (...keys) => keys.map((key) => Number(usage[key])).find((v) => Number.isFinite(v));
   const input = n("inputTokens", "input_tokens"), output = n("outputTokens", "output_tokens"), total = n("totalTokens", "total_tokens");
+  const read = n("cachedReadTokens", "cached_read_tokens", "cache_read_input_tokens"), written = n("cachedWriteTokens", "cached_write_tokens", "cache_creation_input_tokens");
   if (input == null && output == null && total == null) return tokens ?? null;
   const t = tokens ?? { input: 0, output: 0, total: 0, turns: 0 };
   t.input += input ?? 0;
   t.output += output ?? 0;
-  t.total += total || (input ?? 0) + (output ?? 0);
+  if (read != null || written != null) {
+    t.total += (input ?? 0) + (output ?? 0) + (written ?? 0);
+    t.cached = (t.cached ?? 0) + (read ?? 0);
+  } else t.total += total || (input ?? 0) + (output ?? 0);
   t.turns += 1;
   return t;
 }

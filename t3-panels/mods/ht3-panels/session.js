@@ -114,12 +114,15 @@ export class ChatSession {
       state.promptCapabilities = init?.agentCapabilities?.promptCapabilities ?? {};
       // The ACP steering extension (`_session/steering`): the agent takes a message into the turn it is running.
       state.steering = init?._meta?.steering?.supported === true;
-      if (!(this.resumeId && init?.agentCapabilities?.loadSession && (await this.resume(this.resumeId)))) {
+      // A chat with nothing said in it yet has no session worth resuming: the agent may never have saved it (Claude Code
+      // keeps none until the first message), and the resume would only fail with a warning over an empty chat.
+      const said = state.transcript.items.some((i) => i.kind !== "notice");
+      if (!(said && this.resumeId && init?.agentCapabilities?.loadSession && (await this.resume(this.resumeId)))) {
         const session = await this.conn.request("session/new", { cwd: state.cwd, mcpServers: [] });
         state.sessionId = session.sessionId;
         state.configOptions = configFrom(session);
         if (state.handoff) addNotice(state.transcript, "Forked: the agent gets the messages above with your next message.");
-        else if (state.transcript.items.length) addNotice(state.transcript, "New session: the agent doesn't remember the messages above.");
+        else if (said) addNotice(state.transcript, "New session: the agent doesn't remember the messages above.");
       }
       state.status = "ready";
     } catch (e) {
@@ -142,6 +145,8 @@ export class ChatSession {
     try {
       const r = await this.conn.request("session/load", { sessionId, cwd: this.state.cwd, mcpServers: [] });
       this.state.configOptions = configFrom(r);
+      // The replay holds the messages but not what they cost: the chat's token count (budget, Usage) carries over.
+      if (kept.tokens) this.state.transcript.tokens = kept.tokens;
       endTurn(this.state.transcript);
       addNotice(this.state.transcript, "Resumed the agent's session.");
       return true;

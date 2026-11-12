@@ -9,7 +9,7 @@
 // - Run with agent: makes a worktree on a new branch from the branch the person is on (launcher.js `addWorktree`, so the
 //   project's setup script runs there too) and starts a chat in it, on the agent New chat comes up with (settings.js
 //   `firstAgent`, as pr.js starts one), the task's title and note as its first message, sent (the chat's `prompt` prop).
-//   The row then says "running in <branch>" with the chat's state, read where the Inbox reads it (report.js: shared
+//   The row then says "on <branch>" with the chat's state, read where the Inbox reads it (report.js: shared
 //   "ht3-panels.places", ".status", ".turns"): working, waiting for you (the agent asks), done or failed; a click on the
 //   row shows that chat. Marking a task done is the person's: a finished chat doesn't do it.
 // - Notes: plain text per folder (a worktree is a folder of its own), saved a moment after the last change to
@@ -330,7 +330,7 @@ export class TasksPanel {
         .child(button(k, `task-edit-save-${t.id}`, "Save", (cx) => this.saveEdit(cx), { variant: "default", disabled: !this.editTitle.value().trim() })));
   }
 
-  // "running in <branch>" and the chat's state, or what the run is doing now, or why it didn't start.
+  // "on <branch>" and the chat's state, or what the run is doing now, or why it didn't start.
   runLine(k, t) {
     const making = this.making.get(t.id), err = this.errors.get(t.id);
     if (!t.run && !making && !err) return null;
@@ -347,7 +347,7 @@ export class TasksPanel {
     return h_flex().id(`task-run-${t.id}`).gap(6).items_center().min_w(0).h(22).px(6).rounded(6).text_size(12)
       .when(live, (el) => el.cursor_pointer().role("button").accessibility_label(`Show the chat of ${t.title}`).hover((x) => x.bg(alpha(k.foreground, 0.07))).on_click((_e, cx) => { this.focusChat(t); cx.notify(); }))
       .child(["working", "starting", "making"].includes(state) ? g.spin(1000) : g)
-      .child(div().flex_1().min_w(0).truncate().text_color(k.muted).tooltip(`${t.run.path}\nfrom ${t.run.from ?? "HEAD"}`).child(`running in ${t.run.branch}`))
+      .child(div().flex_1().min_w(0).truncate().text_color(k.muted).tooltip(`${t.run.path}\nfrom ${t.run.from ?? "HEAD"}`).child(`on ${t.run.branch}`))
       .child(badge(k, label, TONE[state] ?? "secondary"))
       .when(state === "failed" && !!s.why, (el) => el.tooltip(s.why));
   }
