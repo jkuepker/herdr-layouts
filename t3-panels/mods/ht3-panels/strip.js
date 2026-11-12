@@ -68,7 +68,7 @@ export class Strip {
       .child(div().flex_1())
       .when(g === "a", (el) => el.child(withPress(h_flex().id("project").h(24).max_w(150).px(6).gap(4).flex_none().items_center().rounded(6).text_size(12).text_color(k.muted).cursor_pointer()
         .hover((s) => s.bg(k.accent).text_color(k.foreground)).role("button").accessibility_label("Project").tooltip("Machine, editor and branch")
-        .on_click(() => this.openMenu("project", {}, { w: 344, h: 724 }))
+        .on_click(() => this.openMenu("project", {}, { w: 344, h: 756 }))
         .child(icon("git-branch").size(14).flex_none())
         .child(div().min_w(0).truncate().child(space?.branch ?? "Project"))
         .child(icon("chevron-down").size(12).flex_none()))))

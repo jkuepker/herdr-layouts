@@ -19,6 +19,7 @@ import { devCommand } from "./detect.js";
 import { write, wroteLine, Cancelled, conventionalIssue } from "./gitwrite.js";
 import { holdForSecrets, guardStep } from "./secretguard.js";
 import { discover, startDevServer } from "./servers.js";
+import { outdatedCount } from "./deps.js";
 import { readBranches, switchRow, pullFastForward, pickerRows, rowBlocked } from "./branches.js";
 import { stashView, conflictView, showStash, readStashes, readConflicts, stashPush, stashRun, stashAndPull, takeSide, markResolved, continueOp, abortOp } from "./stash.js";
 import { conflictRow } from "./gitstate.js";
@@ -990,6 +991,11 @@ export class ProjectMenu {
       // The servers started from this folder (servers.js): the row opens their dialog.
       .when(!!this.folder, (el) => el.child(row("proj-servers", "server", "Servers", { detail: this.servers == null ? null : this.servers.length ? this.servers.map((s) => `:${s.port}`).join(" ") : "none running",
         onClick: () => { closeOverlay(this.overlay); run(`${MOD}.servers`); } })))
+      // The outdated dependencies of this folder (deps.js): the row opens their dialog.
+      .when(!!this.folder, (el) => {
+        const n = outdatedCount({ on: this.on, cwd: this.folder });
+        return el.child(row("proj-deps", "package", "Dependencies", { detail: n == null ? "check for updates" : n ? `${n} outdated` : "up to date", onClick: () => { closeOverlay(this.overlay); run(`${MOD}.deps`); } }));
+      })
       .child(row("proj-settings", "settings-2", "Settings", { detail: "Agents, models, editors", onClick: () => { closeOverlay(this.overlay); run(`${MOD}.settings`); } }));
   }
 }

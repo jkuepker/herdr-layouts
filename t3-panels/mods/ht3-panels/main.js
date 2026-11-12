@@ -10,7 +10,7 @@
 //   props.menu "add" / "project", the side panel's popups, "copy" / "thread" / "revert", the chat's
 //   and the lists' menus (all menus.js), "settings", the Settings dialog (settings-ui.js), or
 //   "usage", the Usage dialog (usage.js), or "search", the project content search (search.js), or "servers", the
-//   servers started from the folder (servers.js).
+//   servers started from the folder (servers.js), or "deps", the outdated dependencies (deps.js).
 // The panel's state and the code that makes the layout match it are in side.js.
 
 import { View } from "gpui-kit";
@@ -44,6 +44,7 @@ import { SIDE, read, sideShown, bottomShown, reconcile, keep, toggleMax, toggleB
 import { pendingScript } from "./scripts.js";
 import { ServersDialog, openServers, serversOpen } from "./servers.js";
 import { WorktreesDialog, openWorktrees, worktreesOpen } from "./worktrees.js";
+import { DepsDialog, openDeps, depsOpen } from "./deps.js";
 
 export { SIDE };
 
@@ -118,11 +119,15 @@ class Buttons {
     // worktrees: the repository's worktrees to clean up, as a dialog (worktrees.js); worktrees:<folder> for that folder's repository.
     // Again while it is open closes it (the dialog does that itself).
     else if (name === "worktrees") { if (!worktreesOpen()) openWorktrees(c.slice(10)); }
+    // deps: the outdated dependencies of the shown space's folder, as a dialog (deps.js); again while it is open closes it (the dialog
+    // does that itself). While it is open: deps-refresh, deps-stop, deps-update:<package>, deps-filter:<text>, deps-select:<package>,
+    // deps-all (asks), deps-yes, deps-no, deps-ask, deps-eco:<id> (the dialog takes these).
+    else if (name === "deps") { if (!depsOpen()) openDeps(); }
     // blame / history: Files shows or hides blame in its open file's Lines view / the file's commit history (editor.js, blame.js; they reach Files while it is shown).
     // (Nothing to run here: the Files copy takes them, like lines and open:<path>.)
     // reopen-closed: brings back the newest closed side-panel surface, file or chat tab (side.js reopenClosed; T3's mod+shift+t).
     else if (c === "reopen-closed") cx.spawn(async (cx) => { try { await reopenClosed(cx); } catch (e) { fail(e); } cx.notify(); });
-    else if (name === "menu") openOverlay({ mod: MOD, kind: "popup", at: { x: 900, y: 48 }, width: a === "project" ? 344 : ADD_MENU.w, height: a === "project" ? 724 : ADD_MENU.h, props: { menu: a, group: b ?? "a" } });
+    else if (name === "menu") openOverlay({ mod: MOD, kind: "popup", at: { x: 900, y: 48 }, width: a === "project" ? 344 : ADD_MENU.w, height: a === "project" ? 756 : ADD_MENU.h, props: { menu: a, group: b ?? "a" } });
     cx.notify();
   }
 
@@ -163,7 +168,7 @@ export default class T3Panels extends View {
   init(_props, cx) {
     const p = props() ?? {};
     this.face = p.overlay
-      ? p.menu === "add" ? new AddMenu() : p.menu === "project" ? new ProjectMenu() : p.menu === "settings" ? new Settings() : p.menu === "usage" ? new Usage() : p.menu === "search" ? new Search() : p.menu === "quick" ? new QuickOpen() : p.menu === "servers" ? new ServersDialog() : p.menu === "worktrees" ? new WorktreesDialog() : p.menu === "copy" ? new CopyMenu() : p.menu === "thread" ? new ThreadMenu() : p.menu === "revert" ? new RevertMenu() : p.menu === "prchat" ? new PrChatDialog() : p.menu === "automations" ? new Automations() : new Launcher()
+      ? p.menu === "add" ? new AddMenu() : p.menu === "project" ? new ProjectMenu() : p.menu === "settings" ? new Settings() : p.menu === "usage" ? new Usage() : p.menu === "search" ? new Search() : p.menu === "quick" ? new QuickOpen() : p.menu === "servers" ? new ServersDialog() : p.menu === "worktrees" ? new WorktreesDialog() : p.menu === "deps" ? new DepsDialog() : p.menu === "copy" ? new CopyMenu() : p.menu === "thread" ? new ThreadMenu() : p.menu === "revert" ? new RevertMenu() : p.menu === "prchat" ? new PrChatDialog() : p.menu === "automations" ? new Automations() : new Launcher()
       : (FACES[p.panel] ?? (() => new ChatPanel()))();
     this.face.init(p, cx);
     // Key commands from keys.json's "mod:ht3-panels" section (save), and "focus" from pane.go.
