@@ -18,6 +18,8 @@ const ROW = 36, HEAD = 32, HEAD_GAP = 8;
 export const STACK = 1;
 export const RANK = { blocked: 4, done: 3, working: 2, idle: 1 };
 export const SECTION = { 4: "Needs you", 3: "Done", 2: "Working", 1: "Idle" };
+// T3 Panels: the "Ready to merge" group's id (its fold is kept under it, as a section's).
+const READY = "sec-ready";
 
 // How long it's been in its state, as the shipped agents list says it.
 function duration(ms) {
@@ -107,7 +109,7 @@ export function agentStatus(view, t, a, note = "", id) {
   return id ? tipMark(view, t, `${id}-mark`, label, el.id(id)) : el;
 }
 
-export function agentEntries(view, t, { list, all, shown, ps, now, viewing, byPriority, own, shownStatus, groups }) {
+export function agentEntries(view, t, { list, all, shown, ps, now, viewing, byPriority, own, shownStatus, groups, ready = [] }) {
   const withKids = (a) => {
     const subs = agentTree(all, a.address);
     const r = { key: a.address, h: ROW + STACK, el: row(a, subs), ghost: () => row(a, subs, true) };
@@ -276,7 +278,7 @@ export function agentEntries(view, t, { list, all, shown, ps, now, viewing, byPr
   // Groups in list order: spaces (grouped) or priority sections. Agents of a
   // space are next to each other in agents(), so neighbours make a group.
   // A group no longer drawn never reports the pointer leaving it, so it would come back lit.
-  if (!groups.some((g) => g.id === view.overGroup)) view.overGroup = null;
+  if (!groups.some((g) => g.id === view.overGroup) && !(view.overGroup === READY && ready.length)) view.overGroup = null;
   const chevron = (g, open, ghost) => {
     const color = !ghost && view.overGroup === g.id ? t.foreground : t.dim;
     // 12px, as T3's section chevron; -2: its middle 22px from the sidebar's edge, under the headings' last button.
@@ -330,6 +332,35 @@ export function agentEntries(view, t, { list, all, shown, ps, now, viewing, byPr
       .on_click((_e, cx) => view.toggleFold(g.id, cx, false))
       .on_mouse_down("right", () => openOverlay({ mod: "ht3-menu", kind: "popup", width: 220, height: 260, props: { tab: "space", target: { id: g.space } } }))), 8);
   };
+  // T3 Panels: a task the coordinator marked ready to merge (ready.js), of any project: its title, then its project,
+  // dim. A click shows that project's space and its Tasks surface with the task in view (ht3-panels `tasks-show`).
+  const readyRow = (r, ghost) => {
+    const rowId = `ready-${r.key}-${r.id}`;
+    const base = h_flex()
+      .relative()
+      .w_full().min_w(0)
+      .px(10)
+      .h(ROW)
+      .flex_none()
+      .rounded(6)
+      .items_center()
+      .gap(10)
+      .child(h_flex().size(16).flex_none().items_center().justify_center().child(svg("mods/ht3-agents/icons/git-merge.svg").size(16).flex_none().text_color(t.done ?? t.foreground)))
+      .child(h_flex().flex_1().min_w(0).gap(10).items_center()
+        .child(div().min_w(0).truncate().font_medium().text_color(t.foreground).child(r.title))
+        .child(div().flex_1().flex_shrink(1000).min_w(0).truncate().text_size(12).text_color(t.dim).child(r.on ? `${r.project} · ${r.on}` : r.project)));
+    if (ghost) return base;
+    return stop(view, t, rowId, base
+      .id(rowId)
+      .role("button").accessibility_label(`${r.title}, ${r.project}: ready to merge. Show it in Tasks`)
+      .hover(s => s.bg(t.hover)).active(s => s.bg(t.selected))
+      .on_click(() => { run(`ht3-panels.${r.command}`); }), 6);
+  };
+  // The group is there only while a task is ready, above the agents: it is what waits for the person.
+  const readyGroup = { id: READY, label: "Ready to merge", members: ready }, readyOpen = !view.isFolded(READY, false);
+  const readyEntries = ready.length === 0 ? [] : [
+    { key: `m:${READY}`, h: HEAD + STACK, el: shelf(readyGroup, readyOpen, false), ghost: () => shelf(readyGroup, readyOpen, true) },
+    ...(readyOpen ? ready.map((r) => ({ key: `ready:${r.key}:${r.id}`, h: ROW + STACK, el: readyRow(r, false), ghost: () => readyRow(r, true) })) : [])];
   // A closed group still shows the row you're on, as T3's route row, and hints at the rest.
   const entries = groups.flatMap((g, i) => {
     const open = !view.isFolded(g.id, g.id === "sec-1");
@@ -338,5 +369,5 @@ export function agentEntries(view, t, { list, all, shown, ps, now, viewing, byPr
       ...(open ? g.members : g.members.filter(viewing)).flatMap(withKids)];
   });
 
-  return entries;
+  return [...readyEntries, ...entries];
 }

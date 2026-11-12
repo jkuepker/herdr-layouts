@@ -28,7 +28,8 @@ import { DashboardPanel } from "./dashboard.js";
 import { PrPanel, PrChatDialog, prChatCommand } from "./pr.js";
 import { BrowserPanel } from "./browser.js";
 import { ChecksPanel, openChecks } from "./checks.js";
-import { TasksPanel } from "./tasks.js";
+import { TasksPanel, openTasks, showTasks } from "./tasks.js";
+import { parseShow } from "./tasklist.js";
 import { LogsPanel } from "./logs.js";
 import { SideChat, beginChat } from "./sidechat.js";
 import { Empty } from "./empty.js";
@@ -86,6 +87,16 @@ class Buttons {
     else if (name === "settings") openSettings();
     // checks[:<a|b>]: shows the Checks surface (checks.js), in the group that has it, else the first (or the one given).
     else if (c === "checks" || (name === "checks" && (a === "a" || a === "b"))) cx.spawn(async (cx) => { try { await openChecks(a); } catch (e) { fail(e); } cx.notify(); });
+    // tasks[:<a|b>]: shows the Tasks surface (tasks.js), in the group that has it, else the first (or the one given).
+    // tasks:<project folder> (or tasks:<machine>:<folder>): shows the space that works in that repository first (one is
+    // made at the folder when there is none), then its Tasks surface.
+    // tasks-show:{"project":"<folder>","machine":"…","id":"<task id>"}: the same, with that task's row drawn first and
+    // framed. The "ready to merge" notification's click and the Agents list's "Ready to merge" rows send this one.
+    // (tasks-add:…, tasks-merge:… and the other tasks-<word> commands are the shown Tasks surface's own, tasks.js.)
+    else if (name === "tasks" || name === "tasks-show") cx.spawn(async (cx) => {
+      try { const o = parseShow(c); if (o.error) throw new Error(o.error); await (o.project ? showTasks(o) : openTasks(o.group ?? undefined)); } catch (e) { fail(e); }
+      cx.notify();
+    });
     else if (name === "set") {
       const rest = c.slice(4), at = rest.indexOf("=");
       try { setPref(at < 0 ? rest : rest.slice(0, at), at < 0 ? undefined : JSON.parse(rest.slice(at + 1))); } catch (e) { fail(e); }

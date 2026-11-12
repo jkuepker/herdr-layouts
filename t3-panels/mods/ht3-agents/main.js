@@ -13,6 +13,7 @@ import { MOTION, planMotion, flying, leavingRows } from "./motion.js";
 import { agentEntries, agentStatus, STACK, RANK, SECTION } from "./rows.js";
 import { sidebarParts } from "./sidebar.js";
 import { modStatus, programOf } from "./name.js";
+import { readyRows } from "./ready.js";
 const SORTS = [
   { id: "priority", label: "Priority", icon: "clock" },
   { id: "grouped", label: "Grouped by space", icon: "layers" },
@@ -241,7 +242,9 @@ export default class Agents extends View {
         if (shared("t3-agent-order") !== "lists") setShared("t3-agent-order", "lists");
       }
     } else this.agentOrder = null;
-    return { sort, list, all, shown, ps, now, viewing, byPriority, own, shownStatus, pinned, groups };
+    // T3 Panels: the tasks the coordinator marked ready to merge, of every project (ready.js).
+    const ready = readyRows(shared("ht3-panels.tasks"));
+    return { sort, list, all, shown, ps, now, viewing, byPriority, own, shownStatus, pinned, groups, ready };
   }
 
   render(cx) {
@@ -302,7 +305,7 @@ export default class Agents extends View {
                 .child(svg(`mods/ht3-agents/icons/${sort.icon}.svg`).size(16)), 8)),
             ),
       )
-      .when(list.length === 0, (el) =>
+      .when(list.length === 0 && data.ready.length === 0, (el) =>
         el.child(div().px(16).py(24).text_center().text_size(12).line_height("16px").text_color(t.dim).child("No agent status yet. Agents show up here when they report their status. Older versions and agents inside tmux may not.")),
       )
       .child(v_flex().id("ag-list").flex_1().min_h(0).px(8).pb(8).overflow_y_scroll()

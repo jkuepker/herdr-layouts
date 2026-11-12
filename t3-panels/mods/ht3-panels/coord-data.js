@@ -56,11 +56,13 @@ export function pickAnswer(pending, ask, option) {
   return { ask: pending.id, optionId: o.optionId, title: String(pending.title ?? ""), name: String(o.name ?? o.optionId) };
 }
 
-// Whether `ready` may mark a task (`work`: its worktree as last read, or undefined when it wasn't read yet): it was run,
-// isn't merged, and has something to merge as far as is known. -> null, or the reason it may not.
-export function readyCheck(t, work) {
+// Whether `ready` may mark a task (`work`: its worktree as read now, or undefined when it wasn't read; `state`: its
+// chat's state): it was run, isn't merged, its agent isn't at work (what it would still write was not looked at), and
+// it has something to merge as far as is known. -> null, or the reason it may not.
+export function readyCheck(t, work, state = null) {
   if (!t?.run) return "This task was never run: there is nothing to merge.";
   if (t.run.merged) return "This task is merged already.";
+  if (state === "working" || state === "waiting") return state === "waiting" ? "This task's agent waits for an answer: it isn't finished." : "This task's agent is still working: wait until it is done.";
   if (work?.missing) return "This task's worktree is gone.";
   if (work && !hasWork(work)) return "This task's branch has no commits ahead of the branch it was made from and no uncommitted changes: there is nothing to merge.";
   return null;

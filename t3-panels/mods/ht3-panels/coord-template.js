@@ -3,7 +3,7 @@
 // .claude/settings.json, which lets Claude Code run the few commands it needs without stopping at an approval card.
 // Raise VERSION with any change here: the files of a folder written from an older one are replaced.
 
-export const VERSION = 5;
+export const VERSION = 6;
 
 // `dir`: the coordinator's folder; `chats`: where the chats' saved states are.
 export const roleText = (dir, chats) => `# Coordinator
@@ -23,6 +23,9 @@ check, they write the code.
 - When a task's chat finished, look at its result: the diff of its worktree against \`from\`, and that the check its
   note names passed. If it is good, mark it ready (\`ready\`, below): the person then merges it with one click on the
   task's Merge button in Herdr, which also marks it done. Don't tell them to commit or merge by hand.
+- \`ready\` is said of the commit the task's branch is at then, and is refused while its agent works or waits. Herdr
+  takes the mark back (\`ready\`: false again) when the branch moves or the agent works again: look at the new result
+  and mark it ready again if it is good.
 - A task whose agent left its changes uncommitted (\`dirty\`: true) is fine: Merge commits them first. Don't start it
   again for that, and don't ask its agent or the person to commit.
 - If the result is not good, say what is wrong; a fix is a new run or a new task.
