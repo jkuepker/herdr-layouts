@@ -259,7 +259,7 @@ export class ChatPanel {
     this.autoAllow = keptOf(this.chatId).allow === true;
     // Messages queued before a reload wait on: they go out when the agent is back and ready.
     const waiting = keptOf(this.chatId).queue;
-    if (Array.isArray(waiting) && waiting.length) this.queue = waiting.map((q) => ({ text: String(q.text ?? ""), blocks: q.blocks ?? [], ...(q.fresh ? { fresh: true } : {}), ...(Array.isArray(q.tokens) ? { tokens: q.tokens } : {}), files: (q.files ?? []).map((a) => ({ ...a, type: a.type ?? IMAGE_TYPES[String(a.name ?? "").split(".").pop().toLowerCase()] ?? null })) }));
+    if (Array.isArray(waiting) && waiting.length) this.queue = waiting.map((q) => ({ text: String(q.text ?? ""), blocks: q.blocks ?? [], ...(q.fresh ? { fresh: true } : {}), ...(q.posted ? { posted: true } : {}), ...(Array.isArray(q.tokens) ? { tokens: q.tokens } : {}), files: (q.files ?? []).map((a) => ({ ...a, type: a.type ?? IMAGE_TYPES[String(a.name ?? "").split(".").pop().toLowerCase()] ?? null })) }));
     // "/clear" is armed: the next message starts a fresh session (armFresh). Kept, so a reload doesn't undo it.
     this.fresh = keptOf(this.chatId).fresh === true;
     // The prompts sent in this chat, for ↑ in the message box (pushPrompt); kept with the chat, so they outlive a reload.
@@ -339,6 +339,8 @@ export class ChatPanel {
           this.quoteIn(cx, qt.text);
         }
       }
+      // What Herdr itself has to say to this chat (shared "ht3-panels.post": the coordinator's task notices, coordinator.js).
+      if (this.reporter && this.phase === "chat" && this.source?.kind === "acp" && shared(`${MOD}.post`)?.[this.chatId]?.length) this.takePosts(cx);
       // "Regenerate title" in the card's menu (menus.js) asks this chat to name itself.
       const rt = shared(`${MOD}.retitle`);
       if (rt && rt.at !== this.retitleSeen) {
@@ -904,8 +906,24 @@ export class ChatPanel {
     this.dispatch(cx, next);
   }
 
+  // Messages posted to this chat by its id (shared "ht3-panels.post": { "<chat id>": [{ text, at }] }, coordinator.js
+  // `postTo`): they are taken out of the shared map and go out as messages of this chat, each a turn of its own, sent
+  // at once when the agent is ready and else at the end of the queue. A running turn is never steered or stopped for
+  // one, whatever "Steer instead of queue" says. They wait in the map, however long, until this chat is shown.
+  takePosts(cx) {
+    const all = { ...(shared(`${MOD}.post`) ?? {}) }, mine = all[this.chatId] ?? [];
+    delete all[this.chatId];
+    setShared(`${MOD}.post`, all);
+    const msgs = mine.map((m) => ({ text: String(m?.text ?? "").trim(), blocks: [], files: [], tokens: [], posted: true })).filter((m) => m.text);
+    if (!msgs.length) return;
+    this.queue = [...(this.queue ?? []), ...msgs];
+    this.keepQueue();
+    this.drain(cx);
+    cx.notify();
+  }
+
   keepQueue() {
-    keep(this.chatId, { queue: (this.queue ?? []).map((q) => ({ text: q.text, blocks: q.blocks, ...(q.fresh ? { fresh: true } : {}), ...(Array.isArray(q.tokens) ? { tokens: q.tokens } : {}), files: q.files.map(fileOf) })) });
+    keep(this.chatId, { queue: (this.queue ?? []).map((q) => ({ text: q.text, blocks: q.blocks, ...(q.fresh ? { fresh: true } : {}), ...(q.posted ? { posted: true } : {}), ...(Array.isArray(q.tokens) ? { tokens: q.tokens } : {}), files: q.files.map(fileOf) })) });
   }
 
   // A queued message's buttons: steer (it goes in now), up and down (its place), edit (back into the message box), drop.
@@ -1024,7 +1042,8 @@ export class ChatPanel {
       return cx.notify();
     }
     // It is remembered for ↑ in the message box, with the chat (kept); a chat with no id remembers it while its pane lives.
-    const sent = pushPrompt(this.history, { text, tokens });
+    // (Not one Herdr posted, takePosts: that is not the person's to recall.)
+    const sent = msg.posted ? this.history : pushPrompt(this.history, { text, tokens });
     if (sent !== this.history) { this.history = sent; keep(this.chatId, { history: sent }); }
     const out = (...args) => (steer && this.source.steer ? this.source.steer(...args) : this.source.send(...args));
     // The chat as it is now, not as last drawn: a new chat's first message may go out before its pane was drawn with a folder.

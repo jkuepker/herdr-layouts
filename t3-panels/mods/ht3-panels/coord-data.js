@@ -2,7 +2,7 @@
 
 import { chatState, clip, TITLE_MAX, NOTE_MAX, parseKey } from "./tasklist.js";
 
-export const OPS = ["add", "run", "done", "delete"];
+export const OPS = ["add", "run", "done", "delete", "answer"];
 export const OPS_KEPT = 20;
 // A task id the caller may choose: letters, digits, ".", "_" and "-", at most 64.
 export const cleanId = (id) => (typeof id === "string" || typeof id === "number") && /^[\w.-]{1,64}$/.test(String(id)) ? String(id) : null;
@@ -15,7 +15,8 @@ export function expandHome(path, home) {
 }
 
 // What `coord:<json>` carries -> { op, project (a folder, absolute), machine, id, title, note, run, done }, or { error }.
-// add: { project, title, note?, run?, id?, machine? }; run, done, delete: { project, id, machine? } (done: false reopens).
+// add: { project, title, note?, run?, id?, machine? }; run, done, delete: { project, id, machine? } (done: false reopens);
+// answer: { project, id, ask, option, machine? } -> { op, project, machine, id, ask, option } (the ids as strings).
 export function parseOp(text, home = "") {
   let o;
   try { o = JSON.parse(text); } catch (e) { return { error: `Not JSON: ${String(e?.message ?? e)}` }; }
@@ -26,19 +27,42 @@ export function parseOp(text, home = "") {
   const machine = typeof o.machine === "string" && o.machine.trim() ? o.machine.trim() : null;
   const id = cleanId(o.id);
   if (o.id != null && !id) return { op: o.op, project, error: "id may hold letters, digits, '.', '_' and '-' only (at most 64)." };
+  if (o.op === "answer") {
+    if (!id) return { op: o.op, project, error: "id is missing." };
+    const word = (v) => (typeof v === "string" || typeof v === "number") && String(v).trim() ? String(v).trim() : null;
+    const ask = word(o.ask), option = word(o.option);
+    if (!ask) return { op: o.op, project, id, error: "ask is missing: the id of the task's ask in state.json." };
+    if (!option) return { op: o.op, project, id, error: "option is missing: one of the ask's optionIds." };
+    return { op: "answer", project, machine, id, ask, option };
+  }
   if (o.op !== "add") return id ? { op: o.op, project, machine, id, done: o.done !== false } : { op: o.op, project, error: "id is missing." };
   const title = clip(String(o.title ?? "").split("\n")[0], TITLE_MAX);
   if (!title) return { op: o.op, project, error: "title is missing." };
   return { op: "add", project, machine, id, title, note: clip(o.note, NOTE_MAX), run: o.run === true };
 }
 
+// An approval's answer, checked against the ask that waits now (`pending`: shared "ht3-panels.asks" for the task's tab,
+// or null): the ask must be that one (an older id is stale: the agent asks something else by now) and the option one of
+// its own. An option that stays in force ("allow_always", "reject_always") is the person's to pick, never a command's.
+// -> { ask, optionId, title, name } or { error }.
+export function pickAnswer(pending, ask, option) {
+  if (!pending || !Array.isArray(pending.options)) return { error: "This task's chat asks nothing now." };
+  if (String(pending.id) !== String(ask)) return { error: `Stale ask ${ask}: the chat now asks ${pending.id} (${clip(pending.title, 80)}). Read state.json again.` };
+  const o = pending.options.find((x) => String(x.optionId) === String(option));
+  if (!o) return { error: `This ask has no option ${option}: one of ${pending.options.map((x) => x.optionId).join(", ")}.` };
+  if (/_always$/.test(String(o.kind ?? ""))) return { error: `Option ${option} stays in force (${o.kind}): that one is the person's to pick.` };
+  return { ask: pending.id, optionId: o.optionId, title: String(pending.title ?? ""), name: String(o.name ?? o.optionId) };
+}
+
 // The last results, newest last, for the state file: what was asked and how it went.
 export const logOp = (log, entry) => [...(log ?? []), entry].slice(-OPS_KEPT);
 
 // The state file's body. `tasks`: shared "ht3-panels.tasks" cleaned ({ key: [task] }); `facts`: what chatState reads
-// ({ places, status, turns, tabs, now }); `replies`: chat id -> its last reply's first line; `making`: "<key>\n<task id>" ->
+// ({ places, status, turns, tabs, now }, and `asks`: shared "ht3-panels.asks", tab -> the approval its chat waits for);
+// `replies`: chat id -> its last reply's first line; `making`: "<key>\n<task id>" ->
 // what a run that hasn't made its chat yet is doing; `skip`: a folder whose space isn't a project's (the coordinator's own).
 // A task's state: "none" (never run), "making", or chatState's: starting, working, waiting, done, failed, closed.
+// A task whose chat waits for an approval has it as `ask`: { id, title, options: [{ optionId, name, kind }] }.
 export function snapshot({ spaces = [], tasks = {}, facts = {}, replies = {}, making = {}, ops = [], skip = null } = {}) {
   return {
     spaces: spaces.filter((s) => !skip || s.folder !== skip).map((s) => ({ name: String(s.name ?? "").replace(/​/g, ""), folder: s.folder ?? "", machine: s.machine ?? null })),
@@ -48,8 +72,10 @@ export function snapshot({ spaces = [], tasks = {}, facts = {}, replies = {}, ma
         project: at.root, machine: at.on,
         tasks: tasks[key].map((t) => {
           const busy = making[`${key}\n${t.id}`], s = t.run ? chatState(t.run, facts) : null;
+          const ask = !busy && s?.tab ? facts.asks?.[s.tab] : null;
           return { id: t.id, title: t.title, note: t.note, done: t.done, state: busy ? "making" : s?.state ?? "none",
             ...(s?.why && !busy ? { why: s.why } : {}),
+            ...(ask?.id && Array.isArray(ask.options) ? { ask: { id: String(ask.id), title: String(ask.title ?? ""), options: ask.options.map((o) => ({ optionId: o.optionId, name: o.name ?? null, kind: o.kind ?? null })) } } : {}),
             branch: t.run?.branch ?? null, path: t.run?.path ?? null, chat: t.run?.chat ?? null, lastReply: (t.run && replies[t.run.chat]) || null };
         }),
       };
@@ -60,3 +86,41 @@ export function snapshot({ spaces = [], tasks = {}, facts = {}, replies = {}, ma
 
 // Whether the coordinator's folder needs its files written: none there yet, or an older template's.
 export const templateDue = (have, version) => !(Number(String(have ?? "").trim()) >= version);
+
+// ---- task notices ----
+
+// The states the coordinator is told about when a task's chat comes into one. The others (none, making, starting,
+// working) are steps on the way, and a task's `done` mark is the coordinator's or the person's own doing.
+export const NOTICE_STATES = ["done", "failed", "waiting", "closed"];
+export const NOTICE_TITLE_MAX = 60, NOTICE_REPLY_MAX = 160, NOTICE_MAX = 8;
+
+// A state file's tasks by "<machine or empty>:<project>\n<task id>", each with its project, for noticeDiff.
+export function taskStates(body) {
+  const all = {};
+  for (const p of body?.projects ?? []) for (const t of p.tasks ?? []) all[`${p.machine ?? ""}:${p.project}\n${t.id}`] = { ...t, project: p.project, machine: p.machine ?? null };
+  return all;
+}
+
+// The tasks whose chat's state changed into one of NOTICE_STATES between two passes (`prev`, `now`: taskStates).
+// With no pass before (`prev` null: the mod was just loaded) nothing is told, and neither is a task the pass before
+// didn't have: what stood that way already is not news. A closed chat shown again ("closed" to "done") finished before.
+export function noticeDiff(prev, now) {
+  if (!prev) return [];
+  return Object.keys(now ?? {}).filter((k) => {
+    const was = prev[k]?.state, is = now[k].state;
+    return was != null && was !== is && NOTICE_STATES.includes(is) && !(was === "closed" && is === "done");
+  }).map((k) => ({ key: k, ...now[k] }));
+}
+
+// One short message for a batch of them, as the coordinator chat gets it.
+export function noticeText(list) {
+  const one = (s, n) => { const t = String(s ?? "").replace(/\s+/g, " ").trim(); return t.length > n ? `${t.slice(0, n - 1)}…` : t; };
+  const lines = list.slice(0, NOTICE_MAX).map((t) => {
+    const more = t.state === "waiting" && t.ask ? ` — asks: ${one(t.ask.title, NOTICE_REPLY_MAX)} (ask ${t.ask.id})`
+      : t.state === "failed" && t.why ? ` — ${one(t.why, NOTICE_REPLY_MAX)}`
+      : t.lastReply ? ` — last reply: ${one(t.lastReply, NOTICE_REPLY_MAX)}` : "";
+    return `${String(t.project ?? "").split("/").filter(Boolean).pop() ?? "/"}${t.machine ? ` on ${t.machine}` : ""} / ${t.id} "${one(t.title, NOTICE_TITLE_MAX)}": ${t.state}${more}`;
+  });
+  const rest = list.length - lines.length;
+  return `Task updates (from Herdr): ${lines.join("; ")}${rest > 0 ? `; and ${rest} more` : ""}. Read state.json and act per your rules.`;
+}

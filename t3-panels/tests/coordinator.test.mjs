@@ -1,7 +1,7 @@
 // node t3-panels/tests/coordinator.test.mjs
 import assert from "node:assert/strict";
 import { parseKey, keyOf, spaceIn } from "../mods/ht3-panels/tasklist.js";
-import { parseOp, cleanId, expandHome, snapshot, logOp, templateDue, OPS_KEPT } from "../mods/ht3-panels/coord-data.js";
+import { parseOp, cleanId, expandHome, snapshot, logOp, templateDue, OPS_KEPT, pickAnswer, taskStates, noticeDiff, noticeText, NOTICE_MAX } from "../mods/ht3-panels/coord-data.js";
 import { VERSION, roleText, SETTINGS } from "../mods/ht3-panels/coord-template.js";
 import { ChatSession } from "../mods/ht3-panels/session.js";
 
@@ -35,6 +35,22 @@ assert.match(parseOp('{"op":"add","project":"/a"}').error, /title/);
 assert.match(parseOp('{"op":"run","project":"/a"}').error, /id is missing/);
 assert.match(parseOp('{"op":"add","project":"/a","title":"T","id":"a b"}').error, /id may hold/);
 
+// answer: the task, the ask's id and one of its options, the ids as strings.
+assert.deepEqual(parseOp('{"op":"answer","project":"/a","id":"x","ask":1731400000000,"option":"allow"}'), { op: "answer", project: "/a", machine: null, id: "x", ask: "1731400000000", option: "allow" });
+assert.match(parseOp('{"op":"answer","project":"/a","ask":"1","option":"allow"}').error, /id is missing/);
+assert.match(parseOp('{"op":"answer","project":"/a","id":"x","option":"allow"}').error, /ask is missing/);
+assert.match(parseOp('{"op":"answer","project":"/a","id":"x","ask":"1"}').error, /option is missing/);
+assert.match(parseOp('{"op":"answer","project":"/a","id":"x","ask":{"id":1},"option":"allow"}').error, /ask is missing/);
+// It must be the ask that waits now, and an option of its own that doesn't stay in force.
+const pending = { id: "17", title: "Run npm test", options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }, { optionId: "always", name: "Always allow", kind: "allow_always" }, { optionId: "no", name: "Reject", kind: "reject_once" }] };
+assert.deepEqual(pickAnswer(pending, "17", "allow"), { ask: "17", optionId: "allow", title: "Run npm test", name: "Allow" });
+assert.equal(pickAnswer(pending, "17", "no").optionId, "no");
+assert.equal("always" in pickAnswer(pending, "17", "allow"), false);
+assert.match(pickAnswer(null, "17", "allow").error, /asks nothing/);
+assert.match(pickAnswer(pending, "16", "allow").error, /^Stale ask 16/);
+assert.match(pickAnswer(pending, "17", "yes").error, /no option yes: one of allow, always, no/);
+assert.match(pickAnswer(pending, "17", "always").error, /person's to pick/);
+
 // The state file: spaces without the coordinator's own, each project's tasks with their chat's state and last reply.
 const now = 1_000_000, run = (chat, more = {}) => ({ chat, branch: `task-${chat}`, path: `/a/.worktrees/task-${chat}`, on: null, from: "main", at: now - 5000, ...more });
 const s = snapshot({
@@ -46,7 +62,8 @@ const s = snapshot({
     { id: "t4", title: "Four", note: "", done: false, at: 4, run: run("c4", { at: now - 600000 }) },
     { id: "t5", title: "Five", note: "", done: false, at: 5 },
   ], "bad key": [{ id: "x", title: "X", note: "", done: false, at: 1 }] },
-  facts: { places: { c2: { tab: "tab2", pane: "p2" }, c3: { tab: "tab3", pane: "p3" } }, status: { tab2: "working", tab3: "idle" }, turns: { tab3: 1 }, tabs: new Set(["tab2", "tab3"]), now },
+  facts: { places: { c2: { tab: "tab2", pane: "p2" }, c3: { tab: "tab3", pane: "p3" } }, status: { tab2: "working", tab3: "idle" }, turns: { tab3: 1 }, tabs: new Set(["tab2", "tab3"]), now,
+    asks: { tab9: { id: "1", title: "Another tab's", options: [] } } },
   replies: { c2: "Reading the code", c3: "Done." }, making: { ":/a\nt5": "making the worktree" }, ops: [{ op: "add", ok: true }], skip: "/coord",
 });
 assert.deepEqual(s.spaces, [{ name: "app", folder: "/a", machine: null }]);
@@ -57,6 +74,36 @@ assert.deepEqual(s.projects[0].tasks[1], { id: "t2", title: "Two", note: "n", do
 assert.deepEqual(s.projects[0].tasks[0], { id: "t1", title: "One", note: "", done: false, state: "none", branch: null, path: null, chat: null, lastReply: null });
 assert.equal(s.projects[0].tasks[3].why, "The chat never started.");
 assert.deepEqual(s.ops, [{ op: "add", ok: true }]);
+// A task whose chat waits for an approval carries it; what the agent sent besides id, title and the options' three fields stays out.
+const facts2 = { places: { c2: { tab: "tab2" } }, status: { tab2: "blocked" }, turns: {}, tabs: new Set(["tab2"]), now,
+  asks: { tab2: { id: 17, title: "Run npm test", extra: 1, options: [{ optionId: "allow", name: "Allow", kind: "allow_once", more: 1 }, { optionId: "no", name: "Reject", kind: "reject_once" }] } } };
+const waits = snapshot({ tasks: { ":/a": [{ id: "t2", title: "Two", note: "n", done: false, at: 2, run: run("c2") }] }, facts: facts2 });
+assert.equal(waits.projects[0].tasks[0].state, "waiting");
+assert.deepEqual(waits.projects[0].tasks[0].ask, { id: "17", title: "Run npm test", options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }, { optionId: "no", name: "Reject", kind: "reject_once" }] });
+assert.equal("ask" in s.projects[0].tasks[1], false);
+
+// Task notices: a task's chat coming into done, failed, waiting or closed is told, once; steps on the way are not.
+const body = (states, more = {}) => ({ projects: [{ project: "/opt/code/app", machine: null, tasks: Object.entries(states).map(([id, state]) => ({ id, title: `Title of ${id}`, done: false, state, lastReply: `Reply of ${id}`, ...(more[id] ?? {}) })) }] });
+const st = (states, more) => taskStates(body(states, more));
+assert.deepEqual(Object.keys(st({ a: "working" })), [":/opt/code/app\na"]);
+const before = st({ a: "working", b: "working", c: "starting", d: "none", e: "done", f: "working", g: "closed", h: "working" });
+const after = st({ a: "done", b: "waiting", c: "working", d: "making", e: "done", f: "failed", g: "done", h: "closed", z: "done" });
+assert.deepEqual(noticeDiff(before, after).map((n) => `${n.id}:${n.state}`), ["a:done", "b:waiting", "f:failed", "h:closed"]);
+assert.equal(noticeDiff(before, after)[0].key, ":/opt/code/app\na");
+// The first pass after a load has nothing before it: nothing is told again. Nothing changed: nothing told.
+assert.deepEqual(noticeDiff(null, after), []);
+assert.deepEqual(noticeDiff(after, after), []);
+// The `done` mark alone is no news; waiting again after working is.
+assert.deepEqual(noticeDiff(st({ a: "done" }), st({ a: "done" }, { a: { done: true } })), []);
+assert.deepEqual(noticeDiff(st({ a: "working" }), st({ a: "waiting" })).length, 1);
+// One short message for the batch.
+const told = noticeText(noticeDiff(before, st({ a: "done", b: "waiting", f: "failed" }, { a: { lastReply: `All ${"x".repeat(400)}\nsecond line` }, b: { ask: { id: "17", title: "Run npm test", options: [] } }, f: { why: "The chat never started." } })));
+assert.match(told, /^Task updates \(from Herdr\): app \/ a "Title of a": done — last reply: All x+…; app \/ b "Title of b": waiting — asks: Run npm test \(ask 17\); app \/ f "Title of f": failed — The chat never started\.\. Read state\.json and act per your rules\.$/);
+assert.ok(told.length < 420, String(told.length));
+const many = noticeText(Object.values(st(Object.fromEntries(Array.from({ length: NOTICE_MAX + 3 }, (_v, i) => [`t${i}`, "done"])))));
+assert.match(many, /; and 3 more\. Read state\.json/);
+assert.equal(noticeText([{ project: "/r", machine: "spark1", id: "x", title: "T", state: "closed" }]), 'Task updates (from Herdr): r on spark1 / x "T": closed. Read state.json and act per your rules.');
+
 assert.doesNotThrow(() => JSON.stringify(s));
 
 let log = [];
@@ -70,7 +117,8 @@ const text = roleText("/coord", "/chats");
 assert.match(text, /herdr-app do 'ht3-panels\.coord:\{"op":"add"/); assert.match(text, /\/coord\/state\.json/); assert.match(text, /\/chats\/<chat>\/state\.json/);
 // Every command it shows is one parseOp takes.
 const shown = [...text.matchAll(/ht3-panels\.coord:(\{.*\})'/g)].map((m) => parseOp(m[1]));
-assert.deepEqual(shown.map((o) => o.error ?? o.op), ["add", "run", "done", "delete"]);
+assert.deepEqual(shown.map((o) => o.error ?? o.op), ["add", "run", "done", "delete", "answer"]);
+assert.equal(VERSION, 3); assert.match(text, /## Approvals/); assert.match(text, /select\(\.ask\)/); assert.match(text, /Task updates \(from Herdr\):/);
 assert.deepEqual(JSON.parse(SETTINGS).permissions.allow, ["Bash(herdr-app do:*)", "Bash(jq:*)", "Bash(cat:*)", "Bash(git -C * status*)", "Bash(git -C * diff*)", "Bash(git -C * log*)"]);
 
 // session.js setConfig: an option is found by its id, else by what it is for, and the agent gets the option's real id.

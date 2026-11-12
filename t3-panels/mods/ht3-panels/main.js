@@ -46,7 +46,7 @@ import { ServersDialog, openServers, serversOpen } from "./servers.js";
 import { WorktreesDialog, openWorktrees, worktreesOpen } from "./worktrees.js";
 import { CompareDialog, openCompare, compareOpen } from "./compare.js";
 import { DepsDialog, openDeps, depsOpen } from "./deps.js";
-import { coordCommand, openCoordinator, writeState } from "./coordinator.js";
+import { coordCommand, openCoordinator, writeState, postTo, CHAT } from "./coordinator.js";
 
 export { SIDE };
 
@@ -59,7 +59,7 @@ class Buttons {
     cx.timer.after(0, () => announce());
     // The settings file, now and whenever it is edited by hand (settings.js).
     cx.spawn(() => loadPrefs());
-    // And the coordinator's state file, when what it holds changed (coordinator.js).
+    // And the coordinator's state file, when what it holds changed, and its task notices (coordinator.js).
     cx.timer.every(2000, (cx) => { prune(); cx.spawn(() => loadPrefs()); cx.spawn(() => writeState()); });
     cx.spawn((cx) => keep(cx));
   }
@@ -133,9 +133,14 @@ class Buttons {
     // coordinator: shows the coordinator chat (coordinator.js), the one chat that manages every project's tasks; it is made, with
     // its space, when it isn't there. coord:<json> is how that chat acts, on any project's tasks (the ones Tasks shows):
     // {"op":"add","project":"<folder>","title":"…","note":"…","id":"<its own name for it>","run":true},
-    // {"op":"run"|"done"|"delete","project":"<folder>","id":"…"} ("machine": a project on another machine; done: false reopens).
+    // {"op":"run"|"done"|"delete","project":"<folder>","id":"…"} ("machine": a project on another machine; done: false reopens),
+    // {"op":"answer","project":"<folder>","id":"…","ask":"<the ask's id in state.json>","option":"<one of its optionIds>"}: answers
+    // the approval that task's chat waits for, once (a stale ask, an unknown option and an "always" option are refused).
     // How each went is in the coordinator's state.json (`ops`), which the keeper keeps up to date.
+    // coord-post:<text>: posts that text to the coordinator chat as a message (shared "ht3-panels.post"; chat.js sends it when
+    // the chat is shown: at once if its agent is ready, else queued). The keeper's own task notices go the same way.
     else if (c === "coordinator") cx.spawn(async (cx) => { try { await openCoordinator(); } catch (e) { fail(e); } cx.notify(); });
+    else if (name === "coord-post") postTo(CHAT, c.slice(11));
     else if (name === "coord") cx.spawn(async (cx) => { await coordCommand(c.slice(6)); cx.notify(); });
     // blame / history: Files shows or hides blame in its open file's Lines view / the file's commit history (editor.js, blame.js; they reach Files while it is shown).
     // (Nothing to run here: the Files copy takes them, like lines and open:<path>.)
