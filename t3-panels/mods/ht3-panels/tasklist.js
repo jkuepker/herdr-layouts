@@ -3,7 +3,8 @@
 // A task: { id, title, note, done, at, run? }. `run`, once "Run with agent" has started a chat for it:
 // { chat (the chat's id), branch, path (the worktree), on (machine or null), from (the branch it was made from), at,
 // worked? (the chat was seen working, so an idle chat after that is a finished one), error?,
-// ready? ({ at, note }: the coordinator looked at the work and says it can be merged),
+// ready? ({ at, note, head? }: the coordinator looked at the work and says it can be merged; head: the commit the task's
+// branch was at then, so a branch that moved since is not called ready any more: readyStale),
 // merged? ({ at, commit, removed? }: the person merged the branch into `from`; removed: its worktree and branch are gone) }.
 //
 // The git side of Merge and Remove worktree is at the end: functions that take `exec(cmd, args, { cwd, on, timeout })`
@@ -33,6 +34,8 @@ export function spaceIn(spaces, root, on = null, cwds = {}) {
   return (mine.find((s) => inside(s.folder)) ?? mine.find((s) => (cwds[s.id] ?? []).some(inside)))?.id ?? null;
 }
 
+// A commit's full name.
+const SHA = /^[0-9a-f]{40,64}$/;
 export const clip = (s, n) => { const t = String(s ?? "").trim(); return t.length > n ? t.slice(0, n) : t; };
 
 // What was saved -> a clean list (a bad entry is dropped, not repaired).
@@ -48,7 +51,7 @@ export function cleanTasks(raw) {
       id, title, note: clip(t.note, NOTE_MAX), done: t.done === true, at: Number(t.at) || 0,
       ...(r ? { run: { chat: String(r.chat), branch: String(r.branch ?? ""), path: String(r.path ?? ""), on: r.on ?? null, from: r.from ?? null, at: Number(r.at) || 0,
         ...(r.worked ? { worked: true } : {}), ...(r.error ? { error: String(r.error) } : {}),
-        ...(r.ready && typeof r.ready === "object" ? { ready: { at: Number(r.ready.at) || 0, note: clip(r.ready.note, READY_NOTE_MAX) } } : {}),
+        ...(r.ready && typeof r.ready === "object" ? { ready: { at: Number(r.ready.at) || 0, note: clip(r.ready.note, READY_NOTE_MAX), ...(SHA.test(r.ready.head ?? "") ? { head: r.ready.head } : {}) } } : {}),
         ...(r.merged && typeof r.merged === "object" ? { merged: { at: Number(r.merged.at) || 0, commit: String(r.merged.commit ?? ""), ...(r.merged.removed ? { removed: true } : {}) } } : {}) } } : {}),
     });
   }
@@ -124,14 +127,14 @@ export function notesFile(on, cwd) {
 // ---- merge: the person's step ----
 
 // A task's work, read in its worktree: how many commits its branch is ahead of `from`, how many files are uncommitted
-// (untracked ones too, each counted) and the branch the folder is on.
-const WORK = 'printf "ahead %s\\n" "$(git rev-list --count "$1..HEAD" 2>/dev/null)"; printf "dirty %s\\n" "$(git status --porcelain --untracked-files=all 2>/dev/null | wc -l | tr -d " ")"; printf "branch %s\\n" "$(git branch --show-current 2>/dev/null)"';
-// Its output -> { ahead (null: `from` isn't there to count from), dirty, branch (null: detached) }.
+// (untracked ones too, each counted), the branch the folder is on and the commit it is at.
+const WORK = 'printf "ahead %s\\n" "$(git rev-list --count "$1..HEAD" 2>/dev/null)"; printf "dirty %s\\n" "$(git status --porcelain --untracked-files=all 2>/dev/null | wc -l | tr -d " ")"; printf "branch %s\\n" "$(git branch --show-current 2>/dev/null)"; printf "head %s\\n" "$(git rev-parse HEAD 2>/dev/null)"';
+// Its output -> { ahead (null: `from` isn't there to count from), dirty, branch (null: detached), head (null: no commit yet) }.
 export function parseWork(text) {
   const at = {};
-  for (const l of String(text ?? "").split("\n")) { const m = /^(ahead|dirty|branch) ?(.*)$/.exec(l); if (m) at[m[1]] = m[2].trim(); }
+  for (const l of String(text ?? "").split("\n")) { const m = /^(ahead|dirty|branch|head) ?(.*)$/.exec(l); if (m) at[m[1]] = m[2].trim(); }
   const num = (v) => (/^\d+$/.test(v ?? "") ? Number(v) : null);
-  return { ahead: num(at.ahead), dirty: num(at.dirty) ?? 0, branch: at.branch || null };
+  return { ahead: num(at.ahead), dirty: num(at.dirty) ?? 0, branch: at.branch || null, head: SHA.test(at.head ?? "") ? at.head : null };
 }
 // -> parseWork's, or { missing: true } when the worktree's folder isn't there (or isn't a repository) any more.
 export async function readWork(exec, run) {
@@ -156,6 +159,49 @@ export function workWords(w) {
 export const hasWork = (w) => !!w && !w.missing && (w.ahead > 0 || w.dirty > 0);
 // The chat states in which a task's agent may still write: no merge then.
 export const BUSY_STATES = ["making", "starting", "working", "waiting"];
+
+// ---- ready to merge ----
+
+// Why a task's "ready to merge" no longer holds, or null while it does (or the task isn't ready). `work`: its worktree as
+// last read (readWork), `state`: its chat's state now. It was said of the commit the branch was at (`run.ready.head`): a
+// branch that is at another commit now was not looked at, and neither is what an agent that works again will leave.
+// (A task that is run again gets a new `run`, without `ready`.) A worktree that wasn't read, or is gone, says nothing.
+export function readyStale(run, work, state = null) {
+  if (!run?.ready || run.merged) return null;
+  if (state === "working" || state === "waiting") return "Its agent works again.";
+  if (run.ready.head && work && !work.missing && work.head && work.head !== run.ready.head) return `${run.branch} moved since it was marked ready.`;
+  return null;
+}
+// The task without its ready mark (for patch).
+export const unready = (t) => { if (!t.run?.ready) return {}; const { ready: _was, ...run } = t.run; return { run }; };
+// Every task that is ready to merge and isn't merged, of every project (`all`: shared "ht3-panels.tasks", as saved), in
+// the projects' order and each list's own: [{ key, id, title, project (the folder's name), root, on }].
+export function readyTasks(all) {
+  return Object.keys(all ?? {}).sort().flatMap((key) => {
+    const at = parseKey(key);
+    return !at ? [] : cleanTasks(all[key]).filter((t) => t.run?.ready && !t.run.merged)
+      .map((t) => ({ key, id: t.id, title: t.title, project: at.root.split("/").filter(Boolean).pop() ?? at.root, root: at.root, on: at.on }));
+  });
+}
+// What `tasks:<rest>` and `tasks-show:<json>` name (main.js): -> { group } ("a" | "b" | null: the one that has Tasks),
+// or { project (a folder, absolute), machine, id (a task to bring into view, or null) }, or { error }.
+// `tasks`, `tasks:a`, `tasks:b`; `tasks:/folder`, `tasks:<machine>:/folder`; `tasks-show:{"project","machine"?,"id"?}`.
+export function parseShow(c) {
+  const s = String(c ?? "");
+  if (s === "tasks") return { group: null };
+  if (s === "tasks:a" || s === "tasks:b") return { group: s.slice(6) };
+  if (s.startsWith("tasks:")) {
+    const rest = s.slice(6).replace(/(.)\/+$/, "$1"), at = rest.startsWith("/") ? { on: null, root: rest } : parseKey(rest);
+    return at ? { project: at.root, machine: at.on, id: null } : { error: "tasks: takes a, b or a project folder's absolute path." };
+  }
+  if (!s.startsWith("tasks-show:")) return { error: "Not a tasks command." };
+  let o;
+  try { o = JSON.parse(s.slice(11)); } catch (e) { return { error: `Not JSON: ${String(e?.message ?? e)}` }; }
+  if (!o || typeof o.project !== "string" || !o.project.startsWith("/")) return { error: "project must be a folder's absolute path." };
+  return { project: o.project.replace(/(.)\/+$/, "$1"), machine: typeof o.machine === "string" && o.machine.trim() ? o.machine.trim() : null, id: o.id == null ? null : String(o.id) };
+}
+// The command that shows a project's Tasks with one task in view, as a notification's action and a list's row send it.
+export const showCommand = (key, id) => { const at = parseKey(key); return at ? `tasks-show:${JSON.stringify({ project: at.root, ...(at.on ? { machine: at.on } : {}), ...(id ? { id } : {}) })}` : "tasks"; };
 
 // Whether a task's branch may be merged, and what Merge would do. `work`: readWork's for its worktree; `trees`:
 // parseTrees' for its repository; `targetDirty(folder)`: how many files are uncommitted in the folder `from` is checked

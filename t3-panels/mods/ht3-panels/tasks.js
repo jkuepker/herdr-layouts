@@ -29,18 +29,24 @@
 // `tasks-done:<n>` (toggles), `tasks-delete:<n>` (twice deletes), `tasks-up:<n>`, `tasks-down:<n>`, `tasks-tab:<tasks|notes>`,
 // `tasks-notes:<text>` (replaces the notes), `tasks-merge:<task id>` (asks), `tasks-yes` / `tasks-no` (answer it),
 // `tasks-cleanup:<task id>` (Remove worktree).
+// To get here (the keeper takes these, main.js; they work whatever is shown): `tasks[:<a|b>]` shows the surface in the shown
+// space, `tasks:<project folder>` shows the space that works in that repository first, and `tasks-show:<json>`
+// ({"project":"<folder>","machine"?,"id"?}) also brings that task into view: its row is drawn first in its section, with a frame, until
+// the surface shows another project (a scroll area can't be told to scroll; `tasks-run:<n>` and the others still count
+// in the list's own order). The ready notification
+// and the Agents list's "Ready to merge" rows send the last one.
 
 import { div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea } from "gpui-base";
 import { exec, run, shared, setShared, focused, spaces, panes, appHome, readTextFile, writeTextFile } from "herdr";
 import { MOD, tokens, alpha, icon, button, iconButton, badge, shortPath } from "./look.js";
-import { activeSpace, placeOf, showing } from "./side.js";
+import { activeSpace, placeOf, showing, openSurface, spaceState, GROUPS } from "./side.js";
 import { projectOf } from "./scripts.js";
 import { addWorktree, repoOf } from "./launcher.js";
 import { AGENTS, detect } from "./agent-acp.js";
 import { roleAgent, roleSet } from "./settings.js";
 import { cleanTasks, newTask, patch, remove, move, canMove, promptOf, branchFor, chatState, STATE_LABEL, notesFile, TITLE_MAX, parseKey, spaceIn,
-  readWork, workWords, hasWork, BUSY_STATES, mergePlan, mergeTask, mergeWords, cleanupTask } from "./tasklist.js";
+  readWork, workWords, hasWork, BUSY_STATES, mergePlan, mergeTask, mergeWords, cleanupTask, keyOf } from "./tasklist.js";
 
 const KEY = `${MOD}.tasks`;
 const NOTES_SAVE_MS = 800; // after the last change
@@ -109,6 +115,29 @@ async function spaceFor(root, on) {
   return null;
 }
 
+// `tasks[:<a|b>]` (main.js): shows the Tasks surface in the group that has it, else the first, or the one asked for.
+export function openTasks(group) {
+  const st = spaceState(activeSpace()?.id);
+  return openSurface(group ?? GROUPS.find((g) => st[g].tabs.some((t) => t.kind === "tasks")) ?? "a", "tasks");
+}
+// The task a click asked to see: shared "ht3-panels.taskFocus", { key (the project's), id, at }. The surface that shows
+// that project takes it once (TasksPanel takeFocus); one older than FOCUS_FOR_MS is nobody's any more.
+const FOCUS = `${MOD}.taskFocus`, FOCUS_FOR_MS = 20000;
+// `tasks:<project folder>` and `tasks-show:<json>` (tasklist.js parseShow's { project, machine, id }): shows the space
+// that works in that repository (made at its folder when there is none), then its Tasks surface, with the task in view.
+export async function showTasks({ project, machine = null, id = null }) {
+  const root = (await repoOf(project, machine)) ?? project;
+  const space = await spaceFor(root, machine);
+  if (!space) throw new Error(`No space for ${root}.`);
+  if (activeSpace()?.id !== space) {
+    run("space.select", { id: space });
+    for (let i = 0; i < 30 && activeSpace()?.id !== space; i++) await nap(100);
+    if (activeSpace()?.id !== space) throw new Error("That project's space didn't come up.");
+  }
+  if (id) setShared(FOCUS, { key: keyOf(machine, root), id, at: Date.now() });
+  await openTasks();
+}
+
 // "Run with agent" for the task `t` of the project `key` ("<machine or empty>:<repo root>"): a worktree on a new branch,
 // and a chat in it on the tasks' agent and model with the task as its first message. `opts.cwd`: the folder the person
 // is in (the new branch starts from its branch; default: the repository's main checkout); `opts.space`: the space the
@@ -168,6 +197,8 @@ export class TasksPanel {
     this.busy = new Map(); // task id -> "merging" | "removing"
     this.said = null; // how the last merge or removal went: { text, bad, offer? (a merged task's id, to remove its worktree) }
     this.doneOpen = false;
+    this.lit = null; // the task a click elsewhere asked to see (takeFocus): its id
+    this.focusAt = 0; // the `at` of the last focus taken
     this.showNote = false; // the add box's note field
     this.title = InputState.new({ placeholder: "Add a task" });
     this.noteIn = TextareaState.new({ placeholder: "Note (optional): what the agent should know", rows: 3 });
@@ -212,6 +243,7 @@ export class TasksPanel {
     this.armed = null;
     this.asking = null;
     this.said = null;
+    this.lit = null;
     this.noteLoaded = false;
     this.notePath = null;
     this.notes.set_value("");
@@ -233,6 +265,20 @@ export class TasksPanel {
   }
 
   list() { return tasksOf(this.project?.key); }
+
+  // A task someone asked to see (showTasks): once this surface shows its project, the Tasks tab comes up with that
+  // task's row first and framed (a done one: the Done fold opens). Asked while the project is still looked up, it is
+  // taken at the next drawing.
+  takeFocus() {
+    const f = shared(FOCUS);
+    if (!f || f.at === this.focusAt || !this.project || f.key !== this.project.key || Date.now() - f.at > FOCUS_FOR_MS) return;
+    this.focusAt = f.at;
+    const t = this.byId(f.id);
+    if (!t) return;
+    this.tab = "tasks";
+    this.lit = t.id;
+    if (t.done) this.doneOpen = true;
+  }
 
   // ---- tasks ----
 
@@ -545,6 +591,7 @@ export class TasksPanel {
     const first = !canMove(list, t.id, -1), last = !canMove(list, t.id, 1);
     const note = t.note.replace(/\s+/g, " "), ml = this.mergeLine(k, t);
     return v_flex().id(`task-${t.id}`).flex_none().mx(8).px(8).py(6).gap(4).rounded(8).hover((x) => x.bg(alpha(k.foreground, 0.04)))
+      .when(this.lit === t.id, (el) => el.border(1).border_color(k.primary).bg(alpha(k.foreground, 0.04)))
       .child(h_flex().gap(8).items_center()
         .child(this.checkbox(k, `task-done-${t.id}`, t.done, t.done ? `Reopen ${t.title}` : `Mark ${t.title} done`, (cx) => this.toggleDone(t, cx)))
         .child(div().id(`task-title-${t.id}`).flex_1().min_w(0).truncate().font_medium().text_color(t.done ? k.muted : k.foreground).tooltip(live ? `${t.title}\nClick to show its chat` : t.title)
@@ -571,7 +618,9 @@ export class TasksPanel {
   }
 
   tasksBody(k) {
-    const list = this.list(), open = list.filter((t) => !t.done), done = list.filter((t) => t.done);
+    // The task asked for is drawn first in its section.
+    const first = (l) => [...l.filter((t) => t.id === this.lit), ...l.filter((t) => t.id !== this.lit)];
+    const list = this.list(), open = first(list.filter((t) => !t.done)), done = first(list.filter((t) => t.done));
     const foot = this.foot(k);
     return v_flex().flex_1().min_h(0)
       .child(this.addBox(k))
@@ -600,6 +649,7 @@ export class TasksPanel {
 
   render(cx) {
     this.follow(cx);
+    this.takeFocus();
     const k = tokens();
     const root = v_flex().id("ht3-tasks").size_full().min_h(0).bg(k.background).text_color(k.foreground).text_size(13);
     if (!this.where) return root.child(this.head(k)).child(v_flex().flex_1().items_center().justify_center().px(24).text_size(12).text_color(k.muted).child("No folder: focus a terminal or a chat in a project."));

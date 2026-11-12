@@ -8,11 +8,14 @@
 // - it acts through the keeper's commands: `coord:<json>` adds, runs, marks done and deletes tasks of any project
 //   (coord-data.js `parseOp`), the tasks the Tasks surface shows (tasks.js), run as that surface runs them (`startTask`);
 //   its `answer` answers the approval a task's chat waits for, once, as the Inbox card does (chat.js `asking`);
-//   its `ready` marks a task's work as looked at and good to merge (`run.ready`): the Tasks row shows "Ready to merge" and
-//   the person is told. Merging is the person's (the row's Merge button, tasks.js): no command here commits or merges;
-// - the keeper reads each run task's worktree (commits ahead of the branch it came from, uncommitted files): when its
-//   chat's state changed and every 15 seconds for an open task, once for a done one; kept in shared "ht3-panels.work"
-//   for the Tasks surface and written into state.json as `ahead` and `dirty`;
+//   its `ready` marks a task's work as looked at and good to merge (`run.ready`, with the commit its branch is at): the
+//   Tasks row shows "Ready to merge", the Agents list its "Ready to merge" group, and the person is told by a
+//   notification whose click shows that project's space and Tasks with the task in view (tasks.js showTasks). Merging is
+//   the person's (the row's Merge button, tasks.js): no command here commits or merges;
+// - the keeper reads each run task's worktree (commits ahead of the branch it came from, uncommitted files, the commit
+//   it is at): when its chat's state changed and every 15 seconds for an open task, once for a done one; kept in shared
+//   "ht3-panels.work" for the Tasks surface and written into state.json as `ahead` and `dirty`. A ready task whose
+//   branch is at another commit by now, or whose agent works again, loses its mark (tasklist.js readyStale);
 // - the keeper tells it what happened: when a task's chat finished, failed, waits for an approval or was closed, one
 //   short message goes into the coordinator chat (shared "ht3-panels.post", which chat.js takes), at most one in 45
 //   seconds, unless settings.js `coordinatorNotify` is off. `coord-post:<text>` posts any text to it the same way.
@@ -24,7 +27,7 @@ import { AGENTS, detect } from "./agent-acp.js";
 import { repoOf } from "./launcher.js";
 import { roleAgent, roleSet, coordinatorNotify } from "./settings.js";
 import { tasksOf, taskKeys, update, newId, startTask, observe, workAll, setWork, WORK_EVERY_MS } from "./tasks.js";
-import { newTask, patch, remove, keyOf, chatState, readWork } from "./tasklist.js";
+import { newTask, patch, remove, keyOf, chatState, readWork, readyStale, unready, showCommand } from "./tasklist.js";
 import { lastReply } from "./compare-data.js";
 import { parseOp, logOp, snapshot, templateDue, pickAnswer, readyCheck, taskStates, noticeDiff, noticeText } from "./coord-data.js";
 import { VERSION, roleText, SETTINGS } from "./coord-template.js";
@@ -90,10 +93,15 @@ export async function coordCommand(text) {
     }
     // The task's work was looked at and can be merged: the row says so and the person is told. Merging stays theirs.
     if (o.op === "ready") {
-      const t = find(), no = readyCheck(t, workAll()[`${key}\n${t.id}`]);
+      // Its worktree is read now: what is marked is the commit the branch is at as this is said.
+      const t = find(), mark = `${key}\n${t.id}`, open = !!t.run && !t.run.merged;
+      const w = open ? await readWork(exec, t.run) : undefined;
+      if (open) setWork(mark, w);
+      const no = readyCheck(t, w, t.run ? chatState(t.run, facts()).state : null);
       if (no) throw new Error(no);
-      update(key, (l) => patch(l, o.id, (x) => (x.run ? { run: { ...x.run, ready: { at: Date.now(), note: o.note } } } : {})));
-      notify({ title: "Ready to merge", body: `${t.title} is ready to merge`, level: "info" });
+      update(key, (l) => patch(l, o.id, (x) => (x.run ? { run: { ...x.run, ready: { at: Date.now(), note: o.note, ...(w?.head ? { head: w.head } : {}) } } } : {})));
+      // A click shows that project's space and its Tasks surface with the task in view (main.js `tasks-show`).
+      notify({ title: "Ready to merge", body: `${t.title} is ready to merge`, level: "info", action: { name: `${MOD}.${showCommand(key, t.id)}` } });
     }
     if (o.op === "run" || o.run) await runOne(key, find());
     entry.ok = true;
@@ -148,6 +156,18 @@ function lookAtWork(tasks, f) {
   if (gone.length) for (const mark of gone) setWork(mark, null);
 }
 
+// Each pass of writeState: a task marked ready whose branch moved since, or whose agent works again, isn't ready any
+// more (tasklist.js readyStale): the mark goes, and with it the row's badge and the Agents list's row.
+function staleReady(keys, f) {
+  const work = workAll();
+  for (const key of keys) {
+    const gone = tasksOf(key).filter((t) => readyStale(t.run, work[`${key}\n${t.id}`], t.run ? chatState(t.run, f).state : null));
+    if (!gone.length) continue;
+    for (const t of gone) console.log(`ht3-panels.coord: ${t.id} is no longer ready: ${readyStale(t.run, work[`${key}\n${t.id}`], chatState(t.run, f).state)}`);
+    update(key, (l) => l.map((t) => (gone.some((g) => g.id === t.id) ? { ...t, ...unready(t) } : t)));
+  }
+}
+
 // The keeper's, every two seconds and after each command: state.json as things are now, written when it changed.
 export async function writeState() {
   if (writing) return;
@@ -155,8 +175,9 @@ export async function writeState() {
   try {
     const keys = taskKeys();
     for (const key of keys) observe(key);
-    const tasks = Object.fromEntries(keys.map((key) => [key, tasksOf(key)]));
     const f = facts(), { turns, places, status } = f;
+    staleReady(keys, f);
+    const tasks = Object.fromEntries(keys.map((key) => [key, tasksOf(key)]));
     lookAtWork(tasks, f);
     const said = {};
     for (const t of Object.values(tasks).flat()) {

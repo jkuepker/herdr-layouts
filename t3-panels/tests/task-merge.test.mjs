@@ -6,7 +6,7 @@ import { execFile } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync, appendFileSync, existsSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import assert from "node:assert/strict";
-import { readWork, mergePlan, mergeTask, mergeWords, cleanupTask } from "../mods/ht3-panels/tasklist.js";
+import { readWork, mergePlan, mergeTask, mergeWords, cleanupTask, readyStale } from "../mods/ht3-panels/tasklist.js";
 
 const env = { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_EDITOR: "true" };
 const ran = [];
@@ -37,15 +37,25 @@ const task = async (id, title, from = "main") => {
   await g(root, "worktree", "add", "-q", path, "-b", branch, from);
   return { id, title, note: "", done: false, at: 1, run: { chat: `c-${id}`, branch, path, on: null, from, at: 1 } };
 };
+const sansHead = ({ head: _head, ...w }) => w; // the commit the worktree is at: its own test below
 const merged = (t, commit) => ({ ...t, done: true, run: { ...t.run, merged: { at: 2, commit } } });
 
 await test("committed work: asked, merged with a merge commit, worktree and branch removed", async () => {
   const t = await task("one", "Add a greeting");
-  assert.deepEqual(await readWork(exec, t.run), { ahead: 0, dirty: 0, branch: "task-one" });
+  assert.deepEqual(sansHead(await readWork(exec, t.run)), { ahead: 0, dirty: 0, branch: "task-one" });
   assert.match((await mergePlan(exec, { root, t })).why, /^Nothing to merge/);
   put(t.run.path, "src/hello.js", "hello\n"); await g(t.run.path, "add", "-A"); await g(t.run.path, "commit", "-qm", "hello");
   put(t.run.path, "src/app.js", "a\nb\nc\nd\n"); await g(t.run.path, "add", "-A"); await g(t.run.path, "commit", "-qm", "d");
-  assert.deepEqual(await readWork(exec, t.run), { ahead: 2, dirty: 0, branch: "task-one" });
+  assert.deepEqual(sansHead(await readWork(exec, t.run)), { ahead: 2, dirty: 0, branch: "task-one" });
+  // The commit the worktree is at is read with it: "ready" is said of that one, and a later commit takes it back.
+  const at = (await readWork(exec, t.run)).head;
+  assert.equal(at, await g(t.run.path, "rev-parse", "HEAD"));
+  const marked = { ...t.run, ready: { at: 2, note: "", head: at } };
+  assert.equal(readyStale(marked, await readWork(exec, t.run), "done"), null);
+  put(t.run.path, "later.txt", "x\n"); await g(t.run.path, "add", "."); await g(t.run.path, "commit", "-qm", "later");
+  assert.match(readyStale(marked, await readWork(exec, t.run), "done"), /moved since/);
+  await g(t.run.path, "reset", "-q", "--hard", at);
+  assert.equal(readyStale(marked, await readWork(exec, t.run), "done"), null);
   const plan = await mergePlan(exec, { root, t, state: "done" });
   assert.deepEqual([plan.ok, plan.target, plan.text], [true, root, "Merge task-one into main: 2 commits?"]);
   ran.length = 0;
@@ -69,7 +79,7 @@ await test("committed work: asked, merged with a merge commit, worktree and bran
 await test("uncommitted work (the agent didn't commit): Merge commits it in the worktree first, then merges", async () => {
   const t = await task("two", "Change the readme");
   put(t.run.path, "readme.md", "one\ntwo\nthree\nfour\n"); put(t.run.path, "notes/new.txt", "new\n");
-  assert.deepEqual(await readWork(exec, t.run), { ahead: 0, dirty: 2, branch: "task-two" });
+  assert.deepEqual(sansHead(await readWork(exec, t.run)), { ahead: 0, dirty: 2, branch: "task-two" });
   const plan = await mergePlan(exec, { root, t });
   assert.equal(plan.text, "Merge task-two into main: commits 2 changed files first?");
   // What the row asked is no longer true (one more commit by now): not carried out, asked again.
@@ -105,7 +115,7 @@ await test("a conflict is aborted: the checkout is as it was, and what was commi
   assert.equal(await g(root, "rev-parse", "HEAD"), before);
   assert.equal(await g(root, "status", "--porcelain"), "");
   assert.equal((await exec("git", ["rev-parse", "-q", "--verify", "MERGE_HEAD"], { cwd: root })).code !== 0, true);
-  assert.deepEqual(await readWork(exec, t.run), { ahead: 1, dirty: 0, branch: "task-three" });
+  assert.deepEqual(sansHead(await readWork(exec, t.run)), { ahead: 1, dirty: 0, branch: "task-three" });
   const said = mergeWords(r);
   assert.equal(said.bad, true);
   assert.match(said.text, /^task-three conflicts with main in src\/app\.js\. The merge was aborted: main is as it was\. Its 2 changed files were committed on task-three\. Ask the task's agent to rebase onto main, then merge again\.$/);

@@ -124,7 +124,7 @@ assert.match(text, /herdr-app do 'ht3-panels\.coord:\{"op":"add"/); assert.match
 const shown = [...text.matchAll(/ht3-panels\.coord:(\{.*\})'/g)].map((m) => parseOp(m[1]));
 assert.deepEqual(shown.map((o) => o.error ?? o.op), ["add", "run", "done", "ready", "delete", "answer"]);
 assert.match(text, /mark it ready/); assert.match(text, /Merge commits them first/); assert.match(text, /never commit, merge or push/);
-assert.equal(VERSION, 5); assert.match(text, /## Approvals/); assert.match(text, /select\(\.ask\)/); assert.match(text, /Task updates \(from Herdr\):/);
+assert.equal(VERSION, 6); assert.match(text, /takes the mark back/); assert.match(text, /## Approvals/); assert.match(text, /select\(\.ask\)/); assert.match(text, /Task updates \(from Herdr\):/);
 assert.deepEqual(JSON.parse(SETTINGS).permissions.allow, ["Bash(herdr-app do:*)", "Bash(jq:*)", "Bash(cat:*)", "Bash(git -C * status*)", "Bash(git -C * diff*)", "Bash(git -C * log*)"]);
 
 // ---- Round 24: commit and merge ----
@@ -154,9 +154,11 @@ assert.deepEqual(kept[0].run.ready, { at: 6, note: "fine" }); assert.deepEqual(k
 assert.equal("ready" in kept[1].run, false); assert.equal("merged" in kept[1].run, false);
 
 // What a worktree holds, and the repository's checkouts.
-assert.deepEqual(parseWork("ahead 2\ndirty 3\nbranch task-x\n"), { ahead: 2, dirty: 3, branch: "task-x" });
-assert.deepEqual(parseWork("ahead \ndirty 0\nbranch \n"), { ahead: null, dirty: 0, branch: null }); // `from` is gone; a detached HEAD
-assert.deepEqual(parseWork(""), { ahead: null, dirty: 0, branch: null });
+assert.deepEqual(parseWork("ahead 2\ndirty 3\nbranch task-x\n"), { ahead: 2, dirty: 3, branch: "task-x", head: null });
+assert.deepEqual(parseWork("ahead \ndirty 0\nbranch \n"), { ahead: null, dirty: 0, branch: null, head: null }); // `from` is gone; a detached HEAD
+assert.deepEqual(parseWork(""), { ahead: null, dirty: 0, branch: null, head: null });
+assert.equal(parseWork(`ahead 1\ndirty 0\nbranch task-x\nhead ${"ab".repeat(20)}\n`).head, "ab".repeat(20));
+assert.equal(parseWork("ahead 1\nhead \n").head, null); assert.equal(parseWork("head HEAD\n").head, null); // no commit yet
 assert.deepEqual(parseTrees("worktree /r\nHEAD abc\nbranch refs/heads/main\n\nworktree /r/.worktrees/task-x\nHEAD def\nbranch refs/heads/task-x\n\nworktree /r/.worktrees/d\nHEAD 123\ndetached\n"),
   [{ path: "/r", branch: "main" }, { path: "/r/.worktrees/task-x", branch: "task-x" }, { path: "/r/.worktrees/d", branch: null }]);
 assert.equal(workWords({ ahead: 2, dirty: 3 }), "2 commits, 3 uncommitted files"); assert.equal(workWords({ ahead: 1, dirty: 0 }), "1 commit"); assert.equal(workWords({ ahead: 0, dirty: 1 }), "1 uncommitted file");
