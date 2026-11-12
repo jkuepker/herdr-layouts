@@ -176,7 +176,7 @@ export async function startTask(key, t, opts = {}) {
 export function taskState(t) {
   if (!t.run) return null;
   const tabs = new Set(spaces().flatMap((s) => s.tabs.map((c) => c.id)));
-  return chatState(t.run, { places: shared(`${MOD}.places`) ?? {}, status: shared(`${MOD}.status`) ?? {}, turns: shared(`${MOD}.turns`) ?? {}, tabs });
+  return chatState(t.run, { places: shared(`${MOD}.places`) ?? {}, status: shared(`${MOD}.status`) ?? {}, turns: shared(`${MOD}.turns`) ?? {}, cut: shared(`${MOD}.cut`) ?? {}, tabs });
 }
 // A chat seen working is remembered with its task: an idle chat after that is a finished one, and a closed tab a closed chat.
 export function observe(key) {
@@ -200,14 +200,15 @@ export function postTo(chat, text) {
 // Makes sure a task's chat can take what was posted to it. -> "open" (its tab is there: it takes it), "reopened" (its
 // tab was closed: a new one is opened on the chat's saved state, as Earlier chats does, in the project's space;
 // `back`: a tab to show again once it began), "shown" (a tab of its name from before a restart stands unshown: with
-// `show` it is selected), or "waiting" (nothing cheap to do: the post waits until the person opens the chat).
+// `show` it is selected), "waking" (the same without `show`: the keeper starts it within seconds, coordinator.js wake),
+// or "waiting" (nothing cheap to do: the post waits until the person opens the chat).
 async function wakeChat(key, t, { back = null, show = false } = {}) {
   if (taskState(t)?.tab) return "open";
   const at = parseKey(key), name = t.title.slice(0, 60);
   // (A tab some chat has placed is that chat's, an earlier run's of the same title: not this one's.)
   const placed = new Set(Object.values(shared(`${MOD}.places`) ?? {}).map((x) => x?.tab));
   const old = spaces().filter((s) => (s.machine ?? null) === (t.run.on ?? null)).flatMap((s) => s.tabs).find((c) => c.name === name && !placed.has(c.id));
-  if (old) { if (show) run("tab.select", { id: old.id }); return show ? "shown" : "waiting"; }
+  if (old) { if (show) run("tab.select", { id: old.id }); return show ? "shown" : "waking"; }
   let saved = null;
   try { saved = JSON.parse(await readTextFile(`${appHome()}/data/${MOD}/chats/${t.run.chat}/state.json`)); } catch {}
   if (!at || !Array.isArray(saved?.agentArgv) || !saved.agentArgv.length) return "waiting";
@@ -239,7 +240,7 @@ export async function askUpdate(key, id, opts = {}) {
   return wakeChat(key, t, opts);
 }
 
-const TONE = { starting: "secondary", working: "info", waiting: "warning", done: "success", failed: "error", closed: "secondary", making: "info" };
+const TONE = { starting: "secondary", working: "info", waiting: "warning", done: "success", failed: "error", closed: "secondary", making: "info", interrupted: "warning" };
 
 export class TasksPanel {
   init(p, cx) {
@@ -613,8 +614,8 @@ export class TasksPanel {
     }
     const s = this.stateOf(t), state = making ? "making" : s.state, label = making ? `${making}` : STATE_LABEL[state] ?? state;
     const live = !!s.tab && !making;
-    const glyph = { working: "loader-circle", waiting: "circle-alert", done: "circle-check", failed: "circle-x", starting: "loader-circle", closed: "circle-dashed", making: "loader-circle" }[state] ?? "circle-dot";
-    const tone = { working: k.info, waiting: k.warningText, done: k.successText, failed: k.destructiveText }[state] ?? k.muted;
+    const glyph = { working: "loader-circle", waiting: "circle-alert", done: "circle-check", failed: "circle-x", starting: "loader-circle", closed: "circle-dashed", making: "loader-circle", interrupted: "pause" }[state] ?? "circle-dot";
+    const tone = { working: k.info, waiting: k.warningText, done: k.successText, failed: k.destructiveText, interrupted: k.warningText }[state] ?? k.muted;
     const g = icon(glyph).size(14).flex_none().text_color(tone);
     return h_flex().id(`task-run-${t.id}`).gap(6).items_center().min_w(0).h(22).px(6).rounded(6).text_size(12)
       .when(live, (el) => el.cursor_pointer().role("button").accessibility_label(`Show the chat of ${t.title}`).hover((x) => x.bg(alpha(k.foreground, 0.07))).on_click((_e, cx) => { this.focusChat(t); cx.notify(); }))

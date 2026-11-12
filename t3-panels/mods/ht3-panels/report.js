@@ -24,6 +24,25 @@ const PROGRAM_IS = { name: "Chat", icon: `mods/${MOD}/icons/message-square.svg`,
 // Tabs whose chat runs in this app now. Module scope is one per source version, shared by copies.
 const LIVE = new Set();
 
+// Chats whose pane has a copy running in this app now, by chat id (a copy starts the first time its tab shows: after a
+// restart a restored tab has none until then). The keeper reads it to know which chats can take a post (coordinator.js wake).
+const MOUNTED = new Map(); // chat id -> how many copies (a reopened chat's new one can begin before the old one ended)
+export const mountedChats = () => new Set(MOUNTED.keys());
+// Chats whose turn was cut off: their saved state said "working" when it was read with no copy running it (the app quit
+// or the mod was reloaded mid-turn). shared("ht3-panels.cut"): { "<chat id>": { at, told? } } (told: the coordinator was
+// told). The chat marks itself as it loads (chat.js), the keeper marks the tasks' chats that have no copy yet
+// (coordinator.js readCut); the mark goes when the chat sends its next message. tasklist.js chatState calls it "interrupted".
+const CUT = `${MOD}.cut`;
+export const cutAll = () => shared(CUT) ?? {};
+export function markCut(chat, at = Date.now()) {
+  const all = cutAll();
+  if (chat && !all[chat]) setShared(CUT, { ...all, [chat]: { at } });
+}
+export function clearCut(chat) {
+  const { [chat]: was, ...rest } = cutAll();
+  if (was) setShared(CUT, rest);
+}
+
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const put = (key, value) => { if (!same(shared(key) ?? null, value)) setShared(key, value); };
 const tabsNow = () => new Set(spaces().flatMap((s) => s.tabs.map((c) => c.id)));
@@ -98,6 +117,7 @@ export class Reporter {
     this.turn = null;
     this.drawnAt = 0;
     this.fresh = false; // its place was taken in this run, not known from before: a pane new to the chat (a reopened chat's)
+    MOUNTED.set(chat, (MOUNTED.get(chat) ?? 0) + 1);
   }
 
   // The chat was drawn just now. Only shown panes draw, so a chat that is drawn is in the shown tab.
@@ -243,6 +263,7 @@ export class Reporter {
   // The copy ends: its pane or tab closed, or the app quits. A closed pane's word goes; on a quit the pane
   // is still there, and its word stays for the next start (announce() takes "working" back).
   close() {
+    if (!this.ended) { this.ended = true; const n = (MOUNTED.get(this.chat) ?? 1) - 1; if (n > 0) MOUNTED.set(this.chat, n); else MOUNTED.delete(this.chat); }
     if (!this.tab) return;
     LIVE.delete(this.tab);
     if (!panes().some((p) => p.pane === this.pane)) {

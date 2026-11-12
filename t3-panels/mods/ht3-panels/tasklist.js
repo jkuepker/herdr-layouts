@@ -102,26 +102,30 @@ export function branchFor(title, suffix) {
 
 // The state a task's chat is in, from what chat tabs report (report.js): places (chat id -> { tab, pane }), status
 // (tab -> working | blocked | done | idle), turns (tab -> how many turns ended), tabs (the open tab ids).
-// -> { state: "making" | "starting" | "working" | "waiting" | "done" | "failed" | "closed", tab, pane, worked }.
+// -> { state: "making" | "starting" | "working" | "waiting" | "done" | "failed" | "closed" | "interrupted", tab, pane, worked }.
 //  working, waiting (the agent asks you: blocked) and done (a turn ended: "done", or "idle" after one) are the chat's own;
 //  starting: the chat is made and hasn't worked yet; failed: it never started (the worktree or the agent didn't come
 //  up, or no work after IDLE_FAIL_MS idle, or no tab after PLACE_FAIL_MS); closed: its tab is gone after it worked.
-export function chatState(run, { places = {}, status = {}, turns = {}, tabs = new Set(), now = Date.now() } = {}) {
+//  interrupted: its turn was cut off by a restart (`cut`: shared "ht3-panels.cut", report.js) and it hasn't gone on since.
+export const CUT_WHY = "Herdr restarted while its agent was working: the turn was cut off.";
+export function chatState(run, { places = {}, status = {}, turns = {}, tabs = new Set(), now = Date.now(), cut = {} } = {}) {
   if (!run) return { state: null };
   if (run.error) return { state: "failed", tab: null, pane: null, worked: false, why: run.error };
   const at = places[run.chat], tab = at?.tab ?? null, here = !!at && tabs.has(tab);
-  const age = now - (run.at || now);
+  const age = now - (run.at || now), stopped = !!cut[run.chat];
   if (!here) {
+    if (stopped) return { state: "interrupted", tab: null, pane: null, worked: true, why: CUT_WHY };
     if (run.worked) return { state: "closed", tab: null, pane: null, worked: true };
     return age < PLACE_FAIL_MS ? { state: "starting", tab: null, pane: null, worked: false } : { state: "failed", tab: null, pane: null, worked: false, why: "The chat never started." };
   }
   const s = status[tab] ?? "idle", base = { tab, pane: at.pane ?? null };
   if (s === "working") return { ...base, state: "working", worked: true };
   if (s === "blocked") return { ...base, state: "waiting", worked: true };
+  if (stopped) return { ...base, state: "interrupted", worked: true, why: CUT_WHY };
   if (s === "done" || run.worked || (turns[tab] ?? 0) > 0) return { ...base, state: "done", worked: true };
   return age < IDLE_FAIL_MS ? { ...base, state: "starting", worked: false } : { ...base, state: "failed", worked: false, why: "The agent never started working." };
 }
-export const STATE_LABEL = { making: "making the worktree", starting: "starting", working: "working", waiting: "waiting for you", done: "done", failed: "failed", closed: "chat closed" };
+export const STATE_LABEL = { making: "making the worktree", starting: "starting", working: "working", waiting: "waiting for you", done: "done", failed: "failed", closed: "chat closed", interrupted: "interrupted" };
 
 // ---- notes ----
 
@@ -233,7 +237,7 @@ export function updateText(t) {
     + "Don't push, don't merge, don't switch branches.";
 }
 // How a message for a task's chat went out (tasks.js wakeChat's word), for the status line and the coordinator's log.
-export const SENT_WORDS = { open: "", reopened: " Its chat was opened again.", shown: " Its chat is shown to send it.", waiting: " Its chat is closed: open its chat to send it." };
+export const SENT_WORDS = { open: "", reopened: " Its chat was opened again.", shown: " Its chat is shown to send it.", waking: " Its chat is started again to send it.", waiting: " Its chat is closed: open its chat to send it." };
 
 // Every task that is ready to merge and isn't merged, of every project (`all`: shared "ht3-panels.tasks", as saved), in
 // the projects' order and each list's own: [{ key, id, title, project (the folder's name), root, on }].

@@ -71,6 +71,7 @@ export function pickAnswer(pending, ask, option) {
 export function readyCheck(t, work, state = null) {
   if (!t?.run) return "This task was never run: there is nothing to merge.";
   if (t.run.merged) return "This task is merged already.";
+  if (state === "interrupted") return "This task's turn was cut off by a restart: have its agent go on first (tell).";
   if (state === "working" || state === "waiting") return state === "waiting" ? "This task's agent waits for an answer: it isn't finished." : "This task's agent is still working: wait until it is done.";
   if (work?.missing) return "This task's worktree is gone.";
   if (work && !hasWork(work)) return "This task's branch has no commits ahead of the branch it was made from and no uncommitted changes: there is nothing to merge.";
@@ -88,7 +89,8 @@ export const logOp = (log, entry) => [...(log ?? []), entry].slice(-OPS_KEPT);
 // `replies`: chat id -> its last reply's first line; `making`: "<key>\n<task id>" ->
 // what a run that hasn't made its chat yet is doing; `skip`: a folder whose space isn't a project's (the coordinator's own);
 // `work`: "<key>\n<task id>" -> its worktree as last read (tasklist.js readWork).
-// A task's state: "none" (never run), "making", or chatState's: starting, working, waiting, done, failed, closed.
+// A task's state: "none" (never run), "making", or chatState's: starting, working, waiting, done, failed, closed,
+// interrupted (`facts.cut`: its turn was cut off by a restart; `why` says so).
 // A task whose chat waits for an approval has it as `ask`: { id, title, options: [{ optionId, name, kind }] }.
 // A task that was run also says how its work stands: `from` (the branch its own was made from), `ahead` (its commits
 // ahead of that; null: not read yet, or its worktree is gone), `dirty` (it has uncommitted changes), `ready` (marked
@@ -173,4 +175,88 @@ export function conflictText(list) {
     + `conflicted with ${t.conflict.onto ?? "the branch it was made from"} in ${t.conflict.files?.length ? one(t.conflict.files.join(", "), NOTICE_REPLY_MAX) : "some files"}`);
   const rest = list.length - lines.length;
   return `Task updates (from Herdr): ${lines.join("; ")}${rest > 0 ? `; and ${rest} more` : ""}; consider op update (it sends the task back to its own agent; don't run it again). Read state.json and act per your rules.`;
+}
+
+// ---- after a restart: interrupted turns, and chats that have no copy running ----
+
+// Whether a chat's saved state (its state.json's text) says a turn was running: read with no copy of the chat running,
+// that turn was cut off (agent-acp.js keeps the status as it was when the pane closes or the app quits).
+export function savedCut(text) {
+  try { return JSON.parse(text)?.status === "working"; } catch { return false; }
+}
+
+// The interrupted tasks the coordinator wasn't told about yet (`now`: taskStates; `cut`: shared "ht3-panels.cut").
+export const restartNews = (now, cut = {}) => Object.keys(now ?? {}).filter((k) => now[k].state === "interrupted" && cut[now[k].chat] && !cut[now[k].chat].told).map((k) => ({ key: k, ...now[k] }));
+// One message for them, as the coordinator chat gets it. `own`: the coordinator's own turn was cut off too.
+export function restartText(list, own = false) {
+  const one = (s, n) => { const t = String(s ?? "").replace(/\s+/g, " ").trim(); return t.length > n ? `${t.slice(0, n - 1)}…` : t; };
+  const lines = list.slice(0, NOTICE_MAX).map((t) => `${String(t.project ?? "").split("/").filter(Boolean).pop() ?? "/"}${t.machine ? ` on ${t.machine}` : ""} / ${t.id} "${one(t.title, NOTICE_TITLE_MAX)}"`);
+  const rest = list.length - lines.length;
+  const tasks = lines.length ? ` these tasks' turns were cut off: ${lines.join("; ")}${rest > 0 ? `; and ${rest} more` : ""}; use op tell to have each one's agent continue where it stopped, or ask the person.` : "";
+  return `Task updates (from Herdr): Herdr restarted;${tasks}${own ? `${tasks ? " Y" : " y"}our own turn was cut off too: go on where you stopped.` : ""} Read state.json and act per your rules.`;
+}
+
+// A post is left alone this long before its chat is started for it: a chat that is just being made takes it by itself.
+export const WAKE_AFTER_MS = 3000;
+// A chat that was started once for its posts is started again only for a newer post, and not sooner than this.
+export const WAKE_AGAIN_MS = 30000;
+// The chats to start: the ones with posts waiting (`posts`: shared "ht3-panels.post") that have no copy running
+// (`mounted`: a Set of chat ids, report.js mountedChats) and weren't tried for these posts (`tried`: chat id ->
+// { at, post }: when, and the newest post's time then). -> [{ chat, post (its newest post's time) }].
+export function wakeDue({ posts = {}, mounted = new Set(), tried = {}, now = Date.now() } = {}) {
+  return Object.keys(posts ?? {}).map((chat) => {
+    const at = (Array.isArray(posts[chat]) ? posts[chat] : []).map((m) => Number(m?.at) || 0);
+    return at.length ? { chat, post: Math.max(...at), first: Math.min(...at) } : null;
+  }).filter((p) => {
+    if (!p || mounted.has(p.chat) || now - p.first < WAKE_AFTER_MS) return false;
+    const had = tried[p.chat];
+    return !had || (p.post > had.post && now - had.at >= WAKE_AGAIN_MS);
+  }).map(({ chat, post }) => ({ chat, post }));
+}
+
+// The tab a chat's pane is in: the one it reported (`places`, when that tab is open), else, as after a restart (a tab's
+// id changes, so its place is gone until it is shown): the coordinator's by its space's folder and its name (`coord`:
+// { chat, folder, name }), a task's by its title on its machine among the tabs no chat has (tasks.js wakeChat's match).
+// `tasks`: { key: [task] }. -> { tab, space } or null (no such tab: nothing is opened for a post here).
+export function wakeTab(chat, { spaces = [], places = {}, tasks = {}, coord = null } = {}) {
+  const of = (id) => { const s = spaces.find((x) => x.tabs.some((c) => c.id === id)); return s ? { tab: id, space: s.id } : null; };
+  const placed = places[chat]?.tab ? of(places[chat].tab) : null;
+  if (placed) return placed;
+  if (coord && chat === coord.chat) {
+    const s = spaces.find((x) => !x.machine && x.folder === coord.folder), c = s?.tabs.find((x) => x.name === coord.name);
+    return c ? { tab: c.id, space: s.id } : null;
+  }
+  const t = Object.values(tasks).flat().find((x) => x.run?.chat === chat && !x.run.merged);
+  if (!t) return null;
+  const taken = new Set(Object.values(places).map((x) => x?.tab)), name = String(t.title ?? "").slice(0, 60);
+  for (const s of spaces) {
+    if ((s.machine ?? null) !== (t.run.on ?? null)) continue;
+    const c = s.tabs.find((x) => x.name === name && !taken.has(x.id));
+    if (c) return { tab: c.id, space: s.id };
+  }
+  return null;
+}
+
+// How chats are started without the person losing their place: a copy starts the first time its tab shows and no
+// command starts one in the background, so each tab is shown once, one after the other, and then everything is put
+// back. `targets`: [{ chat, tab, space }]; `at`: what is in front now ({ space, tab, pane }); `spaces`: spaces().
+// -> null (nothing to show: a target that is the shown tab starts by itself, and with no place to return to nothing
+// is touched), or { show: [{ chat, tab, steps }], back }, steps and back lists of [command, args]: back gives every
+// other space the tab it showed before, settles again a tab that was settled, and ends on the person's space, tab and pane.
+export function wakeSteps(targets, at, spaces = []) {
+  if (!at?.space || !at.tab) return null;
+  const list = (targets ?? []).filter((t) => t?.tab && t.space && t.tab !== at.tab);
+  if (!list.length) return null;
+  const back = [], settle = [], done = new Set();
+  for (const t of list) {
+    const s = spaces.find((x) => x.id === t.space);
+    if (s?.tabs.find((c) => c.id === t.tab)?.settled) settle.push(["tab.settle", { id: t.tab }]);
+    if (!s || done.has(s.id)) continue;
+    done.add(s.id);
+    const was = s.tabs.find((c) => c.active);
+    if (was && was.id !== at.tab && !list.some((x) => x.tab === was.id)) back.push(["space.select", { id: s.id }], ["tab.select", { id: was.id }]);
+  }
+  back.push(...settle, ["space.select", { id: at.space }], ["tab.select", { id: at.tab }]);
+  if (at.pane) back.push(["pane.focus", { pane: at.pane }]);
+  return { show: list.map((t) => ({ chat: t.chat, tab: t.tab, steps: [["space.select", { id: t.space }], ["tab.select", { id: t.tab }]] })), back };
 }

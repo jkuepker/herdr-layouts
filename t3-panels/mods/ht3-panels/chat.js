@@ -13,7 +13,7 @@ import { run, openOverlay, appHome, home, exec, layout, settings, shared, setSha
 import { MOD, tokens, alpha, icon, agentMark, button, iconButton, control, badge, workLine, divider, shortPath } from "./look.js";
 import { AcpSource, AGENTS, detect, argvOf, forkChat, agentOf, chatLike, askOnce } from "./agent-acp.js";
 import { TermSource } from "./agent-term.js";
-import { Reporter, paneIds, tabIds, placeNew } from "./report.js";
+import { Reporter, paneIds, tabIds, placeNew, markCut, clearCut } from "./report.js";
 import { fileIcon } from "./fileicons.js";
 import { snapshot, turnStat, undoRevert, prune, chatsWithRefs, safe as refName, KEEP } from "./checkpoint.js";
 import { checkpointsOn, followUp, limitModels, rememberModels, prefs, chatTokenBudget } from "./settings.js";
@@ -303,6 +303,9 @@ export class ChatPanel {
       cx.spawn(async (cx) => {
         const had = await src.load();
         if (had) {
+          // Its saved state says a turn was running: no copy ran it since (the app quit or the mod was reloaded
+          // mid-turn), so that turn was cut off. Said to the lists and the coordinator as "interrupted" (report.js markCut).
+          if (this.reporter && src.state?.status === "working") markCut(this.chatId);
           this.phase = "chat";
           if (src.resumable) src.restart(cx);
           this.report();
@@ -909,7 +912,8 @@ export class ChatPanel {
   // Messages posted to this chat by its id (shared "ht3-panels.post": { "<chat id>": [{ text, at }] }, coordinator.js
   // `postTo`): they are taken out of the shared map and go out as messages of this chat, each a turn of its own, sent
   // at once when the agent is ready and else at the end of the queue. A running turn is never steered or stopped for
-  // one, whatever "Steer instead of queue" says. They wait in the map, however long, until this chat is shown.
+  // one, whatever "Steer instead of queue" says. They wait in the map until this chat has a copy running: after a restart
+  // the keeper starts it by showing its tab for a moment (coordinator.js wake).
   takePosts(cx) {
     const all = { ...(shared(`${MOD}.post`) ?? {}) }, mine = all[this.chatId] ?? [];
     delete all[this.chatId];
@@ -1043,6 +1047,8 @@ export class ChatPanel {
     }
     // It is remembered for ↑ in the message box, with the chat (kept); a chat with no id remembers it while its pane lives.
     // (Not one Herdr posted, takePosts: that is not the person's to recall.)
+    // A turn that was cut off (markCut) is not the chat's state any more: it goes on with this message.
+    if (this.reporter) clearCut(this.chatId);
     const sent = msg.posted ? this.history : pushPrompt(this.history, { text, tokens });
     if (sent !== this.history) { this.history = sent; keep(this.chatId, { history: sent }); }
     const out = (...args) => (steer && this.source.steer ? this.source.steer(...args) : this.source.send(...args));
