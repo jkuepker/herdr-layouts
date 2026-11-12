@@ -9,7 +9,9 @@
 // flips one model, `ui:allmodels:<id>` goes back to all, `ui:editor:<id>` flips an editor,
 // `ui:side` flips the side panel's start, `ui:diffws` flips Hide whitespace in Diff, `ui:mdpreview` flips Markdown
 // files opening as a preview, `ui:budget:<tokens>` sets the chat token budget (0 off; `ui:budget` alone takes the next choice),
-// `ui:close` closes.
+// `ui:taskagent:<id>` and `ui:coordagent:<id>` set the tasks' and the coordinator's agent (with no id: the next choice; `default`:
+// unset), `ui:taskmodel:<model>` and `ui:coordmodel:<model>` their models (with none: the agent's own), `ui:coordnotify` flips
+// the coordinator's task notices, `ui:close` closes.
 
 import { div, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
@@ -20,7 +22,7 @@ import { importable } from "./detect.js";
 import { tokens, alpha, icon, agentMark, button, iconButton, shortPath, badge } from "./look.js";
 import { AGENTS, detect } from "./agent-acp.js";
 import { EDITORS, editors } from "./menus.js";
-import { prefs, agentOn, modelsOf, knownModels, editorOn, sideStartsHidden, firstAgent, setPref, settingsFile, followUp, checkpointsOn, toastsOn, soundsOn, diffHidesWhitespace, commitStyle, COMMIT_STYLES, mdPreviewDefault, chatTokenBudget } from "./settings.js";
+import { enabledAgents, coordinatorNotify, prefs, agentOn, modelsOf, knownModels, editorOn, sideStartsHidden, firstAgent, setPref, settingsFile, followUp, checkpointsOn, toastsOn, soundsOn, diffHidesWhitespace, commitStyle, COMMIT_STYLES, mdPreviewDefault, chatTokenBudget } from "./settings.js";
 import { BUDGETS, budgetLabel, nextBudget } from "./token-budget.js";
 
 export const SETTINGS_SIZE = { width: 640, height: 680 };
@@ -43,6 +45,14 @@ export class Settings {
     this.scriptName = InputState.new({ placeholder: "Name, e.g. Dev" });
     this.scriptCommand = InputState.new({ placeholder: "Command, e.g. npm run dev" });
     for (const f of [this.scriptName, this.scriptCommand]) { f.on("change", (_e, cx) => cx.notify()); f.on("submit", (_e, cx) => { this.addScript(); cx.notify(); }); }
+    // Tasks and coordinator: the two model fields, saved with Enter or Save.
+    this.roleModel = {};
+    for (const role of ["task", "coordinator"]) {
+      const f = this.roleModel[role] = InputState.new({ placeholder: "The agent's own model" });
+      f.set_value(typeof prefs()[`${role}Model`] === "string" ? prefs()[`${role}Model`] : "");
+      f.on("change", (_e, cx) => cx.notify());
+      f.on("submit", (_e, cx) => { this.saveRoleModel(role); cx.notify(); });
+    }
     cx.spawn(async (cx) => { this.project = await projectOf(activeSpace()).catch(() => null); cx.notify(); });
     cx.spawn(async (cx) => {
       this.found = (await detect(null)).found;
@@ -69,6 +79,9 @@ export class Settings {
     else if (what === "budget") { const n = rest === "" ? nextBudget(chatTokenBudget()) : BUDGETS.find((b) => String(b) === rest); if (n != null) setPref("chatTokenBudget", n ? n : undefined); }
     else if (what === "checkpoints") setPref("checkpoints", checkpointsOn() ? false : undefined);
     else if (what === "notifications") setPref("notifications", toastsOn() ? false : undefined);
+    else if (what === "taskagent" || what === "coordagent") this.setRoleAgent(what === "taskagent" ? "task" : "coordinator", rest);
+    else if (what === "taskmodel" || what === "coordmodel") { const role = what === "taskmodel" ? "task" : "coordinator"; this.roleModel[role].set_value(rest); this.saveRoleModel(role); }
+    else if (what === "coordnotify") setPref("coordinatorNotify", coordinatorNotify() ? false : undefined);
     else if (what === "sounds") setPref("sounds", soundsOn() ? undefined : true);
     // ui:script:<name>=<command> adds a project script (same name: replaces it), ui:unscript:<n> removes the nth.
     else if (what === "script") { const at = rest.indexOf("="); if (at > 0) { this.scriptName.set_value(rest.slice(0, at)); this.scriptCommand.set_value(rest.slice(at + 1)); this.addScript(); } }
@@ -97,6 +110,30 @@ export class Settings {
   flipSide() {
     setPref("sidePanelHiddenInNewSpaces", sideStartsHidden() ? undefined : true);
   }
+  // A role's agent ("task", "coordinator": settings.js roleAgent): `id` an agent's, "default" for unset, "" for the next of
+  // Default and the agents that are on.
+  setRoleAgent(role, id) {
+    const key = `${role}Agent`, ids = [null, ...enabledAgents().map((a) => a.id)];
+    const next = id === "" ? ids[(ids.indexOf(prefs()[key] ?? null) + 1) % ids.length] : id === "default" ? null : AGENTS.find((a) => a.id === id)?.id;
+    if (next !== undefined) setPref(key, next ?? undefined);
+  }
+  // A role's model as its field holds it; an empty field is the agent's own.
+  saveRoleModel(role) {
+    setPref(`${role}Model`, this.roleModel[role].value().trim() || undefined);
+  }
+  // The two rows of a role: its agent, a button that goes through Default and the agents that are on, and its model.
+  roleRows(k, role, name, unset) {
+    const id = prefs()[`${role}Agent`] ?? null, a = AGENTS.find((x) => x.id === id), saved = typeof prefs()[`${role}Model`] === "string" ? prefs()[`${role}Model`].trim() : "";
+    const typed = this.roleModel[role].value().trim();
+    return [
+      this.row(icon("bot").size(16).flex_none().text_color(k.muted), `${name} agent`, a ? (agentOn(a.id) ? `${a.name}. If it isn't installed: ${unset}.` : `${a.name} is turned off: ${unset} is used.`) : `Default: ${unset}.`,
+        [button(k, `set-${role}-agent`, a?.name ?? (id ? String(id) : "Default"), (cx) => { this.setRoleAgent(role, ""); cx.notify(); }, { size: "sm", variant: "outline", tip: "Click to change: Default, then each agent that is on" })]),
+      this.row(icon("brain").size(16).flex_none().text_color(k.muted), `${name} model`, saved ? `Set before the first message, when the chat starts on the agent above. Empty: the agent's own model.` : "The agent's own model. A model id here is set before the first message, when the chat starts on the agent above.",
+        [div().w(220).flex_none().h(30).px(8).rounded(8).border(1).border_color(k.input).text_size(13).font_family(k.mono).child(Input.new(this.roleModel[role])),
+          button(k, `set-${role}-model`, "Save", (cx) => { this.saveRoleModel(role); cx.notify(); }, { size: "sm", variant: typed !== saved ? "default" : "outline", disabled: typed === saved })]),
+    ];
+  }
+
   // The models an agent's list can hold: what it has offered, then ids added by hand.
   models(id) {
     const known = knownModels(id), only = modelsOf(id) ?? [];
@@ -272,6 +309,11 @@ export class Settings {
             [this.toggle(k, "set-notifications", toastsOn(), "Notify", () => setPref("notifications", toastsOn() ? false : undefined))]),
           this.row(icon("volume-2").size(16).flex_none().text_color(k.muted), "Sound", "Play Herdr's done or blocked sound then.",
             [this.toggle(k, "set-sounds", soundsOn(), "Sound", () => setPref("sounds", soundsOn() ? undefined : true))])]))
+        .child(this.section(k, "Tasks and coordinator", "The agents that work on tasks (Tasks' Run with agent, the coordinator's tasks) and the coordinator chat that plans and starts them.",
+          [...this.roleRows(k, "task", "Task", "the agent New chat comes up with"),
+            ...this.roleRows(k, "coordinator", "Coordinator", "Claude Code, else the agent New chat comes up with"),
+            this.row(icon("messages-square").size(16).flex_none().text_color(k.muted), "Tell the coordinator about tasks", "Herdr sends the coordinator chat a short message when a task's chat finished, failed, waits for an approval or was closed: at most one in 45 seconds. Off: it learns of them when it next reads its state file.",
+              [this.toggle(k, "set-coord-notify", coordinatorNotify(), "Tell the coordinator about tasks", () => setPref("coordinatorNotify", coordinatorNotify() ? false : undefined))])]))
         .when(!!this.project, (el) => el.child(this.section(k, "Project scripts", `Commands for ${this.project.name} (${shortPath(this.project.root)}${this.project.on ? ` on ${this.project.on}` : ""}), the project of the shown space. The Project popover runs them in a side terminal. The one marked with the wrench is the setup script: New worktree runs it in the new worktree before the chat starts.`,
           [...scriptsOf(this.project.key).map((s, i, all) => this.row(icon("square-terminal").size(16).flex_none().text_color(k.muted),
             s.setup ? h_flex().gap(6).items_center().child(div().min_w(0).truncate().child(s.name)).child(badge(k, "setup", "info")) : s.name, s.command,

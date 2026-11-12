@@ -26,6 +26,8 @@
 //   agent", the coordinator's tasks) and the model it is set to before the task is sent, e.g. "omp" and
 //   "fleetq-tatooine-r9700-8080/Qwen3.8". An agent that is off or not installed falls back to the default one, on its own model.
 // - coordinatorAgent ("claude"), coordinatorModel (absent: the agent's own): the same for the coordinator chat (coordinator.js).
+// - coordinatorNotify (true): Herdr tells the coordinator chat, in a message of its own, when a task's chat finished, failed,
+//   waits for an approval or was closed (at most one message in 45 seconds); false: it learns of them when it reads its state file.
 // - sidePanelHiddenInNewSpaces (false): a space shown for the first time starts with the side panel hidden.
 // Anything left out is its default; unknown keys are kept as they are.
 
@@ -88,6 +90,8 @@ export const commitStyle = () => (COMMIT_STYLES.includes(prefs().commitStyle) ? 
 export const mdPreviewDefault = () => prefs().mdPreviewDefault !== false;
 // "chatTokenBudget": the per-chat token budget, 0 when off.
 export const chatTokenBudget = () => cleanBudget(prefs().chatTokenBudget);
+// "coordinatorNotify": false: no task notices are sent into the coordinator chat (coordinator.js).
+export const coordinatorNotify = () => prefs().coordinatorNotify !== false;
 // "followUp": "steer" makes a message sent while the agent works interrupt it; the default queues it.
 export const followUp = () => (prefs().followUp === "steer" ? "steer" : "queue");
 
