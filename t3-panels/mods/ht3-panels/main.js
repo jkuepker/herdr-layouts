@@ -60,7 +60,10 @@ class Buttons {
     cx.timer.after(0, () => announce());
     // The settings file, now and whenever it is edited by hand (settings.js).
     cx.spawn(() => loadPrefs());
-    // And the coordinator's state file, when what it holds changed, and its task notices (coordinator.js).
+    // And the coordinator's state file, when what it holds changed, and its task notices (coordinator.js). The same
+    // pass looks after chats a restart left behind: a turn that ran at the quit is marked cut off ("interrupted", told
+    // to the coordinator once), and a chat that has posts waiting but no copy running (a copy starts only when its tab
+    // first shows) is started by showing its tab for a moment and then the person's own again (coordinator.js wake).
     cx.timer.every(2000, (cx) => { prune(); cx.spawn(() => loadPrefs()); cx.spawn(() => writeState()); });
     cx.spawn((cx) => keep(cx));
   }
@@ -156,7 +159,8 @@ class Buttons {
     // message that has its agent rebase onto the branch it conflicts with, resolve, run the check and commit (tasklist.js updateText).
     // How each went is in the coordinator's state.json (`ops`), which the keeper keeps up to date.
     // coord-post:<text>: posts that text to the coordinator chat as a message (shared "ht3-panels.post"; chat.js sends it when
-    // the chat is shown: at once if its agent is ready, else queued). The keeper's own task notices go the same way.
+    // the chat has a copy running: at once if its agent is ready, else queued; the keeper starts a chat a restart left
+    // unshown, coordinator.js wake). The keeper's own task notices go the same way.
     else if (c === "coordinator") cx.spawn(async (cx) => { try { await openCoordinator(); } catch (e) { fail(e); } cx.notify(); });
     else if (name === "coord-post") postTo(CHAT, c.slice(11));
     else if (name === "coord") cx.spawn(async (cx) => { await coordCommand(c.slice(6)); cx.notify(); });

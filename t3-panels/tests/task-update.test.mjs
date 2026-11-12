@@ -64,7 +64,7 @@ assert.equal(checkOf("Check that it works"), null); assert.equal(checkOf(""), nu
 assert.match(tellCheck({ id: "y", title: "Y" }), /never run/); assert.match(tellCheck({ id: "y", title: "Y", run: run({ merged: { at: 1, commit: "a" } }) }), /merged already/);
 assert.equal(tellCheck(t0), null); assert.equal(updateCheck(hit), null);
 assert.match(updateCheck(t0), /no merge conflict/); assert.match(updateCheck({ id: "y", title: "Y" }), /never run/);
-assert.deepEqual(Object.keys(SENT_WORDS), ["open", "reopened", "shown", "waiting"]); assert.match(SENT_WORDS.waiting, /open its chat to send it/);
+assert.deepEqual(Object.keys(SENT_WORDS), ["open", "reopened", "shown", "waking", "waiting"]); assert.match(SENT_WORDS.waiting, /open its chat to send it/);
 
 // ---- the coordinator's side ----
 

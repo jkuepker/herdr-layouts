@@ -22,10 +22,17 @@
 // - the keeper tells it what happened: when a task's chat finished, failed, waits for an approval or was closed, one
 //   short message goes into the coordinator chat (shared "ht3-panels.post", which chat.js takes), at most one in 45
 //   seconds, unless settings.js `coordinatorNotify` is off. A Merge that conflicted is told at once, with the files.
-//   `coord-post:<text>` posts any text to it the same way.
+//   `coord-post:<text>` posts any text to it the same way;
+// - after a restart (a chat's copy starts only when its tab first shows, and a turn that ran at the quit is cut off):
+//   the keeper's first pass reads the saved state of the coordinator's and every open task's chat that has no copy
+//   running, and one that says a turn was running is marked cut (shared "ht3-panels.cut", report.js): its task's state is
+//   "interrupted" and the coordinator is told once which ones (coord-data.js restartText), to have their agents go on.
+//   And each pass, a chat that has posts waiting and no copy running (the coordinator's own too) is started: its
+//   restored tab is shown for a moment and the person's space, tab and pane are shown again (`wake`, below).
 // `coordinator` shows the chat, making the space and the chat when they aren't there.
 
-import { exec, run, shared, setShared, spaces, focused, appHome, home, readTextFile, writeTextFile, notify } from "herdr";
+import { exec, run, shared, setShared, spaces, panes, machines, focused, appHome, home, readTextFile, writeTextFile, notify } from "herdr";
+import { mountedChats, cutAll, markCut } from "./report.js";
 import { MOD } from "./look.js";
 import { AGENTS, detect } from "./agent-acp.js";
 import { repoOf } from "./launcher.js";
@@ -33,7 +40,8 @@ import { roleAgent, roleSet, coordinatorNotify } from "./settings.js";
 import { tasksOf, taskKeys, update, newId, startTask, observe, workAll, setWork, WORK_EVERY_MS, postTo, tellTask, askUpdate } from "./tasks.js";
 import { newTask, patch, remove, keyOf, chatState, readWork, readyStale, unready, showCommand, conflictGone, unconflict, SENT_WORDS } from "./tasklist.js";
 import { lastReply } from "./compare-data.js";
-import { parseOp, logOp, snapshot, templateDue, pickAnswer, readyCheck, taskStates, noticeDiff, noticeText, conflictNews, conflictText } from "./coord-data.js";
+import { parseOp, logOp, snapshot, templateDue, pickAnswer, readyCheck, taskStates, noticeDiff, noticeText, conflictNews, conflictText,
+  savedCut, restartNews, restartText, wakeDue, wakeTab, wakeSteps } from "./coord-data.js";
 import { VERSION, roleText, SETTINGS } from "./coord-template.js";
 
 export const CHAT = "coordinator", SPACE = "Coordinator";
@@ -54,10 +62,13 @@ const due = new Map(); // the tasks whose news waits to be told: "<key>\n<task i
 let noticedAt = 0; // when the last notice went
 const looked = new Map(); // "<key>\n<task id>" -> { at, state, chat }: when its worktree was last read, and its chat's state then
 const looking = new Set(); // the ones being read now
+let cutRead = false; // the saved states were looked through for cut-off turns (once per load of the mod)
+const woke = new Map(); // chat id -> { at, post }: when it was started for its posts, and the newest post's time then
+let waking = false;
 
 // What chatState reads, as things are now, and the approvals that wait (tab -> ask).
 const facts = () => ({ places: shared(`${MOD}.places`) ?? {}, status: shared(`${MOD}.status`) ?? {}, turns: shared(`${MOD}.turns`) ?? {},
-  asks: shared(`${MOD}.asks`) ?? {}, tabs: new Set(spaces().flatMap((s) => s.tabs.map((c) => c.id))), now: Date.now() });
+  asks: shared(`${MOD}.asks`) ?? {}, cut: cutAll(), tabs: new Set(spaces().flatMap((s) => s.tabs.map((c) => c.id))), now: Date.now() });
 
 // Writes `text` to `path` whatever it holds now (writeTextFile wants what the file held: this is the file's only writer).
 async function put(path, text) {
@@ -189,9 +200,11 @@ export async function writeState() {
   try {
     const keys = taskKeys();
     for (const key of keys) observe(key);
+    let tasks = Object.fromEntries(keys.map((key) => [key, tasksOf(key)]));
+    if (!cutRead) { cutRead = true; await readCut(tasks); }
     const f = facts(), { turns, places, status } = f;
     staleMarks(keys, f);
-    const tasks = Object.fromEntries(keys.map((key) => [key, tasksOf(key)]));
+    tasks = Object.fromEntries(keys.map((key) => [key, tasksOf(key)]));
     lookAtWork(tasks, f);
     const said = {};
     for (const t of Object.values(tasks).flat()) {
@@ -208,6 +221,7 @@ export async function writeState() {
       written = text;
     }
     notices(body, f);
+    wake(tasks, f).catch((e) => console.log(`ht3-panels coordinator wake: ${why(e)}`));
   } catch (e) { console.log(`ht3-panels coordinator state: ${why(e)}`); }
   writing = false;
 }
@@ -230,12 +244,84 @@ function notices(body, f) {
   // A Merge that conflicted is told at once, on its own: the person just clicked, and `update` is the next step.
   const hit = on ? conflictNews(seen, now) : [];
   if (hit.length) postTo(CHAT, conflictText(hit));
+  // Turns a restart cut off, once per mark: which tasks, and whether the coordinator's own was one.
+  const stopped = on ? restartNews(now, f.cut) : [], own = on && !!f.cut[CHAT] && !f.cut[CHAT].told;
+  if (stopped.length || own) {
+    postTo(CHAT, restartText(stopped, own));
+    const cut = { ...cutAll() };
+    for (const chat of [...stopped.map((t) => t.chat), ...(own ? [CHAT] : [])]) if (cut[chat]) cut[chat] = { ...cut[chat], told: Date.now() };
+    setShared(`${MOD}.cut`, cut);
+  }
   for (const [k, state] of due) if (!on || now[k]?.state !== state) due.delete(k);
   seen = now;
   if (!due.size || Date.now() - noticedAt < NOTICE_EVERY_MS) return;
   postTo(CHAT, noticeText([...due.keys()].map((k) => now[k])));
   due.clear();
   noticedAt = Date.now();
+}
+
+// ---- after a restart ----
+
+// The first pass after a load: the coordinator's chat and every open task's (run, not merged, not done) that has no
+// copy running has its saved state read; one that says a turn was running was cut off (a chat with a copy says so
+// itself as it loads, chat.js). Marks of chats that are none of these go.
+async function readCut(tasks) {
+  const live = mountedChats(), chats = new Set([CHAT, ...Object.values(tasks).flat().filter((t) => t.run?.chat && !t.run.merged && !t.done).map((t) => t.run.chat)]);
+  for (const chat of chats) {
+    if (live.has(chat) || cutAll()[chat]) continue;
+    if (savedCut(await readTextFile(`${chatsDir()}/${chat}/state.json`).catch(() => null))) markCut(chat);
+  }
+  const all = cutAll(), kept = Object.fromEntries(Object.entries(all).filter(([chat]) => chats.has(chat) || live.has(chat)));
+  if (Object.keys(kept).length !== Object.keys(all).length) setShared(`${MOD}.cut`, kept);
+}
+
+// What is in front: the focused pane's space and tab, else the shown space's shown tab.
+function inFront() {
+  const f = focused();
+  if (f?.space && f.tab) return { space: f.space, tab: f.tab, pane: f.pane ?? null };
+  const s = spaces().find((x) => x.active), t = s?.tabs.find((c) => c.active);
+  return s && t ? { space: s.id, tab: t.id, pane: null } : null;
+}
+
+// A chat started by wake hasn't been drawn, so it can't find its pane by itself (report.js place): the one chat pane
+// of its tab that no chat has is its own. Only said once its copy runs: then the tab was the right one.
+function givePlace(chat, tab) {
+  const places = shared(`${MOD}.places`) ?? {};
+  if (places[chat]) return;
+  const taken = new Set(Object.values(places).map((at) => at?.pane)), mine = panes().filter((p) => p.mod === MOD && p.tab === tab && !taken.has(p.pane));
+  if (mine.length === 1) setShared(`${MOD}.places`, { ...places, [chat]: { pane: mine[0].pane, tab } });
+}
+
+// Each pass of writeState: chats with posts waiting and no copy running are started (coord-data.js wakeDue: each once
+// per batch of posts). Herdr has no command that starts a pane's mod in the background (tab.select, tab.new and
+// pane.focus take no such argument, and a copy starts the first time it shows), so each one's tab is shown until its
+// copy began (at most two seconds), all in one go, and then the person's space, tab and pane are shown again
+// (wakeSteps). Should the person go elsewhere meanwhile, nothing more is touched. A tab is never opened here: a chat
+// with no tab waits (tasks.js wakeChat opens a closed task's again when it is told something).
+async function wake(tasks, f) {
+  if (waking || machines().some((m) => m.layout === "loading")) return;
+  const due = wakeDue({ posts: shared(`${MOD}.post`) ?? {}, mounted: mountedChats(), tried: Object.fromEntries(woke), now: Date.now() });
+  if (!due.length) return;
+  const all = spaces(), where = { spaces: all, places: f.places, tasks, coord: { chat: CHAT, folder: coordDir(), name: SPACE } };
+  const targets = due.map((d) => ({ ...d, ...wakeTab(d.chat, where) })).filter((t) => t.tab);
+  const plan = wakeSteps(targets, inFront(), all);
+  if (!plan) return;
+  waking = true;
+  try {
+    let shown = inFront().tab, moved = false;
+    for (const t of plan.show) {
+      if (inFront()?.tab !== shown) return; // the person went elsewhere: where they are is theirs
+      woke.set(t.chat, { at: Date.now(), post: targets.find((x) => x.chat === t.chat).post });
+      for (const [name, args] of t.steps) run(name, args);
+      for (let i = 0; i < 40 && !mountedChats().has(t.chat); i++) await nap(50);
+      if (mountedChats().has(t.chat)) givePlace(t.chat, t.tab);
+      else console.log(`ht3-panels coordinator wake: the chat ${t.chat} didn't start in its tab.`);
+      const now = inFront()?.tab;
+      if (now === t.tab) { shown = t.tab; moved = true; }
+      else if (now !== shown) return;
+    }
+    if (moved) for (const [name, args] of plan.back) run(name, args);
+  } finally { waking = false; }
 }
 
 // ---- the chat ----
