@@ -334,9 +334,10 @@ export class DiffPanel {
         this.pickedTo = null;
         if (kind === "hunk-stage") { this.undo = null; this.say(cx, `Staged ${label}.`); }
         else {
-          this.undo = { label, steps: r.undo, until: Date.now() + 30000 };
+          // The undo row says what happened; a second line would repeat it.
+          this.undo = { label, verb: r.untracked ? "Deleted" : "Reverted", steps: r.undo, until: Date.now() + 30000 };
           cx.timer.after(30050, (cx) => cx.notify());
-          this.say(cx, r.untracked ? `Deleted ${f.path}.` : `Reverted ${label}.`);
+          cx.notify();
         }
       } else this.say(cx, `Couldn't ${kind === "hunk-stage" ? "stage" : "revert"} ${label}: ${r.err} The diff may be out of date: refreshed.`, true);
       this.reload(cx);
@@ -887,7 +888,7 @@ export class DiffPanel {
       // The last revert can be put back for 30 s.
       .when(!!undo && !ask, (el) => el.child(h_flex().flex_none().px(12).py(6).gap(8).items_center().border_t(1).border_color(k.border).bg(k.card).text_size(12)
         .child(icon("rotate-ccw").size(14).flex_none().text_color(k.muted))
-        .child(div().flex_1().min_w(0).truncate().text_color(k.muted).child(`Reverted ${undo.label}.`))
+        .child(div().flex_1().min_w(0).truncate().text_color(k.muted).child(`${undo.verb ?? "Reverted"} ${undo.label}.`))
         .child(button(k, "undo-revert", "Undo revert", (cx) => this.undoRevert(cx), { variant: "outline" }))))
       .when(!!this.said && !(undo && !this.saidBad && this.said.startsWith("Reverted ")), (el) => el.child(div().flex_none().px(12).py(6).border_t(1).border_color(k.border).text_size(12).text_color(this.saidBad ? k.destructiveText : k.muted).child(this.said)));
   }
