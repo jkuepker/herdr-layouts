@@ -1,8 +1,8 @@
 // The coordinator's logic (coordinator.js), as pure functions: no Herdr imports, so node can test it.
 
-import { chatState, clip, TITLE_MAX, NOTE_MAX, READY_NOTE_MAX, parseKey, hasWork } from "./tasklist.js";
+import { chatState, clip, TITLE_MAX, NOTE_MAX, READY_NOTE_MAX, TELL_MAX, parseKey, hasWork, conflictGone } from "./tasklist.js";
 
-export const OPS = ["add", "run", "done", "delete", "answer", "ready"];
+export const OPS = ["add", "run", "done", "delete", "answer", "ready", "tell", "update"];
 export const OPS_KEPT = 20;
 // A task id the caller may choose: letters, digits, ".", "_" and "-", at most 64.
 export const cleanId = (id) => (typeof id === "string" || typeof id === "number") && /^[\w.-]{1,64}$/.test(String(id)) ? String(id) : null;
@@ -17,7 +17,9 @@ export function expandHome(path, home) {
 // What `coord:<json>` carries -> { op, project (a folder, absolute), machine, id, title, note, run, done }, or { error }.
 // add: { project, title, note?, run?, id?, machine? }; run, done, delete: { project, id, machine? } (done: false reopens);
 // answer: { project, id, ask, option, machine? } -> { op, project, machine, id, ask, option } (the ids as strings);
-// ready: { project, id, note?, machine? } -> { op, project, machine, id, note } (the task's work can be merged, and why).
+// ready: { project, id, note?, machine? } -> { op, project, machine, id, note } (the task's work can be merged, and why);
+// tell: { project, id, text, machine? } -> { op, project, machine, id, text } (a message for the task's own agent, at most TELL_MAX);
+// update: { project, id, machine? } -> { op, project, machine, id } (after a conflict: its agent is asked to rebase, tasklist.js updateText).
 export function parseOp(text, home = "") {
   let o;
   try { o = JSON.parse(text); } catch (e) { return { error: `Not JSON: ${String(e?.message ?? e)}` }; }
@@ -37,6 +39,12 @@ export function parseOp(text, home = "") {
     return { op: "answer", project, machine, id, ask, option };
   }
   if (o.op === "ready") return id ? { op: "ready", project, machine, id, note: clip(String(o.note ?? "").replace(/\s+/g, " "), READY_NOTE_MAX) } : { op: o.op, project, error: "id is missing." };
+  if (o.op === "tell") {
+    if (!id) return { op: o.op, project, error: "id is missing." };
+    const text = typeof o.text === "string" ? clip(o.text, TELL_MAX) : "";
+    return text ? { op: "tell", project, machine, id, text } : { op: o.op, project, id, error: "text is missing: what to tell the task's agent." };
+  }
+  if (o.op === "update") return id ? { op: "update", project, machine, id } : { op: o.op, project, error: "id is missing." };
   if (o.op !== "add") return id ? { op: o.op, project, machine, id, done: o.done !== false } : { op: o.op, project, error: "id is missing." };
   const title = clip(String(o.title ?? "").split("\n")[0], TITLE_MAX);
   if (!title) return { op: o.op, project, error: "title is missing." };
@@ -58,13 +66,17 @@ export function pickAnswer(pending, ask, option) {
 
 // Whether `ready` may mark a task (`work`: its worktree as read now, or undefined when it wasn't read; `state`: its
 // chat's state): it was run, isn't merged, its agent isn't at work (what it would still write was not looked at), and
-// it has something to merge as far as is known. -> null, or the reason it may not.
+// it has something to merge as far as is known, and its branch is not the one a Merge just conflicted on (it has to
+// move first: `update`). -> null, or the reason it may not.
 export function readyCheck(t, work, state = null) {
   if (!t?.run) return "This task was never run: there is nothing to merge.";
   if (t.run.merged) return "This task is merged already.";
   if (state === "working" || state === "waiting") return state === "waiting" ? "This task's agent waits for an answer: it isn't finished." : "This task's agent is still working: wait until it is done.";
   if (work?.missing) return "This task's worktree is gone.";
   if (work && !hasWork(work)) return "This task's branch has no commits ahead of the branch it was made from and no uncommitted changes: there is nothing to merge.";
+  const c = t.run.conflict;
+  if (c?.head && work && work.branch !== t.run.branch) return "This task's worktree is not on its branch (a rebase is under way?): it isn't finished.";
+  if (c?.head && work && !conflictGone(t.run, work)) return `This task's branch still conflicts with ${c.onto ?? "the branch it was made from"} (it has not moved since the merge was aborted): send it back to its agent with update first.`;
   return null;
 }
 
@@ -80,7 +92,9 @@ export const logOp = (log, entry) => [...(log ?? []), entry].slice(-OPS_KEPT);
 // A task whose chat waits for an approval has it as `ask`: { id, title, options: [{ optionId, name, kind }] }.
 // A task that was run also says how its work stands: `from` (the branch its own was made from), `ahead` (its commits
 // ahead of that; null: not read yet, or its worktree is gone), `dirty` (it has uncommitted changes), `ready` (marked
-// ready to merge) and `merged` (the person merged it).
+// ready to merge), `merged` (the person merged it) and `conflict` (null, or { onto, files, at, asked }: the person's
+// Merge into `onto` was aborted on a conflict in those files and the branch hasn't moved since; asked: its agent was
+// asked to update it).
 export function snapshot({ spaces = [], tasks = {}, facts = {}, replies = {}, making = {}, ops = [], skip = null, work = {} } = {}) {
   return {
     spaces: spaces.filter((s) => !skip || s.folder !== skip).map((s) => ({ name: String(s.name ?? "").replace(/​/g, ""), folder: s.folder ?? "", machine: s.machine ?? null })),
@@ -96,7 +110,8 @@ export function snapshot({ spaces = [], tasks = {}, facts = {}, replies = {}, ma
             ...(s?.why && !busy ? { why: s.why } : {}),
             ...(ask?.id && Array.isArray(ask.options) ? { ask: { id: String(ask.id), title: String(ask.title ?? ""), options: ask.options.map((o) => ({ optionId: o.optionId, name: o.name ?? null, kind: o.kind ?? null })) } } : {}),
             branch: t.run?.branch ?? null, from: t.run?.from ?? null, ahead: w && !w.missing ? w.ahead ?? null : null, dirty: !!w && !w.missing && w.dirty > 0,
-            ready: !!t.run?.ready, merged: !!t.run?.merged, path: t.run?.path ?? null, chat: t.run?.chat ?? null, lastReply: (t.run && replies[t.run.chat]) || null };
+            ready: !!t.run?.ready, merged: !!t.run?.merged,
+            conflict: t.run?.conflict && !t.run.merged ? { onto: t.run.conflict.onto ?? null, files: t.run.conflict.files ?? [], at: t.run.conflict.at ?? 0, asked: !!t.run.conflict.asked } : null, path: t.run?.path ?? null, chat: t.run?.chat ?? null, lastReply: (t.run && replies[t.run.chat]) || null };
         }),
       };
     }).filter(Boolean),
@@ -143,4 +158,19 @@ export function noticeText(list) {
   });
   const rest = list.length - lines.length;
   return `Task updates (from Herdr): ${lines.join("; ")}${rest > 0 ? `; and ${rest} more` : ""}. Read state.json and act per your rules.`;
+}
+
+// The tasks whose Merge conflicted between two passes (`prev`, `now`: taskStates): a conflict mark that wasn't there, or
+// is a newer one. Nothing on the first pass after a load, as with noticeDiff.
+export function conflictNews(prev, now) {
+  if (!prev) return [];
+  return Object.keys(now ?? {}).filter((k) => prev[k] && now[k].conflict && prev[k].conflict?.at !== now[k].conflict.at).map((k) => ({ key: k, ...now[k] }));
+}
+// One short message for them, as the coordinator chat gets it.
+export function conflictText(list) {
+  const one = (s, n) => { const t = String(s ?? "").replace(/\s+/g, " ").trim(); return t.length > n ? `${t.slice(0, n - 1)}…` : t; };
+  const lines = list.slice(0, NOTICE_MAX).map((t) => `Merge of ${String(t.project ?? "").split("/").filter(Boolean).pop() ?? "/"}${t.machine ? ` on ${t.machine}` : ""} / ${t.id} "${one(t.title, NOTICE_TITLE_MAX)}" `
+    + `conflicted with ${t.conflict.onto ?? "the branch it was made from"} in ${t.conflict.files?.length ? one(t.conflict.files.join(", "), NOTICE_REPLY_MAX) : "some files"}`);
+  const rest = list.length - lines.length;
+  return `Task updates (from Herdr): ${lines.join("; ")}${rest > 0 ? `; and ${rest} more` : ""}; consider op update (it sends the task back to its own agent; don't run it again). Read state.json and act per your rules.`;
 }

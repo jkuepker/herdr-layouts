@@ -12,13 +12,17 @@
 //   Tasks row shows "Ready to merge", the Agents list its "Ready to merge" group, and the person is told by a
 //   notification whose click shows that project's space and Tasks with the task in view (tasks.js showTasks). Merging is
 //   the person's (the row's Merge button, tasks.js): no command here commits or merges;
+//   its `tell` posts a message into a task's own chat, and its `update` posts the fixed one that sends a task whose
+//   Merge conflicted back to its agent to rebase (tasks.js tellTask, askUpdate; tasklist.js updateText);
 // - the keeper reads each run task's worktree (commits ahead of the branch it came from, uncommitted files, the commit
 //   it is at): when its chat's state changed and every 15 seconds for an open task, once for a done one; kept in shared
 //   "ht3-panels.work" for the Tasks surface and written into state.json as `ahead` and `dirty`. A ready task whose
-//   branch is at another commit by now, or whose agent works again, loses its mark (tasklist.js readyStale);
+//   branch is at another commit by now, or whose agent works again, loses its mark (tasklist.js readyStale), and so
+//   does a conflicted one whose branch moved (conflictGone); state.json has the conflict as `conflict`;
 // - the keeper tells it what happened: when a task's chat finished, failed, waits for an approval or was closed, one
 //   short message goes into the coordinator chat (shared "ht3-panels.post", which chat.js takes), at most one in 45
-//   seconds, unless settings.js `coordinatorNotify` is off. `coord-post:<text>` posts any text to it the same way.
+//   seconds, unless settings.js `coordinatorNotify` is off. A Merge that conflicted is told at once, with the files.
+//   `coord-post:<text>` posts any text to it the same way.
 // `coordinator` shows the chat, making the space and the chat when they aren't there.
 
 import { exec, run, shared, setShared, spaces, focused, appHome, home, readTextFile, writeTextFile, notify } from "herdr";
@@ -26,17 +30,17 @@ import { MOD } from "./look.js";
 import { AGENTS, detect } from "./agent-acp.js";
 import { repoOf } from "./launcher.js";
 import { roleAgent, roleSet, coordinatorNotify } from "./settings.js";
-import { tasksOf, taskKeys, update, newId, startTask, observe, workAll, setWork, WORK_EVERY_MS } from "./tasks.js";
-import { newTask, patch, remove, keyOf, chatState, readWork, readyStale, unready, showCommand } from "./tasklist.js";
+import { tasksOf, taskKeys, update, newId, startTask, observe, workAll, setWork, WORK_EVERY_MS, postTo, tellTask, askUpdate } from "./tasks.js";
+import { newTask, patch, remove, keyOf, chatState, readWork, readyStale, unready, showCommand, conflictGone, unconflict, SENT_WORDS } from "./tasklist.js";
 import { lastReply } from "./compare-data.js";
-import { parseOp, logOp, snapshot, templateDue, pickAnswer, readyCheck, taskStates, noticeDiff, noticeText } from "./coord-data.js";
+import { parseOp, logOp, snapshot, templateDue, pickAnswer, readyCheck, taskStates, noticeDiff, noticeText, conflictNews, conflictText } from "./coord-data.js";
 import { VERSION, roleText, SETTINGS } from "./coord-template.js";
 
 export const CHAT = "coordinator", SPACE = "Coordinator";
 export const coordDir = () => `${appHome()}/data/${MOD}/coordinator`;
 const chatsDir = () => `${appHome()}/data/${MOD}/chats`;
 const REPLY_MAX = 400, REPLY_EVERY_MS = 10000;
-const NOTICE_EVERY_MS = 45000, POSTS_KEPT = 20;
+const NOTICE_EVERY_MS = 45000;
 const nap = (ms) => exec("sleep", [String(ms / 1000)], { timeout: ms + 5000 }).catch(() => null);
 const why = (e) => String(e?.message ?? e).split("\n").pop();
 
@@ -99,9 +103,17 @@ export async function coordCommand(text) {
       if (open) setWork(mark, w);
       const no = readyCheck(t, w, t.run ? chatState(t.run, facts()).state : null);
       if (no) throw new Error(no);
-      update(key, (l) => patch(l, o.id, (x) => (x.run ? { run: { ...x.run, ready: { at: Date.now(), note: o.note, ...(w?.head ? { head: w.head } : {}) } } } : {})));
+      update(key, (l) => patch(l, o.id, (x) => (x.run ? { run: { ...(unconflict(x).run ?? x.run), ready: { at: Date.now(), note: o.note, ...(w?.head ? { head: w.head } : {}) } } } : {})));
       // A click shows that project's space and its Tasks surface with the task in view (main.js `tasks-show`).
       notify({ title: "Ready to merge", body: `${t.title} is ready to merge`, level: "info", action: { name: `${MOD}.${showCommand(key, t.id)}` } });
+    }
+    // A message for the task's own agent, into its chat: any text (`tell`), or the fixed one that sends a task whose
+    // Merge conflicted back to rebase (`update`). A closed chat's tab is opened again behind the one shown now.
+    if (o.op === "tell" || o.op === "update") {
+      const opts = { back: focused()?.tab ?? null };
+      const how = o.op === "update" ? await askUpdate(key, o.id, opts) : await tellTask(key, o.id, o.text, opts);
+      entry.sent = how;
+      if (SENT_WORDS[how]) entry.note = SENT_WORDS[how].trim();
     }
     if (o.op === "run" || o.run) await runOne(key, find());
     entry.ok = true;
@@ -157,14 +169,16 @@ function lookAtWork(tasks, f) {
 }
 
 // Each pass of writeState: a task marked ready whose branch moved since, or whose agent works again, isn't ready any
-// more (tasklist.js readyStale): the mark goes, and with it the row's badge and the Agents list's row.
-function staleReady(keys, f) {
+// more (tasklist.js readyStale): the mark goes, and with it the row's badge and the Agents list's row. And a task whose
+// Merge conflicted and whose branch moved since (its agent rebased) no longer says "Conflicts with" (conflictGone).
+function staleMarks(keys, f) {
   const work = workAll();
   for (const key of keys) {
-    const gone = tasksOf(key).filter((t) => readyStale(t.run, work[`${key}\n${t.id}`], t.run ? chatState(t.run, f).state : null));
+    const why = (t) => [readyStale(t.run, work[`${key}\n${t.id}`], t.run ? chatState(t.run, f).state : null), conflictGone(t.run, work[`${key}\n${t.id}`])];
+    const gone = tasksOf(key).map((t) => ({ id: t.id, why: why(t) })).filter((g) => g.why[0] || g.why[1]);
     if (!gone.length) continue;
-    for (const t of gone) console.log(`ht3-panels.coord: ${t.id} is no longer ready: ${readyStale(t.run, work[`${key}\n${t.id}`], chatState(t.run, f).state)}`);
-    update(key, (l) => l.map((t) => (gone.some((g) => g.id === t.id) ? { ...t, ...unready(t) } : t)));
+    for (const g of gone) console.log(`ht3-panels.coord: ${g.id}: ${g.why.filter(Boolean).join(" ")}`);
+    update(key, (l) => l.map((t) => { const g = gone.find((x) => x.id === t.id); if (!g) return t; const a = g.why[0] ? { ...t, ...unready(t) } : t; return g.why[1] ? { ...a, ...unconflict(a) } : a; }));
   }
 }
 
@@ -176,7 +190,7 @@ export async function writeState() {
     const keys = taskKeys();
     for (const key of keys) observe(key);
     const f = facts(), { turns, places, status } = f;
-    staleReady(keys, f);
+    staleMarks(keys, f);
     const tasks = Object.fromEntries(keys.map((key) => [key, tasksOf(key)]));
     lookAtWork(tasks, f);
     const said = {};
@@ -200,14 +214,8 @@ export async function writeState() {
 
 // ---- what the coordinator is told ----
 
-// A message for a chat, by its id (a tab's id changes over a restart): it waits in shared "ht3-panels.post" until that
-// chat is shown and takes it (chat.js `takePosts`), which sends it as a message of the chat's own.
-export function postTo(chat, text) {
-  const body = String(text ?? "").trim();
-  if (!chat || !body) return;
-  const all = shared(`${MOD}.post`) ?? {};
-  setShared(`${MOD}.post`, { ...all, [chat]: [...(all[chat] ?? []), { text: body, at: Date.now() }].slice(-POSTS_KEPT) });
-}
+// A message for a chat, by its id: tasks.js `postTo` (shared "ht3-panels.post", which chat.js `takePosts` sends).
+export { postTo };
 
 // Whether there is a coordinator chat to tell: its tab is open, or stands in its space from before a restart.
 const chatOpen = (f) => f.tabs.has(f.places[CHAT]?.tab) || spaces().some((s) => !s.machine && s.folder === coordDir() && s.tabs.some((t) => t.name === SPACE));
@@ -219,6 +227,9 @@ const chatOpen = (f) => f.tabs.has(f.places[CHAT]?.tab) || spaces().some((s) => 
 function notices(body, f) {
   const now = taskStates(body), on = coordinatorNotify() && chatOpen(f);
   if (on) for (const n of noticeDiff(seen, now)) due.set(n.key, n.state);
+  // A Merge that conflicted is told at once, on its own: the person just clicked, and `update` is the next step.
+  const hit = on ? conflictNews(seen, now) : [];
+  if (hit.length) postTo(CHAT, conflictText(hit));
   for (const [k, state] of due) if (!on || now[k]?.state !== state) due.delete(k);
   seen = now;
   if (!due.size || Date.now() - noticedAt < NOTICE_EVERY_MS) return;
