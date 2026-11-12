@@ -176,8 +176,10 @@ function notices(body, f) {
 
 // The folder's files, when there are none or they are an older template's (the version is kept beside them).
 async function ensureFolder() {
-  const dir = coordDir(), mark = `${dir}/.template-version`;
-  if (!templateDue(await readTextFile(mark).catch(() => null), VERSION)) return;
+  const dir = coordDir(), mark = `${dir}/.template-version`, had = await readTextFile(mark).catch(() => null);
+  if (!templateDue(had, VERSION)) return;
+  // A coordinator chat started on an older template read that one when its session began: tell it to read the new one.
+  if (had != null) postTo(CHAT, `Herdr updated your instructions: CLAUDE.md in your folder is now version ${VERSION}. Read it again before you act.`);
   await exec("mkdir", ["-p", `${dir}/.claude`]);
   const text = roleText(dir, chatsDir());
   await put(`${dir}/CLAUDE.md`, text);
