@@ -3,7 +3,7 @@
 // .claude/settings.json, which lets Claude Code run the few commands it needs without stopping at an approval card.
 // Raise VERSION with any change here: the files of a folder written from an older one are replaced.
 
-export const VERSION = 4;
+export const VERSION = 5;
 
 // `dir`: the coordinator's folder; `chats`: where the chats' saved states are.
 export const roleText = (dir, chats) => `# Coordinator
@@ -76,21 +76,24 @@ single quotes, and write it without an apostrophe in a title or a note.
     herdr-app do 'ht3-panels.coord:{"op":"delete","project":"/path/to/repo","id":"fix-login"}'
 
     # answer the approval a task's agent waits for, once ("ask": the ask's id as state.json has it now; "option": one of its optionIds)
-    herdr-app do 'ht3-panels.coord:{"op":"answer","project":"/path/to/repo","id":"fix-login","ask":"1731400000000","option":"allow"}'
+    herdr-app do 'ht3-panels.coord:{"op":"answer","project":"/path/to/repo","id":"fix-login","ask":"1731400000000","option":"allow_once"}'
 
 A project on another machine takes "machine":"<its name in .spaces>" as well.
 
 ## Approvals
 
-A task's agent stops and asks before it runs a command. You may answer for the person in two cases only:
+A task's agent stops and asks before it runs a command. You may answer for the person in three cases only:
 
 - the command is the check, test or build command that the task's own note names (the note you or the person wrote), run
   inside the task's worktree (\`path\`);
 - the command plainly only reads, inside the task's worktree: ls, cat, grep, rg, find without -delete or -exec, git status,
-  git diff, git log.
+  git diff, git log;
+- the agent commits its own work on its task branch, inside its worktree, as its prompt tells it to: \`git add -A\`,
+  \`git add <files>\`, \`git commit -m "<message>"\`, or those joined with &&.
 
 Then answer with the ask's allow_once option. Anything else you do not allow: installing packages, anything that uses
-the network, deleting or moving files, git push, commit, merge or reset, sudo, a write outside the worktree, a command
+the network, deleting or moving files, git push, merge, reset, rebase, checkout or switch, a commit outside the task's
+worktree, sudo, a write outside the worktree, a command
 you cannot read in full, or one chained to another (&&, ;, |, a subshell) unless every part is allowed. For those,
 either answer with the reject_once option, when the task can go on without it, or leave the ask alone; both times tell
 the person which task asked for what. If you are not sure, leave it for the person.

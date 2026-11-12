@@ -372,6 +372,9 @@ export class TasksPanel {
       let r;
       try { r = await cleanupTask(exec, { root: project.root, t }); } catch (e) { r = { ok: false, error: String(e?.message ?? e).split("\n").pop() }; }
       if (r.ok) update(project.key, (l) => patch(l, t.id, (x) => (x.run?.merged ? { run: { ...x.run, merged: { ...x.run.merged, removed: true } } } : {})));
+      // Its chat's tab works in the folder that is gone now: it is closed too (the chat's saved state is kept), unless it works.
+      const s = r.ok ? taskState(t) : null;
+      if (s?.tab && !BUSY_STATES.includes(s.state)) run("tab.close", { id: s.tab, confirmed: true });
       this.busy.delete(t.id);
       if (this.project?.key === project.key) {
         this.said = r.ok ? { bad: false, text: `Removed the worktree of ${t.run.branch}${r.branch === "deleted" ? " and deleted the branch." : `. The branch was kept: ${r.why}`}` } : { bad: true, text: r.error };

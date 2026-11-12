@@ -124,7 +124,7 @@ assert.match(text, /herdr-app do 'ht3-panels\.coord:\{"op":"add"/); assert.match
 const shown = [...text.matchAll(/ht3-panels\.coord:(\{.*\})'/g)].map((m) => parseOp(m[1]));
 assert.deepEqual(shown.map((o) => o.error ?? o.op), ["add", "run", "done", "ready", "delete", "answer"]);
 assert.match(text, /mark it ready/); assert.match(text, /Merge commits them first/); assert.match(text, /never commit, merge or push/);
-assert.equal(VERSION, 4); assert.match(text, /## Approvals/); assert.match(text, /select\(\.ask\)/); assert.match(text, /Task updates \(from Herdr\):/);
+assert.equal(VERSION, 5); assert.match(text, /## Approvals/); assert.match(text, /select\(\.ask\)/); assert.match(text, /Task updates \(from Herdr\):/);
 assert.deepEqual(JSON.parse(SETTINGS).permissions.allow, ["Bash(herdr-app do:*)", "Bash(jq:*)", "Bash(cat:*)", "Bash(git -C * status*)", "Bash(git -C * diff*)", "Bash(git -C * log*)"]);
 
 // ---- Round 24: commit and merge ----
