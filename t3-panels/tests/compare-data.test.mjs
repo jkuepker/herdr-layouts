@@ -113,7 +113,7 @@ await test("a merge git refuses before it starts leaves nothing to abort", async
 });
 await test("removeWorktreeFolder removes the folder, keeps the branch, refuses a dirty one", async () => {
   put(wa, "dirt.txt", "x\n");
-  await assert.rejects(() => removeWorktreeFolder(exec, { main, folder: wa }), /untracked|contains|modified/i);
+  await assert.rejects(() => removeWorktreeFolder(exec, { main, folder: wa }), /aren't committed/);
   assert.equal(existsSync(wa), true);
   rmSync(`${wa}/dirt.txt`);
   await removeWorktreeFolder(exec, { main, folder: wa });

@@ -314,7 +314,7 @@ export class CompareDialog {
         .child(iconButton(k, "cmp-refresh", "refresh-cw", (cx) => this.load(cx), { tip: "Look again" }))
         .child(iconButton(k, "cmp-close", "x", () => closeOverlay(this.overlay), { tip: "Close" })))
       .when(!!this.picking, (el) => el.child(this.pickerBody(k)))
-      .when(!this.picking, (el) => el.child(h_flex().id("ht3-cmp-body").flex_1().min_h(0).px(12).py(12).gap(12)
+      .when(!this.picking, (el) => el.child(h_flex().id("ht3-cmp-body").flex_1().min_h(0).items_stretch().px(12).py(12).gap(12)
         .when(!!this.error && !d, (e) => e.child(div().flex_1().px(12).py(8).text_size(13).line_height("18px").text_color(k.destructiveText).child(this.error)))
         .when(!this.error || !!d, (e) => e.child(this.column(k, "a")).child(this.column(k, "b")))))
       .children(q ? [v_flex().id("ht3-cmp-ask").flex_none().px(20).py(10).gap(8).border_t(1).border_color(alpha(q.danger ? k.destructive : k.border, q.danger ? 0.6 : 1)).bg(q.danger ? alpha(k.destructive, 0.06) : alpha(k.card, 0.5))

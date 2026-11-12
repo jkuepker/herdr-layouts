@@ -152,5 +152,10 @@ export async function keepSide(exec, { main, folder, on }) {
 // --force, so a folder with uncommitted changes stays and git's last line is the error. The branch is not touched.
 export async function removeWorktreeFolder(exec, { main, folder, on }) {
   const r = await exec("git", ["worktree", "remove", folder], { cwd: main, on: on ?? undefined, timeout: 60000 });
-  if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim().split("\n").pop().replace(/^fatal: /, "") || "git worktree remove failed");
+  if (r.code !== 0) {
+    const msg = (r.stderr || r.stdout).trim().split("\n").pop().replace(/^fatal: /, "");
+    // git's own wording points at --force, which this never uses.
+    if (/modified or untracked files/.test(msg)) throw new Error(`${folder} has changes that aren't committed, so it was kept. Commit or discard them there, then remove it.`);
+    throw new Error(msg || "git worktree remove failed");
+  }
 }
