@@ -9,7 +9,7 @@
 
 import { div, list, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, TextView, Scrollbar } from "gpui-base";
-import { run, openOverlay, appHome, home, exec, layout, settings, shared, setShared, notify, focused, panes } from "herdr";
+import { run, openOverlay, appHome, home, exec, hc, layout, settings, spaces, shared, setShared, notify, focused, panes } from "herdr";
 import { MOD, tokens, alpha, icon, agentMark, button, iconButton, control, badge, workLine, divider, shortPath } from "./look.js";
 import { AcpSource, AGENTS, detect, argvOf, forkChat, agentOf, chatLike, askOnce } from "./agent-acp.js";
 import { TermSource } from "./agent-term.js";
@@ -23,6 +23,7 @@ import { addNotice, toMarkdown, subagents } from "./transcript.js";
 import { touchesSecret } from "./secrets.js";
 import { repoOf } from "./launcher.js";
 import { ServerWatch, serversStrip } from "./servers.js";
+import { terminalBlock, pickTerminal, TERM_LINES } from "./termctx.js";
 
 const LANE = 736; // --chat-content-max-width: 46rem
 const DRAW_EVERY_MS = 80;
@@ -93,6 +94,7 @@ const LOCAL_COMMANDS = [
   { name: "copy", description: "Copy this thread as Markdown", local: true },
   { name: "branch", description: "New chat on this branch: same agent, same folder", local: true },
   { name: "terminal", description: "This chat's terminal, under the chat: open, hide or show it", local: true },
+  { name: "termout", description: "A terminal's last output into the message box (/termout 80: that many lines)", local: true },
   { name: "send-new", description: "Send this draft as a new chat, and go there", local: true },
   { name: "send-background", description: "Send this draft as a new chat, and stay here", local: true },
   { name: "usage", description: "Tokens and context: this chat and every agent", local: true },
@@ -359,6 +361,7 @@ export class ChatPanel {
       if (this.reporter?.tab) this.reporter.seen();
       else this.report();
       this.termSync(cx);
+      this.termSeen();
     });
   }
 
@@ -620,6 +623,7 @@ export class ChatPanel {
       if (item.name === "copy") this.copyThread(cx);
       if (item.name === "branch" && this.source.kind === "acp" && this.source.state) chatLike(this.source.state);
       if (item.name === "terminal") this.toggleTerminal(cx);
+      if (item.name === "termout") this.termOut(cx);
       if (item.name === "title") this.retitle(cx);
       if (item.name === "send-new" || item.name === "send-background") return this.sendNew(cx, item.name === "send-background");
       // With a draft before "/stash" it is parked; alone, the parked drafts open.
@@ -746,6 +750,8 @@ export class ChatPanel {
     if (c.startsWith("chat:")) this.chatKey(cx, c.slice(5));
     // term: the chat's own terminal under it (toggleTerminal); the layout's key.
     if (c === "term") this.toggleTerminal(cx);
+    // termout and termout:<n>: "/termout", the last n (40) lines of a terminal into the message box (termOut).
+    if (c === "termout" || /^termout:\d+$/.test(c)) this.termOut(cx, Number(c.slice(8)) || TERM_LINES);
     // send:new and send:background: the draft becomes the first message of a new chat (sendNew); the layout's keys.
     if (c === "send:new" || c === "send:background") this.sendNew(cx, c === "send:background");
     // new:here is "/branch": a new chat with this one's agent in this one's folder (its branch).
@@ -852,6 +858,9 @@ export class ChatPanel {
     // "/rename New name" is T3's own: it names the thread, nothing is sent ("/rename" alone: its first message again).
     const naming = /^\/rename(?:\s+([\s\S]*))?$/.exec(text);
     if (naming) { this.input.set_value(""); this.hasText = false; this.trig = null; return this.rename(cx, naming[1] ?? ""); }
+    // "/termout" and "/termout 80": a terminal's output goes into the box, nothing is sent.
+    const termout = /^\/termout(?:\s+(\d+))?$/.exec(text);
+    if (termout) { this.input.set_value(""); this.hasText = false; this.trig = null; return this.termOut(cx, Number(termout[1]) || TERM_LINES); }
     // "/clear" is T3's own as well (ComposerFreshSession): the next message starts a fresh session. Not on an agent that is a terminal's.
     if (/^\/clear$/.test(text) && this.source.kind === "acp") { this.input.set_value(""); this.hasText = false; this.trig = null; return this.armFresh(cx, true); }
     if ((!text && !files.length) || !v?.alive) return;
@@ -1302,6 +1311,35 @@ export class ChatPanel {
     const cwd = this.view?.cwd ?? this.source.state?.cwd ?? this.p?.cwd;
     run("pane.focus", { pane });
     run("terminal.open", { place: "down", name: "Terminal", ...(cwd ? { folder: cwd } : {}) });
+  }
+
+  // T3's onAddTerminalContext: a terminal's last `lines` lines (what `hc read` has, history too) onto the end of the
+  // message box as a fenced block (termctx.js), so the agent sees a failing command's output without a paste. The
+  // terminal is the chat's own, else one in its space (pickTerminal); the one last focused, which the timer notes
+  // (termSeen). With none, or nothing but a prompt in it, the chat says so and the box stays as it is.
+  termOut(cx, lines = TERM_LINES) {
+    const tab = this.reporter?.tab ?? focused()?.tab, tabs = spaces().find((s) => s.tabs.some((t) => t.id === tab))?.tabs.map((t) => t.id) ?? [];
+    const t = pickTerminal(panes(), { tab, tabs, recent: this.termRecent });
+    if (!t) return this.termSay(cx, "No terminal in this tab or space to take output from.");
+    const name = t.title || t.terminal;
+    cx.spawn(async (cx) => {
+      const r = await hc(["read", t.terminal, "--lines", String(Math.max(lines, 1) + 200)]).catch(() => null);
+      const block = r?.code === 0 ? terminalBlock(r.stdout, { name, lines }) : null;
+      if (block) this.quoteIn(cx, block);
+      else this.termSay(cx, r?.code === 0 ? `Terminal ${name} has no output.` : `Couldn't read terminal ${name}.`);
+    });
+  }
+  // A short notice in the thread (a toast for an agent that is a terminal's, which has no thread of its own to write in).
+  termSay(cx, text) {
+    const t = this.source?.kind === "acp" ? this.source.state?.transcript : null;
+    if (t) { addNotice(t, text, "info"); this.source.changed?.(cx, true); }
+    else notify({ title: text, level: "info", timeout: 3000 });
+    cx.notify();
+  }
+  // The terminal that had the keyboard last, for termOut. From the chat's timer.
+  termSeen() {
+    const f = focused();
+    if (f?.terminal) this.termRecent = f.terminal;
   }
 
   // The chat's terminal outlives its tab as a note: the chat keeps that it has one (kept `term`, by chat id), and a
