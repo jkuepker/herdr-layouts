@@ -10,6 +10,7 @@ import { AcpConnection, PROTOCOL_VERSION } from "./acp.js";
 import { addUsage } from "./token-budget.js";
 import { FORCE_STOP_NOTE } from "./forcestop.js";
 import { isChange, noteChange } from "./lastchange.js";
+import { requestOf } from "./approve-rules.js";
 import { emptyTranscript, addUser, addNotice, applyUpdate, endTurn, trim, handoffText, noteLimit, limitText } from "./transcript.js";
 
 export class ChatSession {
@@ -19,6 +20,7 @@ export class ChatSession {
     this.kill = kill;
     this.changed = changed;
     this.pendingPermission = null; // resolve function for the agent's request
+    this.tools = new Map(); // tool call id -> { kind, rawInput, title }, as the agent told them
     this.stopAsked = null; // when Stop was asked of the running turn (ms), until that turn ends (forcestop.js)
     this.state = {
       v: 1,
@@ -30,7 +32,7 @@ export class ChatSession {
       machine,
       sessionId: null,
       configOptions: [],
-      permission: null, // {title, options: [{optionId, name, kind}]}
+      permission: null, // {title, options: [{optionId, name, kind}], request: {kind, command, titled}}
       error: null,
       transcript: emptyTranscript(),
     };
@@ -56,6 +58,8 @@ export class ChatSession {
         const u = params.update;
         // The chat already shows what it sent; an agent echoing it mid-turn would double it.
         if (u.sessionUpdate === "user_message_chunk" && state.status === "working") return;
+        // What a tool call runs, kept by its id for the approval it may ask for (approve-rules.js requestOf).
+        if ((u.sessionUpdate === "tool_call" || u.sessionUpdate === "tool_call_update") && u.toolCallId) this.tools.set(u.toolCallId, { ...this.tools.get(u.toolCallId), ...(u.kind != null ? { kind: u.kind } : {}), ...(u.rawInput != null ? { rawInput: u.rawInput } : {}), ...(u.title != null ? { title: u.title } : {}) });
         if (u.sessionUpdate === "config_option_update" && u.configOptions) state.configOptions = u.configOptions;
         else if (u.sessionUpdate === "current_mode_update") this.setCurrent("mode", u.currentModeId);
         else applyUpdate(state.transcript, u);
@@ -70,6 +74,7 @@ export class ChatSession {
           state.permission = {
             title: params.toolCall?.title ?? "The agent asks to continue",
             options: (params.options ?? []).map((o) => ({ optionId: o.optionId, name: o.name, kind: o.kind })),
+            request: requestOf(params.toolCall, this.tools.get(params.toolCall?.toolCallId)), // { kind, command, titled }: what approval rules match
           };
           this.changed(false);
         });

@@ -14,7 +14,7 @@
 // the coordinator's task notices, `ui:taskcap:<n>` sets how many tasks run at once (0: no cap; alone: the next choice), `ui:awake` flips Keep the Mac awake, `ui:prwatch` flips PR watch, `ui:close` closes.
 
 import { div, image } from "gpui-kit";
-import { v_flex, h_flex, InputState, Input } from "gpui-base";
+import { v_flex, h_flex, InputState, Input, TextareaState, Textarea } from "gpui-base";
 import { closeOverlay } from "herdr";
 import { activeSpace } from "./side.js";
 import { projectOf, scriptsOf, setScripts, toggleSetup, detectProject } from "./scripts.js";
@@ -25,6 +25,7 @@ import { EDITORS, editors } from "./menus.js";
 import { enabledAgents, coordinatorNotify, prefs, agentOn, modelsOf, knownModels, editorOn, sideStartsHidden, firstAgent, setPref, settingsFile, followUp, checkpointsOn, toastsOn, soundsOn, keepAwakeOn, prWatchOn, diffHidesWhitespace, commitStyle, COMMIT_STYLES, mdPreviewDefault, chatTokenBudget, taskMaxRunning } from "./settings.js";
 import { cleanCap, capLabel, nextCap } from "./taskqueue.js";
 import { BUDGETS, budgetLabel, nextBudget } from "./token-budget.js";
+import { parseRules, globalRules, projectRules, withRules } from "./approve-rules.js";
 
 // Auto-settle's idle choices, as ht3-inbox autosettle.js AUTO_DAYS (a mod doesn't import another's files); 0 = off.
 const AUTO_DAYS = [0, 1, 3, 7, 14];
@@ -63,7 +64,15 @@ export class Settings {
       f.on("change", (_e, cx) => cx.notify());
       f.on("submit", (_e, cx) => { this.saveRoleModel(role); cx.notify(); });
     }
-    cx.spawn(async (cx) => { this.project = await projectOf(activeSpace()).catch(() => null); cx.notify(); });
+    // Approval rules (approve-rules.js): the global list and the shown project's, one pattern a line, saved with Save.
+    this.rules = {};
+    for (const scope of ["global", "project"]) {
+      const f = this.rules[scope] = TextareaState.new({ placeholder: scope === "global" ? "git status" : "npm test" });
+      f.set_auto_grow(2, 8);
+      f.on("change", (_e, cx) => cx.notify());
+    }
+    this.rules.global.set_value(globalRules(prefs().approveRules).join("\n"));
+    cx.spawn(async (cx) => { this.project = await projectOf(activeSpace()).catch(() => null); if (this.project) this.rules.project.set_value(projectRules(prefs().approveRules, this.project.key).join("\n")); cx.notify(); });
     cx.spawn(async (cx) => {
       this.found = (await detect(null)).found;
       // Each installed editor's own icon (menus.js).
@@ -114,10 +123,34 @@ export class Settings {
     // ui:import opens (again: closes) the list of commands the folder's package.json, Makefile and justfile have that
     // the project doesn't have as scripts yet; ui:import:<n> adds the nth (from 0), ui:import:all adds them all.
     else if (what === "import") this.importScripts(rest, cx);
+    // ui:allowrules:global=["git status"] and ui:allowrules:project=[…] set an approval rules list (approve-rules.js), as its Save does.
+    else if (what === "allowrules") { const at = rest.indexOf("="), scope = rest.slice(0, Math.max(at, 0)); try { if (this.rules[scope]) { this.rules[scope].set_value(parseRules(JSON.parse(rest.slice(at + 1))).join("\n")); this.saveRules(scope); } } catch {} }
     // ui:skip folds Agents and Editors away (and back), so a script's picture shows the sections under them.
     else if (what === "skip") this.skip = !this.skip;
     else if (what === "close") closeOverlay(this.overlay);
     cx.notify();
+  }
+
+  // An approval rules list as kept, and as its text area has it now.
+  keptRules(scope) {
+    return scope === "global" ? globalRules(prefs().approveRules) : this.project ? projectRules(prefs().approveRules, this.project.key) : [];
+  }
+  saveRules(scope) {
+    if (scope === "project" && !this.project) return;
+    const list = parseRules(this.rules[scope].value());
+    setPref("approveRules", withRules(prefs().approveRules, scope === "global" ? null : this.project.key, list));
+    this.rules[scope].set_value(list.join("\n"));
+  }
+  rulesRow(k, scope, title, about) {
+    const dirty = JSON.stringify(parseRules(this.rules[scope].value())) !== JSON.stringify(this.keptRules(scope));
+    return v_flex().px(12).py(8).gap(6)
+      .child(h_flex().gap(12).items_center()
+        .child(icon("shield").size(16).flex_none().text_color(k.muted))
+        .child(v_flex().flex_1().min_w(0).gap(2)
+          .child(div().text_size(14).font_medium().truncate().child(title))
+          .child(div().text_size(12).line_height("16px").text_color(k.muted).child(about)))
+        .child(button(k, `set-allowrules-${scope}`, dirty ? "Save" : "Saved", () => this.saveRules(scope), { size: "sm", variant: dirty ? "default" : "outline", disabled: !dirty })))
+      .child(div().ml(28).px(8).py(4).rounded(8).border(1).border_color(k.input).text_size(13).font_family(k.mono).child(Textarea.new(this.rules[scope])));
   }
 
   flipAgent(id) {
@@ -335,6 +368,9 @@ export class Settings {
           this.row(icon("git-pull-request").size(16).flex_none().text_color(k.muted), "Watch pull requests", "A chat whose branch has an open GitHub pull request gets a message when checks fail on it or someone comments, so its agent can fix them. Looked at every two minutes, through gh.",
             [this.toggle(k, "set-prwatch", prWatchOn(), "Watch pull requests", () => setPref("prWatch", prWatchOn() ? undefined : true))])]))
         // Auto-settle: the Inbox reads these three (ht3-inbox autosettle.js), all off by default.
+        .child(this.section(k, "Approval rules", "Commands a chat's agent may run without asking: one pattern a line. A pattern allows the command it spells, and that command with more arguments (npm test also allows npm test -- foo). A command that chains, pipes, redirects or substitutes (; & | < > ` $( ) is only allowed by a pattern that spells it whole. A rule answers Allow once, and the thread says so; edits and other tools always ask.",
+          [this.rulesRow(k, "global", "In every project", "Allowed in every chat."),
+          ...(this.project ? [this.rulesRow(k, "project", `In ${this.project.name}`, `Allowed in chats of ${shortPath(this.project.root)}${this.project.on ? ` on ${this.project.on}` : ""}, the project of the shown space, and its worktrees. An approval's “Always allow … here” adds to this list.`)] : [])]))
         .child(this.section(k, "Inbox", "Chats the Inbox settles by itself. New work brings a settled chat back.",
           [this.row(icon("clock").size(16).flex_none().text_color(k.muted), "Settle chats idle for", "A chat with no activity for this long is settled. Never one that works, waits for you, is in front, pinned or snoozed.",
             [button(k, "set-autosettle-days", autoDaysLabel(autoDays()), () => setPref("autoSettleDays", AUTO_DAYS[(AUTO_DAYS.indexOf(autoDays()) + 1) % AUTO_DAYS.length] || undefined), { size: "sm", variant: "outline", tip: "Click to change: Off, 1 day, 3 days, 7 days, 14 days" })]),

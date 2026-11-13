@@ -16,7 +16,7 @@ import { TermSource } from "./agent-term.js";
 import { Reporter, agentName, paneIds, tabIds, placeNew, markCut, clearCut } from "./report.js";
 import { fileIcon } from "./fileicons.js";
 import { snapshot, turnStat, undoRevert, prune, chatsWithRefs, safe as refName, KEEP } from "./checkpoint.js";
-import { checkpointsOn, followUp, limitModels, rememberModels, prefs, chatTokenBudget, autoResumeLimit } from "./settings.js";
+import { checkpointsOn, followUp, limitModels, rememberModels, prefs, setPref, chatTokenBudget, autoResumeLimit } from "./settings.js";
 import { resumePlan, clockText, RESUME_TEXT } from "./limit-resume.js";
 import { budgetNotice } from "./token-budget.js";
 import { stopState, stopAge, FORCE_STOP_TITLE, FORCE_STOP_DETAIL } from "./forcestop.js";
@@ -29,6 +29,7 @@ import { ServerWatch, serversStrip } from "./servers.js";
 import { terminalBlock, pickTerminal, TERM_LINES } from "./termctx.js";
 import { chatRefBlock, lastAgentText, chatTitle, otherChats, matchChat } from "./chatref.js";
 import { chatLinker, chatIdOf } from "./chatlinks.js";
+import { decide, rulesFor, projectRules, addRule, removeRule, offerOf, ruleNotice } from "./approve-rules.js";
 
 const LANE = 736; // --chat-content-max-width: 46rem
 const DRAW_EVERY_MS = 80;
@@ -786,6 +787,17 @@ export class ChatPanel {
       const yes = p.options.find((o) => o.kind === "allow_once") ?? p.options.find((o) => o.kind?.startsWith("allow"));
       if (yes) { addNotice(this.source.state.transcript, `Allowed automatically: ${p.title}`); return this.source.answer(cx, yes.optionId); }
     }
+    // An approval rule of the project (approve-rules.js): a plain command a pattern matches is allowed once, and the thread says so.
+    if (p && p !== this.ruled) {
+      const key = this.ruleKey();
+      // The project isn't known yet (stashKey asks Git once): looked at again when it is.
+      if (!key) { if (!this.ruleWait) { this.ruleWait = true; cx.timer.after(200, (cx) => { this.ruleWait = false; if (!this.closed) this.asking(cx); }); } }
+      else {
+        this.ruled = p; // each approval is looked at once: a rule added later doesn't answer one already shown
+        const d = decide(p, rulesFor(prefs().approveRules, key));
+        if (d) { addNotice(this.source.state.transcript, ruleNotice(d)); this.source.answer(cx, d.optionId); return cx.notify(); }
+      }
+    }
     if (!tab) return;
     const all = shared(`${MOD}.asks`) ?? {}, mine = p ? { id: this.askId, title: p.title, options: p.options } : null;
     if (JSON.stringify(all[tab] ?? null) !== JSON.stringify(mine)) {
@@ -831,6 +843,10 @@ export class ChatPanel {
     // allow-always: the drawer's "Always allow this session"; ask-again turns it off.
     if (c === "allow-always") this.allowAlways(cx);
     if (c === "ask-again") this.allow(false);
+    // allowrule:add:<pattern>, allowrule:remove:<pattern>, allowrule:list: the approval rules of this chat's project
+    // (approve-rules.js), for the chat in the focused tab. allow-here is the approval card's "Always allow `<cmd>` here".
+    if (c.startsWith("allowrule:")) this.ruleCommand(c.slice(10));
+    if (c === "allow-here") this.allowHere(cx);
     // stash parks the draft, stash:menu opens or closes the parked drafts, unstash:<n> brings the nth back, stash:drop:<n> deletes it.
     if (c === "stash") this.stash(cx);
     if (c === "stash:menu") this.picker = this.picker === "__stash" ? null : "__stash";
@@ -2210,6 +2226,43 @@ export class ChatPanel {
     cx.notify();
   }
 
+  // The project the chat's approval rules are kept under (stashKey's: the repository's main checkout, else the
+  // folder), or null until Git has said which it is.
+  ruleKey() {
+    const st = this.source?.state, cwd = st?.cwd;
+    if (!cwd) return null;
+    if (this.projectAt?.cwd !== cwd) {
+      this.projectAt = { cwd, root: null };
+      const at = this.projectAt;
+      repoOf(cwd, st.machine ?? null).then((root) => { at.root = root ?? cwd; }, () => { at.root = cwd; });
+    }
+    return this.projectAt.root ? `${st.machine ?? ""}:${this.projectAt.root}` : null;
+  }
+
+  // "Always allow `<cmd>` here": the asked command becomes a rule of the project, and this approval is allowed once.
+  allowHere(cx) {
+    const p = this.source.state?.permission, cmd = offerOf(p), key = this.ruleKey();
+    if (!cmd || !key) return;
+    setPref("approveRules", addRule(prefs().approveRules, key, cmd));
+    addNotice(this.source.state.transcript, `Added the approval rule \`${cmd}\` for this project`);
+    this.source.answer(cx, p.options.find((o) => o.kind === "allow_once").optionId);
+    cx.notify();
+  }
+
+  // `ht3-panels.allowrule:add:<pattern>`, `remove:<pattern>`, `list`: the focused chat's project rules. Each says what
+  // the list is now, in a toast and in the app's log.
+  ruleCommand(rest) {
+    const tab = this.reporter?.tab, now = focused()?.tab;
+    if (tab && now && tab !== now) return;
+    const key = this.ruleKey(), at = rest.indexOf(":"), verb = at < 0 ? rest : rest.slice(0, at), pattern = at < 0 ? "" : rest.slice(at + 1).trim();
+    const say = (title, body, level = "info") => { console.log(`ht3-panels.allowrule ${key ?? "(no project)"}: ${title}: ${body}`); notify({ title, body, level, timeout: 4000 }); };
+    if (!key) return say("Approval rules", "This chat's project isn't known yet.", "warning");
+    if ((verb === "add" || verb === "remove") && pattern) setPref("approveRules", (verb === "add" ? addRule : removeRule)(prefs().approveRules, key, pattern));
+    else if (verb !== "list") return say("Approval rules", "allowrule:add:<pattern>, allowrule:remove:<pattern> or allowrule:list", "warning");
+    const mine = projectRules(prefs().approveRules, key), global = rulesFor(prefs().approveRules, key).filter((r) => r.scope === "global").map((r) => r.pattern);
+    say(`Approval rules: ${key.replace(/^:/, "")}`, `${mine.length ? mine.join(" | ") : "none"}${global.length ? `; global: ${global.join(" | ")}` : ""}`);
+  }
+
   // Fork this thread into a new chat tab: all of it, or up to and with item `upto`.
   fork(cx, upto = null) {
     if (this.source.kind !== "acp" || !this.chatId) return;
@@ -2582,6 +2635,7 @@ export class ChatPanel {
         .child(div().text_size(14).line_height("23px").child(p.title))
         .when(!!p.note, (el) => el.child(div().text_size(12).text_color(k.muted).child(p.note)))
         .child(h_flex().gap(6).flex_wrap().justify_end()
+          .when(this.source.kind === "acp" && !!offerOf(p) && !!this.ruleKey(), (el) => el.child(button(k, "perm-allow-here", `Always allow \`${offerOf(p).length > 40 ? `${offerOf(p).slice(0, 39)}…` : offerOf(p)}\` here`, (cx) => this.allowHere(cx), { variant: "ghost-muted", tip: "Adds this command to the project's approval rules (Settings, Approval rules) and allows it once" })))
           .when(this.source.kind === "acp" && p.options.some((o) => o.kind?.startsWith("allow")), (el) => el.child(button(k, "perm-always-session", "Always allow this session", (cx) => this.allowAlways(cx), { variant: "ghost-muted" })))
           .children(p.options.map((o) =>
             button(k, `perm-${o.optionId}`, o.name, (cx) => this.source.answer(cx, o.optionId), { variant: o.kind?.startsWith("allow") ? "default" : "outline" }))));

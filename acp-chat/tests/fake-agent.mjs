@@ -1,5 +1,5 @@
 // A scripted ACP agent for the bridge tests: one model option, and a prompt that
-// starts with "tool" asks permission before "running" a tool; one that starts with
+// starts with "tool" asks permission before "running" a tool ("ask <command>": before running that command); one that starts with
 // "crash" asks and then exits without waiting for the answer. One that starts with
 // "limit" is refused for a usage limit that resets in a minute (FAKE_AGENT_LIMIT_SECONDS):
 // Claude Code's `_claude/rateLimit` with status "rejected", then the turn ends; "limit-error"
@@ -76,6 +76,24 @@ async function prompt(text) {
   if (limited) {
     limited = false;
     update({ sessionUpdate: "usage_update", used: 1000, size: 200000, _meta: { "_claude/rateLimit": { status: "allowed", rateLimitType: "five_hour" } } });
+  }
+  // "ask <command>": asks to run that command, as an agent's shell tool does (kind "execute", the command in rawInput),
+  // with an "always" option beside "allow once". FAKE_AGENT_ASK_BARE=1 leaves the raw input out: only the title has it.
+  if (text.startsWith("ask ")) {
+    const command = text.slice(4).trim(), bare = process.env.FAKE_AGENT_ASK_BARE === "1";
+    update({ sessionUpdate: "tool_call", toolCallId: "t2", title: `\`${command}\``, kind: "execute", status: "pending", ...(bare ? {} : { rawInput: { command, description: "Run a command" } }) });
+    const answer = await conn.request("session/request_permission", {
+      sessionId: sid,
+      toolCall: { toolCallId: "t2", title: `\`${command}\``, ...(bare ? {} : { rawInput: { command } }) },
+      options: [
+        { optionId: "always", name: "Always allow", kind: "allow_always" },
+        { optionId: "yes", name: "Allow", kind: "allow_once" },
+        { optionId: "no", name: "Reject", kind: "reject_once" },
+      ],
+    });
+    const picked = answer.outcome.outcome === "selected" ? answer.outcome.optionId : "cancelled";
+    update({ sessionUpdate: "tool_call_update", toolCallId: "t2", status: picked === "yes" || picked === "always" ? "completed" : "failed", content: [{ type: "content", content: { type: "text", text: `answered: ${picked}` } }] });
+    if (cancelled) return { stopReason: "cancelled" };
   }
   if (text.startsWith("tool")) {
     update({ sessionUpdate: "tool_call", toolCallId: "t1", title: "Edit notes.md", kind: "edit", status: "pending" });

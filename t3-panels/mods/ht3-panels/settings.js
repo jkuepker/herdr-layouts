@@ -36,6 +36,8 @@
 //   banner's "Resume at …" button arms it for that one stop.
 // - prWatch (false): a chat whose branch has an open GitHub pull request gets a message when checks failed on it or someone
 //   commented (prwatch.js; looked at every two minutes through gh).
+// - approveRules (absent: none): { "global": ["git status"], "projects": { "<machine or empty>:<project folder>": ["npm test"] } },
+//   the command patterns a chat's approvals are answered "allow once" for by themselves (approve-rules.js).
 // - sidePanelHiddenInNewSpaces (false): a space shown for the first time starts with the side panel hidden.
 // Anything left out is its default; unknown keys are kept as they are.
 
