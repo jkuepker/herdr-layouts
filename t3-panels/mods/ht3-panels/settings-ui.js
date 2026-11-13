@@ -25,6 +25,11 @@ import { EDITORS, editors } from "./menus.js";
 import { enabledAgents, coordinatorNotify, prefs, agentOn, modelsOf, knownModels, editorOn, sideStartsHidden, firstAgent, setPref, settingsFile, followUp, checkpointsOn, toastsOn, soundsOn, keepAwakeOn, diffHidesWhitespace, commitStyle, COMMIT_STYLES, mdPreviewDefault, chatTokenBudget } from "./settings.js";
 import { BUDGETS, budgetLabel, nextBudget } from "./token-budget.js";
 
+// Auto-settle's idle choices, as ht3-inbox autosettle.js AUTO_DAYS (a mod doesn't import another's files); 0 = off.
+const AUTO_DAYS = [0, 1, 3, 7, 14];
+const autoDays = () => { const n = Math.floor(Number(prefs().autoSettleDays)); return n > 0 ? n : 0; };
+const autoDaysLabel = (n) => (!n ? "Off" : n === 1 ? "1 day" : `${n} days`);
+
 export const SETTINGS_SIZE = { width: 640, height: 680 };
 
 export class Settings {
@@ -83,6 +88,10 @@ export class Settings {
     else if (what === "taskmodel" || what === "coordmodel") { const role = what === "taskmodel" ? "task" : "coordinator"; this.roleModel[role].set_value(rest); this.saveRoleModel(role); }
     else if (what === "coordnotify") setPref("coordinatorNotify", coordinatorNotify() ? false : undefined);
     else if (what === "awake") setPref("keepAwake", keepAwakeOn() ? undefined : true);
+    // Auto-settle (ht3-inbox autosettle.js): ui:autosettle:<days> (0 off; alone: the next choice), ui:autosettle-merge and ui:autosettle-keep flip the two switches.
+    else if (what === "autosettle") { const n = rest === "" ? AUTO_DAYS[(AUTO_DAYS.indexOf(autoDays()) + 1) % AUTO_DAYS.length] : AUTO_DAYS.find((d) => String(d) === rest); if (n != null) setPref("autoSettleDays", n || undefined); }
+    else if (what === "autosettle-merge") setPref("autoSettleOnMerge", prefs().autoSettleOnMerge === true ? undefined : true);
+    else if (what === "autosettle-keep") setPref("autoSettleKeepOpenPr", prefs().autoSettleKeepOpenPr === true ? undefined : true);
     else if (what === "sounds") setPref("sounds", soundsOn() ? undefined : true);
     // ui:script:<name>=<command> adds a project script (same name: replaces it), ui:unscript:<n> removes the nth.
     else if (what === "script") { const at = rest.indexOf("="); if (at > 0) { this.scriptName.set_value(rest.slice(0, at)); this.scriptCommand.set_value(rest.slice(at + 1)); this.addScript(); } }
@@ -314,6 +323,14 @@ export class Settings {
             [this.toggle(k, "set-sounds", soundsOn(), "Sound", () => setPref("sounds", soundsOn() ? undefined : true))]),
           this.row(icon("monitor").size(16).flex_none().text_color(k.muted), "Keep the Mac awake while agents work", "While a chat or task agent is working, the Mac doesn't go to sleep (caffeinate). The display may still turn off.",
             [this.toggle(k, "set-awake", keepAwakeOn(), "Keep the Mac awake while agents work", () => setPref("keepAwake", keepAwakeOn() ? undefined : true))])]))
+        // Auto-settle: the Inbox reads these three (ht3-inbox autosettle.js), all off by default.
+        .child(this.section(k, "Inbox", "Chats the Inbox settles by itself. New work brings a settled chat back.",
+          [this.row(icon("clock").size(16).flex_none().text_color(k.muted), "Settle chats idle for", "A chat with no activity for this long is settled. Never one that works, waits for you, is in front, pinned or snoozed.",
+            [button(k, "set-autosettle-days", autoDaysLabel(autoDays()), () => setPref("autoSettleDays", AUTO_DAYS[(AUTO_DAYS.indexOf(autoDays()) + 1) % AUTO_DAYS.length] || undefined), { size: "sm", variant: "outline", tip: "Click to change: Off, 1 day, 3 days, 7 days, 14 days" })]),
+          this.row(icon("git-merge").size(16).flex_none().text_color(k.muted), "Settle chats whose pull request merged", "A task's chat is settled once its branch was merged (Tasks' Merge), unless it went on working after that.",
+            [this.toggle(k, "set-autosettle-merge", prefs().autoSettleOnMerge === true, "Settle chats whose pull request merged", () => setPref("autoSettleOnMerge", prefs().autoSettleOnMerge === true ? undefined : true))]),
+          this.row(icon("git-pull-request").size(16).flex_none().text_color(k.muted), "Keep chats with an open pull request", "Idleness doesn't settle a task's chat whose branch isn't merged yet. A merge still does.",
+            [this.toggle(k, "set-autosettle-keep", prefs().autoSettleKeepOpenPr === true, "Keep chats with an open pull request", () => setPref("autoSettleKeepOpenPr", prefs().autoSettleKeepOpenPr === true ? undefined : true))])]))
         .child(this.section(k, "Tasks and coordinator", "The agents that work on tasks (Tasks' Run with agent, the coordinator's tasks) and the coordinator chat that plans and starts them.",
           [...this.roleRows(k, "task", "Task", "the agent New chat comes up with"),
             ...this.roleRows(k, "coordinator", "Coordinator", "Claude Code, else the agent New chat comes up with"),
