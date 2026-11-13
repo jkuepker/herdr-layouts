@@ -32,6 +32,8 @@
 // - keepAwake (false): while a chat or task agent works, the Mac doesn't go to sleep (caffeinate, macOS only; report.js keepAwake).
 // - autoResumeLimit (false): a chat stopped by a usage limit sends "continue" when the limit resets (limit-resume.js); off, its
 //   banner's "Resume at …" button arms it for that one stop.
+// - approveRules (absent: none): { "global": ["git status"], "projects": { "<machine or empty>:<project folder>": ["npm test"] } },
+//   the command patterns a chat's approvals are answered "allow once" for by themselves (approve-rules.js).
 // - sidePanelHiddenInNewSpaces (false): a space shown for the first time starts with the side panel hidden.
 // Anything left out is its default; unknown keys are kept as they are.
 
