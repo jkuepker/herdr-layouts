@@ -299,11 +299,13 @@ export default class Inbox extends View {
     // A space that's gone reads as all; its id stays stored, so the scope returns with it.
     const scope = this.scope.filter((id) => sp.some((s) => s.id === id));
     const term = new Map(all.map((k) => [k.address, k]));
-    // A kept card stands in for its terminal: its labels and turn, read as an agent's are.
+    // A kept card stands in for its terminal: its labels and turn, read as an agent's are, and when its chat says it
+    // last changed (`changed_ms`; row-model.js since).
     const cardLabels = shared("ht3-inbox.cards") ?? {};
     for (const a of every) {
       if (/** @type {any} */ (a).mod && a.program?.keep) term.set(a.address, { address: a.address, state: "live", status: a.status,
-        labels: cardLabels[/** @type {any} */ (a).pane] ?? {}, turn: shared(`${/** @type {any} */ (a).mod}.turns`)?.[a.tab] ?? 0 });
+        labels: cardLabels[/** @type {any} */ (a).pane] ?? {}, turn: shared(`${/** @type {any} */ (a).mod}.turns`)?.[a.tab] ?? 0,
+        changed_ms: shared(`${/** @type {any} */ (a).mod}.changed`)?.[a.tab] ?? 0 });
     }
     // The key reports an explicit return, a kept card's too (its stand-in is in `term`); a label cleared by Undo, even in another window, keeps its place.
     const unsettled = shared("ht3-inbox.unsettled") ?? {};

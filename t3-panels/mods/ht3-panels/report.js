@@ -6,6 +6,8 @@
 // - shared("ht3-panels.titles")[tab]: its name there: the chat's first message, as a T3 thread's title, and the agent's until there is one;
 // - shared("ht3-panels.programs")[tab]: { name, icon, tint, branch, machine }, that tab's agent and where it works, over the program above;
 // - shared("ht3-panels.turns")[tab]: how many turns have ended (new work brings a settled chat back).
+// - shared("ht3-panels.changed")[tab]: when it last really changed (ms; lastchange.js): a message, a reply, a turn's end,
+//   not a redraw. It is kept in the chat's saved state, so the Inbox knows how long a chat has been idle after a restart too.
 // - shared("ht3-panels.asks")[tab]: { id, title, options: [{ optionId, name, kind }] } while its agent waits for an approval,
 //   and shared("ht3-panels.answers")[tab]: { ask, optionId, always } is how a list answers it (chat.js takes it);
 // - shared("ht3-panels.unread")[tab]: set by the card's menu ("Mark unread"); the chat takes it and says "done" again
@@ -18,9 +20,10 @@ import { MOD } from "./look.js";
 import { agentOf } from "./agent-acp.js";
 import { toastsOn, soundsOn, keepAwakeOn } from "./settings.js";
 import { awakeDue, AWAKE_EVERY_MS, AWAKE_SECONDS } from "./awake.js";
+import { toldChange } from "./lastchange.js";
 
 const STATUS = `${MOD}.status`, TITLES = `${MOD}.titles`, PROGRAM = `${MOD}.program`, PLACES = `${MOD}.places`, PROGRAMS = `${MOD}.programs`, TURNS = `${MOD}.turns`;
-const UNREAD = `${MOD}.unread`;
+const UNREAD = `${MOD}.unread`, CHANGED = `${MOD}.changed`;
 const PROGRAM_IS = { name: "Chat", icon: `mods/${MOD}/icons/message-square.svg`, tint: true, inbox: true, keep: true };
 // Tabs whose chat runs in this app now. Module scope is one per source version, shared by copies.
 const LIVE = new Set();
@@ -80,7 +83,7 @@ export function prune() {
   const tabs = tabsNow();
   // Nothing listed yet (the app is starting) is not everything closed.
   if (!tabs.size) return;
-  for (const key of [STATUS, TITLES, PROGRAMS, TURNS, `${MOD}.asks`, `${MOD}.answers`, UNREAD]) {
+  for (const key of [STATUS, TITLES, PROGRAMS, TURNS, `${MOD}.asks`, `${MOD}.answers`, UNREAD, CHANGED]) {
     const all = shared(key) ?? {}, kept = Object.fromEntries(Object.entries(all).filter(([tab]) => tabs.has(tab)));
     put(key, kept);
   }
@@ -132,6 +135,7 @@ export class Reporter {
     this.program = null;
     this.where = null; // { branch, machine }: where its agent works
     this.turn = null;
+    this.at = null; // when it last really changed, as told to the lists (lastchange.js)
     this.drawnAt = 0;
     this.fresh = false; // its place was taken in this run, not known from before: a pane new to the chat (a reopened chat's)
     MOUNTED.set(chat, (MOUNTED.get(chat) ?? 0) + 1);
@@ -173,10 +177,11 @@ export class Reporter {
     // An unread "done" from before a reload stays unread.
     if (this.word == null && shared(STATUS)?.[tab] === "done") this.word = "done";
     this.turn = shared(TURNS)?.[tab] ?? 0;
+    this.at ??= shared(CHANGED)?.[tab] ?? null;
   }
 
   drop(tab) {
-    for (const key of [STATUS, TITLES, PROGRAMS, TURNS, `${MOD}.asks`, `${MOD}.answers`, UNREAD]) {
+    for (const key of [STATUS, TITLES, PROGRAMS, TURNS, `${MOD}.asks`, `${MOD}.answers`, UNREAD, CHANGED]) {
       const all = { ...(shared(key) ?? {}) };
       delete all[tab];
       put(key, all);
@@ -192,7 +197,8 @@ export class Reporter {
   // `said`: what the agent calls itself. Done is a turn that ended, or an agent that stopped, while nobody
   // looked; it is idle once they look.
   // `thread`: the chat's first message, its title in the lists as in T3; until there is one, the agent's name.
-  // `more`: { cwd, machine, crumb }: its folder (the side panel follows it) and its header, which the pane header draws.
+  // `more`: { cwd, machine, crumb }: its folder (the side panel follows it) and its header, which the pane header draws;
+  // `at`: when the chat last really changed (lastchange.js lastChangeOf).
   update(status, argv, said, thread, more = {}) {
     const name = agentName(argv, said), a = agentOf(argv);
     this.agent = a ?? null;
@@ -206,6 +212,7 @@ export class Reporter {
       : was === "working" || was === "blocked" ? (this.looking() ? "idle" : "done")
       : was === "done" && (this.held || !this.looking()) ? "done" : "idle";
     if (busy) this.held = false;
+    this.at = toldChange(this.at, more.at, { busy, turned: was !== this.word }) || null;
     // With the tab named after something else, both: "Pi · fix login".
     const tab = spaces().flatMap((s) => s.tabs).find((c) => c.id === this.tab);
     const line = String(thread ?? "").trim().split("\n")[0];
@@ -270,6 +277,7 @@ export class Reporter {
     put(TITLES, { ...(shared(TITLES) ?? {}), [this.tab]: this.title });
     put(PROGRAMS, { ...(shared(PROGRAMS) ?? {}), [this.tab]: this.program });
     put(TURNS, { ...(shared(TURNS) ?? {}), [this.tab]: this.turn ?? 0 });
+    if (this.at) put(CHANGED, { ...(shared(CHANGED) ?? {}), [this.tab]: this.at });
     // Closed tabs' words go when any chat speaks.
     if (allRead()) {
       const tabs = tabsNow(), status = shared(STATUS) ?? {};

@@ -20,7 +20,8 @@ export function trackInboxRows(previous, list, all, now) {
   let dirty = false;
   for (const { address, s, turn, excluded, first, changed, returned } of list) {
     if (returned) {
-      changes[address] = { s, at: now, turn, start: null };
+      // `back`: brought back by hand, so this time counts over the chat's own last change (inboxFields since).
+      changes[address] = { s, at: now, turn, start: null, back: true };
       dirty = true;
       continue;
     }
@@ -95,12 +96,19 @@ export function inboxFields({ every, all, term, pending, changed, now, inView })
   const mark = (a) => changed[a.address];
   // Seen changing, then; before that, the core's time of its last change. terminals() only has that as of
   // the app's start (status_ms isn't updated live), so it serves only until we see a change ourselves.
-  const since = (a) => mark(a)?.at || term.get(a.address)?.status_ms || 0;
+  const seen = (a) => mark(a)?.at || term.get(a.address)?.status_ms || 0;
+  // A chat card says itself when it last really changed (`changed_ms`: shared "ht3-panels.changed", kept with the chat
+  // over restarts), which what we saw can't: a card first seen is dated now, so every start of the Inbox would begin
+  // its idle time again. One brought back by hand counts from then.
+  const since = (a) => {
+    const told = Number(term.get(a.address)?.changed_ms) || 0;
+    return !told ? seen(a) : mark(a)?.back ? Math.max(told, mark(a).at) : told;
+  };
   // Just stopped: it shows its state now but keeps its Working place until the grace is out.
   const lingering = (a) => mark(a)?.s === "idle" && mark(a).start != null;
   // T3's Working shelf.
   const working = (a) => running(a) || lingering(a);
-  const begun = (a) => (lingering(a) ? mark(a).start || term.get(a.address)?.status_ms || 0 : since(a));
+  const begun = (a) => (lingering(a) ? mark(a).start || term.get(a.address)?.status_ms || 0 : seen(a));
   // Working since: seen set going; before that, its own report, or for a parent waiting on sub-agents the
   // longest-working one's.
   const started = (a) => mark(a)?.at || (a.status === "working" ? term.get(a.address)?.status_ms
