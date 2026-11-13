@@ -26,9 +26,11 @@ export function lastChangeOf(state) {
 }
 
 // What a chat tells the lists: `at` as it is while it rests; while its turn runs, the time the turn began or last
-// paused for the person (`had`, kept until the word changes), so each chunk of a reply isn't a shared write.
+// paused for the person (`had`, kept until the word changes), moved on at most once a minute (STEP), so each chunk
+// of a reply isn't a shared write but a turn that keeps working still looks alive (the Inbox's "quiet N min").
+export const STEP = 60_000;
 export function toldChange(had, at, { busy, turned }) {
   const now = Number(at) || 0;
   if (!now) return had ?? 0;
-  return busy && !turned && had ? had : Math.max(now, had ?? 0);
+  return busy && !turned && had && now - had < STEP ? had : Math.max(now, had ?? 0);
 }

@@ -36,6 +36,9 @@ assert.equal(toldChange(null, 500, { busy: false, turned: false }), 500);
 assert.equal(toldChange(500, 800, { busy: true, turned: true }), 800);
 assert.equal(toldChange(800, 950, { busy: true, turned: false }), 800);
 assert.equal(toldChange(null, 950, { busy: true, turned: false }), 950);
+// A turn still working moves the told time on once a minute.
+assert.equal(toldChange(800, 800 + 59_999, { busy: true, turned: false }), 800);
+assert.equal(toldChange(800, 800 + 60_000, { busy: true, turned: false }), 60_800);
 assert.equal(toldChange(800, 990, { busy: false, turned: true }), 990);
 assert.equal(toldChange(800, 600, { busy: false, turned: false }), 800);
 assert.equal(toldChange(800, 0, { busy: false, turned: false }), 800);

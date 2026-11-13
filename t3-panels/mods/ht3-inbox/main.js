@@ -16,7 +16,7 @@
 import { View } from "gpui-kit";
 import { v_flex, InputState } from "gpui-base";
 import { agents, terminals, panes, spaces, focused, hc, notify, theme, shared, setShared, setAgentOrder, props, nextCommand, settings, layout, window } from "herdr";
-import { modStatus, programOf } from "./name.js";
+import { modStatus, programOf, namer } from "./name.js";
 import { descendants, ownStatus, stillSettled } from "./tree.js";
 import { stopsInit, stopsEnd, focusRoot, enter } from "./focus.js";
 import { FIRST, trackInboxRows, inboxInView, inboxFields, inboxSections } from "./row-model.js";
@@ -25,6 +25,7 @@ import { inboxMatches, pickInboxSpace } from "./filter.js";
 import { readChips, cardFacts, chipOptions, activeChips, chipsOn, chipKeeps, toggleChip, clearChips } from "./chips.js";
 import { inboxActions } from "./actions.js";
 import { autoPrefs, autoMinutes, taskPrStates, autoSettleIds, autoPassDue } from "./autosettle.js";
+import { quietMinutes, quietCommand, quietPass } from "./quiet.js";
 import { inboxDrag } from "./drag.js";
 import { inboxRowView } from "./row-view.js";
 import { inboxList } from "./list-view.js";
@@ -86,7 +87,10 @@ export default class Inbox extends View {
     });
     // The cards' times (5m, 2h) move on by the minute, as T3's do.
     // The auto-settle pass (autosettle.js) rides on it.
-    cx.timer.every(60000, (cx) => { this.autoSettle(cx); cx.notify(); });
+    // The quiet-agent pass (quiet.js) too: its toast doesn't wait for a draw.
+    cx.timer.every(60000, (cx) => { this.autoSettle(cx); this.quietCheck(this.compute(cx, false)); cx.notify(); });
+    // `quiet:minutes=<n>`'s limit, for scripted checks: this copy's, gone with a restart (null: the settings').
+    this.quietOver = null;
     // `autosettle:minutes=<n>`'s idle time, for scripted checks: this copy's, gone with a restart.
     this.autoMinutes = null;
     // `ht3-inbox.clear`: Clear's confirm dialog. `ht3-inbox.settle`: the settle key standalone (keys.json); the layout binds `ht3-tabs.settle`, which the tab bar handles even when hidden.
@@ -123,6 +127,9 @@ export default class Inbox extends View {
         // time n minutes whatever the settings say (0 or nothing: back to them), for scripted checks.
         else if (command === "autosettle:now") this.autoSettle(cx, true);
         else if (command.startsWith("autosettle:minutes=")) this.autoMinutes = autoMinutes(command.slice(19));
+        // `ht3-inbox.quiet:minutes=<n>` flags a working chat with no change for n minutes whatever the settings say,
+        // `ht3-inbox.quiet:off` (or minutes=0) flags none, `ht3-inbox.quiet:minutes=` goes back to the settings; the pass runs at once.
+        else if (command.startsWith("quiet:")) { this.quietOver = quietCommand(command.slice(6)); this.quietCheck(this.compute(cx, false)); }
         cx.notify();
       }
     });
@@ -182,6 +189,18 @@ export default class Inbox extends View {
       this.setLabel("settled", a.address, `${now}:${term.get(a.address)?.turn ?? 0}`, cx);
       // A snooze that ran out ends with it, as Settle's does.
       if (napUntil(a)) wake(a, cx);
+    }
+  }
+
+  // Quiet agents (quiet.js): the toast for each chat that just went quiet, once a spell over all copies (the spells
+  // told are shared), with a click that goes to the chat. The card's flag is drawn from the same pass (row-view.js).
+  quietCheck({ hush }) {
+    if (hush.dirty) setShared("ht3-inbox.quiet", hush.told);
+    if (!hush.toast.length) return;
+    const title = namer();
+    for (const { a, minutes } of hush.toast) {
+      notify({ title: `Quiet for ${minutes} min`, body: `${title(a)} is working but hasn't changed for ${minutes} min.`, level: "warning",
+        action: { name: "pane.focus", args: { pane: a.pane } } });
     }
   }
 
@@ -365,7 +384,13 @@ export default class Inbox extends View {
     }
     if (publish) this.publishRows([...pinned, ...out, ...busyRows, ...napRows, ...rows], inView,
       [...pinned, ...out, ...work, ...nap, ...put]);
-    return { now, all, ps, sp, f, every, inView, scope, term, pins, wake, chips, ...fields, ...sections };
+    // Quiet agents (quiet.js): chats only, as only they say when they last changed; a snoozed one is flagged but not told.
+    const panesNow = new Set(ps.map((p) => `pane:${p.pane}`));
+    const hush = quietPass(every.filter((a) => /** @type {any} */ (a).mod && a.program?.keep).map((a) => ({ id: a.address, a, working: running(a),
+      changed: Number(term.get(a.address)?.changed_ms) || 0, muted: hidden(a) })),
+      this.quietOver ?? quietMinutes(shared("ht3-panels.settings")), now, shared("ht3-inbox.quiet") ?? {}, (id) => panesNow.has(id));
+    const quiet = (a) => hush.quiet[a.address] ?? 0;
+    return { now, all, ps, sp, f, every, inView, scope, term, pins, wake, chips, hush, quiet, ...fields, ...sections };
   }
 
   publishRows(rows, view, ordered = rows) {
@@ -385,6 +410,7 @@ export default class Inbox extends View {
     if (props()?.customSnooze) return customView(this);
     const t = theme(), zoom = Number(settings()?.zoom) || 1;
     const model = this.compute(cx, false);
+    this.quietCheck(model);
     const actions = inboxActions(this, model);
     const drag = inboxDrag(this, t, model, actions);
     this.publishRows([...model.pinned, ...model.out, ...model.busyRows, ...model.napRows, ...drag.rows], model.inView,

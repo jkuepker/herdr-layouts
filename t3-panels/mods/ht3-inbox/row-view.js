@@ -65,7 +65,9 @@ function left(ms, now) {
 }
 
 export function inboxRowView(view, t, model, actions, drag) {
-  const { now, ps, sp, state, viewing, running, woke, busy, pins, started, since, wake, hidden, napUntil, settledAt } = model;
+  const { now, ps, sp, state, viewing, running, woke, busy, pins, started, since, wake, hidden, napUntil, settledAt, quiet: quietMin } = model;
+  // T3's warning text colour (its index.css), which Herdr themes have no name for: a quiet agent's flag (quiet.js).
+  const warn = settings()?.dark !== false ? "#ffba00" : "#bb4d00";
   const { settle, unsettle, away, pick } = actions;
   const { dragging, plan, verb, badge, swept, row, open, sweepFrom, justDropped } = drag;
   const zoom = Number(settings()?.zoom) || 1;
@@ -150,7 +152,10 @@ export function inboxRowView(view, t, model, actions, drag) {
     const acting = offer || napOffer, quiet = acting && (menu || !woke(a));
     // Lifted, or marked by a sweep, the corner says what letting go will do instead.
     // The state or the time, faded out on hover where Settle fades in over it, as T3's corner.
-    const word = running(a)
+    // Working with no change for the set minutes (quiet.js), it says that instead: "quiet 15 min".
+    const word = running(a) && quietMin(a)
+        ? pill(warn, svg("mods/workspace-chrome/spinner.svg").size(16).flex_none().text_color(warn).spin(900), "quiet", `${quietMin(a)} min`)
+        : running(a)
         ? pill(t.working, svg("mods/workspace-chrome/spinner.svg").size(16).flex_none().text_color(t.working).spin(900),
           "Working", started(a) > 0 && started(a) < Infinity ? took(started(a), now) : null)
         : st === "blocked"
@@ -193,7 +198,7 @@ export function inboxRowView(view, t, model, actions, drag) {
     // T3's card row: 10 and 8 in, rounded-md, its lines 20, 20 and 16 tall, 4 and 2 apart: 78 with all three.
     const base = v_flex().id(`${ghost ? "ghost-" : ""}card-${a.address}`).px(10).py(8).flex_none().rounded(6)
       // A working row recedes until it's hovered or in view, as T3's.
-      .when(!ghost, (el) => el.opacity(running(a) && !woke(a) && !on && !over ? 0.7 : 1).transition("opacity", MOTION));
+      .when(!ghost, (el) => el.opacity(running(a) && !quietMin(a) && !woke(a) && !on && !over ? 0.7 : 1).transition("opacity", MOTION));
     return (ghost ? base : row(base, a, details).role("button").accessibility_label(title(a)).on_hover(hover(a))
       .on_click(open(a)).on_size_change((size) => { if (!ask) view.cardH = size.height / zoom; })
       // T3's thread menu, drawn by the panels mod: Rename thread, Settle.

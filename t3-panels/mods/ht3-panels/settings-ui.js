@@ -29,6 +29,10 @@ import { BUDGETS, budgetLabel, nextBudget } from "./token-budget.js";
 const AUTO_DAYS = [0, 1, 3, 7, 14];
 const autoDays = () => { const n = Math.floor(Number(prefs().autoSettleDays)); return n > 0 ? n : 0; };
 const autoDaysLabel = (n) => (!n ? "Off" : n === 1 ? "1 day" : `${n} days`);
+// The Inbox's quiet flag, as ht3-inbox quiet.js (15 min by default; 0 = off).
+const QUIET = [0, 5, 15, 30, 60];
+const quietMin = () => { const v = prefs().quietMinutes; if (v == null || v === "") return 15; const n = Math.floor(Number(v)); return Number.isFinite(n) ? Math.max(0, n) : 15; };
+const nextQuiet = () => { const n = QUIET[(QUIET.indexOf(quietMin()) + 1) % QUIET.length]; return n === 15 ? undefined : n; };
 
 export const SETTINGS_SIZE = { width: 640, height: 680 };
 
@@ -91,6 +95,8 @@ export class Settings {
     // Auto-settle (ht3-inbox autosettle.js): ui:autosettle:<days> (0 off; alone: the next choice), ui:autosettle-merge and ui:autosettle-keep flip the two switches.
     else if (what === "autosettle") { const n = rest === "" ? AUTO_DAYS[(AUTO_DAYS.indexOf(autoDays()) + 1) % AUTO_DAYS.length] : AUTO_DAYS.find((d) => String(d) === rest); if (n != null) setPref("autoSettleDays", n || undefined); }
     else if (what === "autosettle-merge") setPref("autoSettleOnMerge", prefs().autoSettleOnMerge === true ? undefined : true);
+    else if (what === "quiet") setPref("quietMinutes", nextQuiet());
+    else if (what === "settle-advance") setPref("settleAdvance", prefs().settleAdvance === false ? undefined : false);
     else if (what === "autosettle-keep") setPref("autoSettleKeepOpenPr", prefs().autoSettleKeepOpenPr === true ? undefined : true);
     else if (what === "sounds") setPref("sounds", soundsOn() ? undefined : true);
     // ui:script:<name>=<command> adds a project script (same name: replaces it), ui:unscript:<n> removes the nth.
@@ -330,7 +336,11 @@ export class Settings {
           this.row(icon("git-merge").size(16).flex_none().text_color(k.muted), "Settle chats whose pull request merged", "A task's chat is settled once its branch was merged (Tasks' Merge), unless it went on working after that.",
             [this.toggle(k, "set-autosettle-merge", prefs().autoSettleOnMerge === true, "Settle chats whose pull request merged", () => setPref("autoSettleOnMerge", prefs().autoSettleOnMerge === true ? undefined : true))]),
           this.row(icon("git-pull-request").size(16).flex_none().text_color(k.muted), "Keep chats with an open pull request", "Idleness doesn't settle a task's chat whose branch isn't merged yet. A merge still does.",
-            [this.toggle(k, "set-autosettle-keep", prefs().autoSettleKeepOpenPr === true, "Keep chats with an open pull request", () => setPref("autoSettleKeepOpenPr", prefs().autoSettleKeepOpenPr === true ? undefined : true))])]))
+            [this.toggle(k, "set-autosettle-keep", prefs().autoSettleKeepOpenPr === true, "Keep chats with an open pull request", () => setPref("autoSettleKeepOpenPr", prefs().autoSettleKeepOpenPr === true ? undefined : true))]),
+          this.row(icon("triangle-alert").size(16).flex_none().text_color(k.muted), "Flag a working chat that goes quiet after", "Its card says \"quiet N min\" and one notice comes when a working chat hasn't changed for this long: it may be stuck.",
+            [button(k, "set-quiet", quietMin() ? `${quietMin()} min` : "Off", () => setPref("quietMinutes", nextQuiet()), { size: "sm", variant: "outline", tip: "Click to change: Off, 5, 15, 30, 60 min" })]),
+          this.row(icon("chevron-right").size(16).flex_none().text_color(k.muted), "Settling the chat in view goes to the next", "Settle moves you on to the next card instead of staying on the settled chat.",
+            [this.toggle(k, "set-settle-advance", prefs().settleAdvance !== false, "Settling the chat in view goes to the next", () => setPref("settleAdvance", prefs().settleAdvance === false ? undefined : false))])]))
         .child(this.section(k, "Tasks and coordinator", "The agents that work on tasks (Tasks' Run with agent, the coordinator's tasks) and the coordinator chat that plans and starts them.",
           [...this.roleRows(k, "task", "Task", "the agent New chat comes up with"),
             ...this.roleRows(k, "coordinator", "Coordinator", "Claude Code, else the agent New chat comes up with"),
