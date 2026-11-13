@@ -24,6 +24,7 @@ import { DAY, initCustom, customView } from "./snooze.js";
 import { inboxMatches, pickInboxSpace } from "./filter.js";
 import { readChips, cardFacts, chipOptions, activeChips, chipsOn, chipKeeps, toggleChip, clearChips } from "./chips.js";
 import { inboxActions } from "./actions.js";
+import { autoPrefs, autoMinutes, taskPrStates, autoSettleIds, autoPassDue } from "./autosettle.js";
 import { inboxDrag } from "./drag.js";
 import { inboxRowView } from "./row-view.js";
 import { inboxList } from "./list-view.js";
@@ -84,7 +85,10 @@ export default class Inbox extends View {
       if (this.ticking) { this.ticking = false; cx.notify(); }
     });
     // The cards' times (5m, 2h) move on by the minute, as T3's do.
-    cx.timer.every(60000, (cx) => cx.notify());
+    // The auto-settle pass (autosettle.js) rides on it.
+    cx.timer.every(60000, (cx) => { this.autoSettle(cx); cx.notify(); });
+    // `autosettle:minutes=<n>`'s idle time, for scripted checks: this copy's, gone with a restart.
+    this.autoMinutes = null;
     // `ht3-inbox.clear`: Clear's confirm dialog. `ht3-inbox.settle`: the settle key standalone (keys.json); the layout binds `ht3-tabs.settle`, which the tab bar handles even when hidden.
     // `ht3-inbox.custom-snooze:<address>:<wake ms>`: the Custom dialog, a copy of this mod with no loop of its own.
     // `ht3-inbox.undo`: the undo notice's Undo, when the sidebar footer (ht3-chrome) shows it.
@@ -115,6 +119,10 @@ export default class Inbox extends View {
         }
         // pane.go onto this list (mod.json's "focusable"): the keyboard starts at Search.
         else if (command === "focus") enter(this, cx, "inbox-search");
+        // `ht3-inbox.autosettle:now` runs one auto-settle pass at once; `ht3-inbox.autosettle:minutes=<n>` makes the idle
+        // time n minutes whatever the settings say (0 or nothing: back to them), for scripted checks.
+        else if (command === "autosettle:now") this.autoSettle(cx, true);
+        else if (command.startsWith("autosettle:minutes=")) this.autoMinutes = autoMinutes(command.slice(19));
         cx.notify();
       }
     });
@@ -154,6 +162,27 @@ export default class Inbox extends View {
     for (const key of Object.keys(this.changed)) if (!(key in changes)) delete this.changed[key];
     Object.assign(this.changed, changes);
     localStorage.setItem("changes", JSON.stringify(this.changed));
+  }
+
+  // Auto-settle (autosettle.js): settles the chats the settings say, by the label Settle writes, with no notice to
+  // undo. Every copy has the minute tick, so when a pass last ran is shared and only the first copy in a minute runs one.
+  autoSettle(cx, forced = false) {
+    const prefs = autoPrefs(shared("ht3-panels.settings"));
+    if (!prefs.days && !prefs.onMerge && this.autoMinutes == null) return;
+    const now = Date.now();
+    if (!autoPassDue(shared("ht3-inbox.autosettle"), now, forced)) return;
+    setShared("ht3-inbox.autosettle", now);
+    const { every, term, pins, wake, viewing, settledAt, busy, state, napUntil, since } = this.compute(cx, false);
+    const prs = taskPrStates(shared("ht3-panels.tasks"), shared("ht3-panels.places"));
+    const ids = autoSettleIds(every.map((a) => ({ id: a.address, lastActivity: since(a), busy: busy(a), waiting: state(a) === "blocked",
+      settled: Boolean(settledAt(a)), snoozedUntil: napUntil(a), pinned: pins.includes(a.address), inFront: viewing(a),
+      closes: Boolean(/** @type {any} */ (a).mod && !a.program?.keep), pr: prs.get(a.address)?.pr ?? null, prAt: prs.get(a.address)?.at ?? 0 })),
+      prefs, now, this.autoMinutes);
+    for (const a of every.filter((a) => ids.includes(a.address))) {
+      this.setLabel("settled", a.address, `${now}:${term.get(a.address)?.turn ?? 0}`, cx);
+      // A snooze that ran out ends with it, as Settle's does.
+      if (napUntil(a)) wake(a, cx);
+    }
   }
 
   // Shown at once; the label comes back from the core a moment later.
