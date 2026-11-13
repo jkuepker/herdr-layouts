@@ -5,13 +5,20 @@
 // (dash-widgets.js's terminal widget uses it to find a command's last line.)
 export const PROMPT = /^\S{0,40}\s?[%$#❯>]\s*$|^[^\s]*@[^\s]*.*[%$#❯]\s*$|[-\u{F0000}-\u{FFFFD}]/u;
 export const TERM_LINES = 40;
+// Icon-font glyphs (Nerd Font, Powerline): a prompt's decoration, not output.
+const GLYPH = /[\u{E000}-\u{F8FF}\u{F0000}-\u{FFFFD}]/u;
+// The top row of a two-line prompt: glyphs and a right-aligned part (a wide run of spaces). Not output.
+const promptRow = (l) => GLYPH.test(l) && / {8,}/.test(l);
+// A command line under such a prompt: its prompt sign is a glyph; it reads as "$ <command>".
+const commandLine = (l) => l.replace(/^\s*[\u{E000}-\u{F8FF}\u{F0000}-\u{FFFFD}]\s+(?=\S)/u, "$ ");
 
 // `text` as "Terminal `name` (last N lines):" and a fenced block: no blank or prompt-only lines at its end (or at its
-// start), at most `lines` lines (the last ones). The fence is longer than any run of backticks in the output. null for
+// start), no decorated prompt rows inside, a glyph prompt sign before a command as "$", at most `lines` lines (the last ones). The fence is longer than any run of backticks in the output. null for
 // no output.
 export function terminalBlock(text, { name = "terminal", lines = TERM_LINES } = {}) {
   const rows = String(text ?? "").replace(/\r\n?/g, "\n").split("\n").map((l) => l.replace(/\s+$/, ""));
   while (rows.length && (!rows.at(-1) || PROMPT.test(rows.at(-1)))) rows.pop();
+  for (let i = rows.length - 1; i >= 0; i--) if (promptRow(rows[i])) rows.splice(i, 1); else rows[i] = commandLine(rows[i]);
   while (rows.length && !rows[0]) rows.shift();
   if (!rows.length) return null;
   const max = Math.max(1, Math.floor(Number(lines)) || TERM_LINES), kept = rows.slice(-max);

@@ -38,4 +38,10 @@ assert.equal(pickTerminal([p("p1", "tabA", null), p("p4", "tabB", "t3"), p("p6",
 assert.equal(pickTerminal(ps.filter((x) => x.tab !== "tabA"), { tab: "tabA", tabs: ["tabA", "tabB"], recent: "t3" }).terminal, "t3");
 assert.equal(pickTerminal([p("p1", "tabA", null), p("p5", "tabC", "t9")], { tab: "tabA", tabs: ["tabA", "tabB"] }), null);
 assert.equal(pickTerminal([], { tab: "tabA" }), null);
+// A two-line Nerd Font prompt: its top row goes, its glyph sign reads "$".
+{
+  const t = " \u{F0035} josef\u{F0065}endor  …/coordinator                     \u{F0954} 8:08:09 PM 100% \n\u{F0142} echo a; echo b\na\nb\n \u{F0035} josef  …/x                    \u{F0954} 8:08:16 PM\n\u{F0142} ";
+  assert.equal(terminalBlock(t, { name: "t1" }), "Terminal `t1` (last 3 lines):\n```text\n$ echo a; echo b\na\nb\n```");
+}
+
 console.log("termctx: ok");
