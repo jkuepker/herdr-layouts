@@ -24,10 +24,11 @@ import { Diagrams, isMermaid, fit, INSTALL } from "./mermaid.js";
 import { addNotice, toMarkdown, subagents } from "./transcript.js";
 import { lastChangeOf } from "./lastchange.js";
 import { touchesSecret } from "./secrets.js";
-import { repoOf, savedChats } from "./launcher.js";
+import { repoOf, savedChats, openChat } from "./launcher.js";
 import { ServerWatch, serversStrip } from "./servers.js";
 import { terminalBlock, pickTerminal, TERM_LINES } from "./termctx.js";
 import { chatRefBlock, lastAgentText, chatTitle, otherChats, matchChat } from "./chatref.js";
+import { chatLinker, chatIdOf } from "./chatlinks.js";
 
 const LANE = 736; // --chat-content-max-width: 46rem
 const DRAW_EVERY_MS = 80;
@@ -265,6 +266,30 @@ async function chatRefInfo(id) {
     .then((r) => (r.code === 0 ? r.stdout.trim() : null), () => null) : null;
   return { id, title: chatTitle(id, items, shared(`${MOD}.named`) ?? {}), agent: agentName(s.agentArgv ?? [], s.agentInfo?.title ?? s.agentInfo?.name), cwd: s.cwd ?? null, branch: branch && branch !== "HEAD" ? branch : null,
     path, lastReply: lastAgentText(items), machine: s.machine ?? null };
+}
+
+// The chats a message's links can point at (chatlinks.js), as its linker: every chat saved here (the folders under
+// chats, listed once a minute at most) and the open ones (shared ht3-panels.places), each with the name that is known
+// without reading it: its rename (.named), else its tab's title (.titles). The same linker until that set changes.
+const LINKS = { ids: [], at: 0, busy: false, made: 0, key: "{}", linker: chatLinker({}) };
+function chatLinks(cx) {
+  const now = Date.now();
+  if (!LINKS.busy && now - LINKS.at > 60000) {
+    LINKS.busy = true;
+    cx.spawn(async (cx) => {
+      const r = await exec("/bin/ls", [`${appHome()}/data/${MOD}/chats`], { timeout: 8000 }).catch(() => null);
+      Object.assign(LINKS, { ids: String(r?.stdout ?? "").split("\n").filter(Boolean), at: Date.now(), busy: false, made: 0 });
+      cx.notify();
+    });
+  }
+  if (now - LINKS.made > 2000) {
+    const places = shared(`${MOD}.places`) ?? {}, named = shared(`${MOD}.named`) ?? {}, titles = shared(`${MOD}.titles`) ?? {}, known = {};
+    for (const id of [...LINKS.ids, ...Object.keys(places)]) known[id] = String(named[id] || titles[places[id]?.tab] || "");
+    const key = JSON.stringify(known);
+    if (key !== LINKS.key) Object.assign(LINKS, { key, linker: chatLinker(known) });
+    LINKS.made = now;
+  }
+  return LINKS.linker;
 }
 
 export class ChatPanel {
@@ -1265,6 +1290,7 @@ export class ChatPanel {
 
   render(cx) {
     const k = tokens();
+    this.linker = chatLinks(cx); // what the rows' chat links are found with (linked)
     // A chat learns which pane is its own by being drawn in it (report.js).
     if (this.reporter && !this.reporter.tab && !this.placing) {
       this.placing = true;
@@ -1450,6 +1476,52 @@ export class ChatPanel {
       if (block) this.quoteIn(cx, block);
       else this.termSay(cx, `The chat "${info.title}" has said nothing yet${info.machine ? ` that is saved here (it runs on ${info.machine})` : ""}.`);
     });
+  }
+  // Chat links (chatlinks.js): text in a message that names another chat (what "/chatref" writes,
+  // `[name](herdr-chat://<id>)`; a bare herdr-chat://<id>; a chat's id; its transcript's path) is a link. A click shows
+  // that chat if it is open, else opens it again as Earlier chats does (launcher.js openChat; `ht3-panels.openchat:<id>`
+  // does the same). A chat that is gone gets a notice.
+  // A message's text for its row, worked out once per text and set of chats: as Markdown with the links in it
+  // ("md", a reply), or as parts ("parts", a sent message: [{ text, chat? }]).
+  linked(how, id, text) {
+    const memo = (this.linkMemo ??= new Map()), key = `${how}:${id}`, had = memo.get(key);
+    if (had && had.src === text && had.by === this.linker) return had.out;
+    const by = this.linker ?? chatLinker({}), out = how === "md" ? by.markdown(text) : by.parts(text);
+    if (memo.size > 600) memo.clear();
+    memo.set(key, { src: text, by: this.linker, out });
+    return out;
+  }
+  openChatLink(cx, id) {
+    if (id === this.chatId) return this.termSay(cx, "That is this chat.");
+    cx.spawn(async (cx) => {
+      if (await openChat(id).catch(() => null)) return;
+      LINKS.at = 0; // it may have been deleted since the chats were listed
+      this.termSay(cx, `Chat not found: ${String(id).slice(0, 80)}`);
+    });
+  }
+  // A link clicked in a reply: a chat link goes to its chat, any other address opens as it did (the system's handler).
+  followLink(cx, url) {
+    const id = chatIdOf(url);
+    if (id) this.openChatLink(cx, id);
+    else if (/^[a-z][\w+.-]*:/i.test(String(url ?? ""))) exec("open", [String(url)]).catch(() => {});
+  }
+  // A sent message's text. Its bubble is plain text, so with a chat link in it the words are laid out one by one (as
+  // marked does for find) and the link's are the ones to click; without one, the text as it is.
+  userText(k, m) {
+    const parts = this.linked("parts", m.id, m.text);
+    if (!parts.some((p) => p.chat)) return m.text;
+    const nb = (t) => t.replace(/ /g, "\u00a0").replace(/\t/g, "\u00a0\u00a0"), lines = [[]];
+    let n = 0;
+    for (const p of parts) {
+      p.text.split("\n").forEach((ln, i) => {
+        if (i) lines.push([]);
+        for (const w of ln.match(/\S+\s*|\s+/g) ?? []) lines[lines.length - 1].push(p.chat
+          ? div().id(`chatlink-${m.id}-${n++}`).flex_none().text_color(k.info).cursor_pointer().role("button").accessibility_label("Open this chat")
+            .on_click((_e, cx) => this.openChatLink(cx, p.chat)).child(nb(w))
+          : div().flex_none().child(nb(w)));
+      });
+    }
+    return v_flex().w_full().min_w(0).children(lines.map((kids) => (kids.length ? h_flex().w_full().min_w(0).flex_wrap().children(kids) : div().h(23))));
   }
   // The picker's panel: the other chats, a click on one is chatRef.
   chatRefPanel(k) {
@@ -2164,7 +2236,7 @@ export class ChatPanel {
             : h_flex().h(28).px(8).gap(6).flex_none().max_w(220).items_center().rounded(8).border(1).border_color(alpha(k.border, 0.8)).text_size(12)
               .child(fileIcon(a.name, k.dark, 14)).child(div().min_w(0).truncate().child(a.name)))))))
           .when(!!m.text, (el) => el.child(div().max_w("80%").min_w(0).p(12).rounded(16).bg(k.message).text_size(14).line_height("23px")
-            .when(m.pending, (e) => e.opacity(0.6)).child(this.hitAt.has(m.id) ? this.marked(k, m.text, this.hitAt.get(m.id)) : m.text)))
+            .when(m.pending, (e) => e.opacity(0.6)).child(this.hitAt.has(m.id) ? this.marked(k, m.text, this.hitAt.get(m.id)) : this.userText(k, m))))
           // It went into the turn that was running (the agent's steering extension).
           .when(!!m.steered, (el) => el.child(div().text_size(11).text_color(k.muted).child("Sent into the running turn"))), m.pending ? 16 : 2);
       }
@@ -2180,7 +2252,7 @@ export class ChatPanel {
               const low = p.toLowerCase();
               let c = 0;
               for (let i = low.indexOf(q); i >= 0; i = low.indexOf(q, i + q.length)) c++;
-              if (!c) return TextView.markdown(`md-${m.id}-p${j}`, p).selectable(true);
+              if (!c) return TextView.markdown(`md-${m.id}-p${j}`, m.code ? p : this.linked("md", `${m.id}-p${j}`, p)).selectable(true).on_link_click((url, cx) => this.followLink(cx, url));
               const first = at;
               at += c;
               return this.marked(k, p, first);
@@ -2203,7 +2275,8 @@ export class ChatPanel {
         }
         // A stretch of a reply: text you can select, or one code block (under its header row).
         return lane(div().px(4).py(m.code ? 0 : 2).text_size(14).line_height("23px")
-          .child(TextView.markdown(`md-${m.id}`, m.code ? "```" + m.lang + "\n" + m.text + "\n```" : m.text).selectable(true)), 4);
+          .child(TextView.markdown(`md-${m.id}`, m.code ? "```" + m.lang + "\n" + m.text + "\n```" : this.linked("md", m.id, m.text)).selectable(true)
+            .on_link_click((url, cx) => this.followLink(cx, url))), 4);
       case "codehead":
         // ChatMarkdown's code header: Copy at the right (the block names its language itself).
         return lane(h_flex().mx(4).mt(4).h(28).pl(12).pr(6).items_center().justify_end().rounded_t(8).border(1).border_color(alpha(k.border, 0.6)).bg(alpha(k.muted, 0.08))

@@ -1,6 +1,8 @@
 // Another chat as context for the message box (T3's ThreadContextChip / ThreadContextRecord: agent B builds on what
 // agent A did). Pure: chat.js reads the chats (saved state.json) and puts the block in the box.
 
+import { chatMdLink, validChatId } from "./chatlinks.js";
+
 export const REF_LINES = 30;
 const one = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
 const code = (s) => `\`${one(s).replace(/`/g, "'")}\``;
@@ -18,12 +20,13 @@ export function quoteLines(text, maxLines = REF_LINES) {
 //   From the chat "<title>" (<agent>, in `<cwd>` on `<branch>`). Its full transcript: `<path>`. Its last reply:
 //   > <the reply, its last maxLines lines>
 // A field that is missing is left out with its words. null when there is no title and no reply.
-export function chatRefBlock({ title, agent, cwd, branch, path, lastReply, maxLines = REF_LINES } = {}) {
-  const name = one(title).replace(/"/g, "'"), quote = quoteLines(lastReply, maxLines);
+// With the chat's `id` its name is a link that opens it (chatlinks.js): From the chat [<title>](herdr-chat://<id>) (…).
+export function chatRefBlock({ id, title, agent, cwd, branch, path, lastReply, maxLines = REF_LINES } = {}) {
+  const name = one(title).replace(/"/g, "'"), quote = quoteLines(lastReply, maxLines), linked = validChatId(id);
   if (!name && !quote) return null;
   const where = [one(cwd) && `in ${code(cwd)}`, one(branch) && `on ${code(branch)}`].filter(Boolean).join(" ");
   const inner = [one(agent) && one(agent) + (where ? "," : ""), where].filter(Boolean).join(" ");
-  const head = `${name ? `From the chat "${name}"` : "From another chat"}${inner ? ` (${inner})` : ""}.`
+  const head = `${linked ? (name ? `From the chat ${chatMdLink(name, id)}` : `From ${chatMdLink("another chat", id)}`) : name ? `From the chat "${name}"` : "From another chat"}${inner ? ` (${inner})` : ""}.`
     + `${one(path) ? ` Its full transcript: ${code(path)}.` : ""}${quote ? " Its last reply:" : ""}`;
   return quote ? `${head}\n${quote}` : head;
 }
