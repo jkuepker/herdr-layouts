@@ -8,6 +8,7 @@
 
 import { AcpConnection, PROTOCOL_VERSION } from "./acp.js";
 import { addUsage } from "./token-budget.js";
+import { FORCE_STOP_NOTE } from "./forcestop.js";
 import { emptyTranscript, addUser, addNotice, applyUpdate, endTurn, trim, handoffText, noteLimit, limitText } from "./transcript.js";
 
 export class ChatSession {
@@ -17,6 +18,7 @@ export class ChatSession {
     this.kill = kill;
     this.changed = changed;
     this.pendingPermission = null; // resolve function for the agent's request
+    this.stopAsked = null; // when Stop was asked of the running turn (ms), until that turn ends (forcestop.js)
     this.state = {
       v: 1,
       seq: 0,
@@ -174,6 +176,8 @@ export class ChatSession {
       case "steer":
         return this.steer(String(cmd.text ?? ""), Array.isArray(cmd.blocks) ? cmd.blocks : [], cmd.attachments ?? null);
       case "cancel":
+        // Noted once per turn: Force stop is offered when the turn hasn't ended a while after the first Stop.
+        if (this.state.status === "working") this.stopAsked ??= Date.now();
         this.answerPermission({ outcome: "cancelled" });
         this.conn.notify("session/cancel", { sessionId: this.state.sessionId });
         return;
@@ -230,6 +234,8 @@ export class ChatSession {
     this.conn.notify("session/cancel", { sessionId: state.sessionId });
     await this.inflight;
     this.steered = false;
+    // The turn was force stopped meanwhile: there is no agent to send it to.
+    if (this.forced) return;
     const lead = `[I stopped your last turn to add the message below. Take it into account and carry on with what you were doing.${partial ? ` This is what you had written when I stopped you:\n<interrupted-reply>\n${partial.slice(-2000)}\n</interrupted-reply>` : ""}]\n\n`;
     return this.prompt(text, blocks, attachments, { lead, after: true });
   }
@@ -259,6 +265,8 @@ export class ChatSession {
       const u = r?.usage;
       if (u && typeof u === "object") state.transcript.tokens = addUsage(state.transcript.tokens, u) ?? state.transcript.tokens;
     } catch (e) {
+      // A force stopped turn ends with the agent's exit: forceStop() already said so.
+      if (this.forced) return;
       addNotice(state.transcript, e.message, "error");
       // A refusal for a limit (rate, usage, credits) is also kept as the chat's limit, for the line over the message box.
       // The reset time the agent gave with this turn's "rejected" stays with it (limit-resume.js sends "continue" then).
@@ -266,6 +274,7 @@ export class ChatSession {
       if (limitText(e.message)) noteLimit(state.transcript, { ...(had?.resetsAt ? { resetsAt: had.resetsAt, rateLimitType: had.type } : {}), status: "rejected", text: limitText(e.message) });
     }
     endTurn(state.transcript);
+    this.stopAsked = null;
     // A turn stopped by steer() stays "working": the steering message is on its way, and nothing queued may pass it.
     if (state.status === "working" && !this.steered && !this.held) state.status = "ready";
     this.changed(false);
@@ -302,6 +311,25 @@ export class ChatSession {
       addNotice(this.state.transcript, `Couldn't change ${opt?.name ?? configId}: ${e.message}`, "error");
     }
     this.changed(false);
+  }
+
+  // Force stop (T3's): the agent doesn't answer Stop, so it is killed. The turn ends here as stopped, with a note. The
+  // chat's next message starts the agent again (agent-acp.js wake): it resumes this session where the agent can load
+  // one, else a new session follows under the old messages. -> whether a turn was stopped.
+  forceStop() {
+    const state = this.state;
+    if (state.status !== "working") return false;
+    this.forced = true;
+    this.stopAsked = null;
+    this.pendingPermission = null;
+    state.permission = null;
+    addNotice(state.transcript, FORCE_STOP_NOTE, "warn");
+    endTurn(state.transcript);
+    state.status = "stopped";
+    state.forceStopped = true;
+    this.changed(true);
+    this.kill();
+    return true;
   }
 
   stop() {

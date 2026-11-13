@@ -104,6 +104,17 @@ test("cancel answers a waiting permission as cancelled", async (t) => {
   assert.ok(s.transcript.items.some((i) => i.kind === "notice" && i.text === "Stopped."));
 });
 
+test("a hang prompt never ends its turn, whatever cancel asks", async (t) => {
+  const b = startBridge();
+  t.after(() => b.stop());
+  await b.until((s) => s.status === "ready", "ready");
+  b.send({ type: "prompt", text: "hang" });
+  await b.until((s) => lastAgentText(s) === "Hanging.", "the hanging turn");
+  b.send({ type: "cancel" });
+  await new Promise((r) => setTimeout(r, 500));
+  assert.equal(b.state().status, "working");
+});
+
 test("an agent that exits while it waits for an approval leaves none to answer", async (t) => {
   const b = startBridge();
   t.after(() => b.stop());
