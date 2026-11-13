@@ -5,6 +5,7 @@
 // to search and reopen; opened with props.find, the dialog is that list alone.
 // "Several models" (fanout.js): one prompt to two to four of the agent's models, each in a background chat and a
 // worktree of its own; `fanOut` below starts them, for the dialog and for `ht3-panels.fanout:<json>` alike.
+// "From" (basebranch.js): the branch a new worktree starts from, for New worktree and for Several models, with "Fetch first".
 
 import { div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea } from "gpui-base";
@@ -17,16 +18,19 @@ import { KINDS } from "./core/chat-reader.js";
 import { scriptsOf, setScripts, setupOf, setSetup, toggleSetup, setupTemplate } from "./scripts.js";
 import { runSetup, setupCard, setupButtons, SetupDialog } from "./setup.js";
 import { FANOUT_MIN, FANOUT_MAX, cleanModels, typedModels, toggleModel, fanoutProblem, fanoutSpecs, fanoutNotice } from "./fanout.js";
+import { parseRefs, REF_ARGS } from "./branches.js";
+import { baseRefs, defaultBase, filterRefs, cleanFrom, onOrigin, fetchArgs, baseLabel } from "./basebranch.js";
 
 const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
 // "New worktree" (T3's worktree per thread): the repository a folder belongs to, its main checkout even when the
 // folder is itself a worktree, and the worktree made for a chat, <repo>/.worktrees/<branch> on a new branch.
 // `.worktrees/` must be ignored first: if it isn't, it goes into the repository's own info/exclude, never .gitignore.
+// A start point ($3) is only where the branch begins: --no-track, so one started from origin/main doesn't push there.
 const REPO = 'c=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || exit 1; case "$c" in */.git) printf %s "${c%/.git}";; *) git rev-parse --show-toplevel | tr -d "\\n";; esac';
 const ADD = 'r="$1"; b="$2"; cd "$r" || exit 1; git check-ref-format --branch "$b" >/dev/null 2>&1 || { echo "Not a branch name: $b" >&2; exit 2; }\n'
   + 'git check-ignore -q .worktrees/x || { f=$(git rev-parse --git-path info/exclude) && mkdir -p "$(dirname "$f")" && printf "\\n.worktrees/\\n" >> "$f" || exit 3; }\n'
-  + 'git worktree add "$r/.worktrees/$b" -b "$b" ${3:+"$3"}';
+  + 'git worktree add "$r/.worktrees/$b" -b "$b" ${3:+--no-track "$3"}';
 export async function repoOf(cwd, on) {
   if (!cwd) return null;
   const r = await exec("sh", ["-c", REPO], { cwd, on: on ?? undefined, timeout: 10000 }).catch(() => null);
@@ -39,13 +43,23 @@ export async function repoOf(cwd, on) {
 // `worktree`, the folder that was made and is kept). `opts.card(run)`: the caller draws the progress card itself
 // (with `sleep` and `onChange` from its `cx`); without it the card opens as a dialog of its own. `opts.setup: false`
 // makes the worktree alone. `opts.from`: the branch (or commit) the new one starts from; without it, the main checkout's HEAD
-// (the Tasks surface starts its worktrees from the branch the person is on).
+// (the Tasks surface starts its worktrees from the branch the person is on). `opts.fetch`: "Fetch first", for a start
+// point on origin (`fetchBase`).
 export async function addWorktree(repo, branch, on, opts = {}) {
+  if (opts.from && opts.fetch) await fetchBase(repo, opts.from, on);
   const r = await exec("sh", ["-c", ADD, "sh", repo, branch, ...(opts.from ? [String(opts.from)] : [])], { cwd: repo, on: on ?? undefined, timeout: 60000 });
   if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim().split("\n").pop().replace(/^fatal: /, "") || "git worktree add failed");
   const path = `${repo}/.worktrees/${branch}`;
   await setupWorktree(repo, path, on, opts);
   return path;
+}
+// "Fetch first": `git fetch origin <branch>` for a start point named origin/<branch>, so the worktree starts from what
+// origin has now. Any other start point is left as it is. Rejects with git's last line when the fetch fails.
+export async function fetchBase(repo, from, on) {
+  const args = fetchArgs(from);
+  if (!args) return;
+  const r = await exec("git", args, { cwd: repo, on: on ?? undefined, timeout: 60000 }).catch((e) => ({ code: 1, stdout: "", stderr: String(e?.message ?? e) }));
+  if (r.code !== 0) throw new Error(`git fetch origin ${args[2]} failed: ${(r.stderr || r.stdout).trim().split("\n").pop().replace(/^fatal: /, "") || "no reason given"}`);
 }
 // The same for a worktree made some other way (an existing branch, a pull request's): runs the setup script of the
 // repository's project in `path`. Resolves to "none" (no setup script), "ok" or "skipped"; rejects when cancelled.
@@ -59,7 +73,7 @@ export async function setupWorktree(repo, path, on, opts = {}) {
 // ---- one prompt to several models ----
 
 const nap = (ms) => exec("sleep", [String(ms / 1000)], { timeout: ms + 5000 }).catch(() => null);
-// What a fan-out that failed was asked for ({ prompt, branch, models, at }): the dialog comes up with it again.
+// What a fan-out that failed was asked for ({ prompt, branch, models, from, fetch, at }): the dialog comes up with it again.
 const FAN_LAST = `${MOD}.fanout-last`;
 // The models an agent's chats may be set to, as its picker lists them: what it has offered (settings.js knownModels),
 // cut to the person's list when there is one (ids added there by hand too). Empty until the agent has listed them.
@@ -70,11 +84,11 @@ export function modelsFor(id) {
 }
 let fanBusy = false;
 // Starts one background chat per model (fanout.js fanoutSpecs), each in a new worktree on <branch>-<model> from the
-// commit `o.folder` is on, with the same prompt as its first message and its model set before it. The chats are tabs
+// commit `o.folder` is on (or `o.from` is at, fetched first with `o.fetch` when it is on origin), with the same prompt as its first message and its model set before it. The chats are tabs
 // of the shown space; the tab shown now is shown again after each one began (chat.js stepBack), so focus stays where
 // it was. One model that can't start doesn't stop the others. A notice lists them at the end; with exactly two, its
 // click opens Compare on them (compare.js reads their saved state, which is there by the time it is clicked).
-// `o`: { folder, prompt, models, branch?, agent? } (fanout.js parseFanout). -> { started, failed }.
+// `o`: { folder, prompt, models, branch?, agent?, from?, fetch? } (fanout.js parseFanout). -> { started, failed }.
 export async function fanOut(o) {
   const f = focused(), space = f?.space ?? null, here = f?.tab ?? null;
   const on = (space && spaces().find((s) => s.id === space)?.machine) || null;
@@ -90,9 +104,13 @@ export async function fanOut(o) {
     const d = await detect(on), agent = AGENTS.find((a) => a.id === (o.agent ?? firstAgent(d.found)));
     if (!agent || !agentOn(agent.id) || !d.found[agent.argv[0]]) throw new Error(o.agent ? `The agent ${o.agent} isn't installed and turned on (Settings).` : d.error ?? "No chat agent is installed and turned on (Settings).");
     const git = async (args) => { const r = await exec("git", args, { cwd: folder, on: on ?? undefined, timeout: 10000 }).catch(() => null); return r?.code === 0 ? r.stdout.trim() : ""; };
-    // One start point for all of them: the commit the folder is on now, not whatever HEAD is when each is made.
-    const from = await git(["rev-parse", "HEAD"]);
-    if (!from) throw new Error(`${shortPath(folder)} has no commit to start from.`);
+    // One start point for all of them: the commit the folder is on now (or the picked branch is at, after its fetch),
+    // not whatever it is when each is made.
+    const base = cleanFrom(o.from);
+    if (o.from != null && !base) throw new Error(`Not a branch or commit to start from: ${String(o.from).slice(0, 80)}`);
+    if (base && o.fetch) await fetchBase(repo, base, on);
+    const from = await git(["rev-parse", "--verify", "-q", `${base ?? "HEAD"}^{commit}`]);
+    if (!from) throw new Error(base ? `${base} isn't a branch or commit in ${shortPath(folder)}.` : `${shortPath(folder)} has no commit to start from.`);
     const taken = (await git(["for-each-ref", "--format=%(refname:short)", "refs/heads"])).split("\n").filter(Boolean);
     // A model given by its id alone is called what the agent calls it.
     const known = knownModels(agent.id);
@@ -118,10 +136,10 @@ export async function fanOut(o) {
     const n = fanoutNotice(started, failed);
     notify({ title: n.title, body: n.body, level: n.level, timeout: n.compare ? 20000 : 8000, ...(n.compare ? { action: { name: `${MOD}.compare:${n.compare[0]}:${n.compare[1]}` } } : {}) });
     // The ones that didn't start stay picked, with the prompt, for the dialog's next time (T3 keeps them selected too).
-    if (failed.length) setShared(FAN_LAST, { prompt: o.prompt, branch: o.branch ?? null, models: failed.map((x) => x.model), at: Date.now() });
+    if (failed.length) setShared(FAN_LAST, { prompt: o.prompt, branch: o.branch ?? null, models: failed.map((x) => x.model), from: base, fetch: o.fetch === true, at: Date.now() });
   } catch (e) {
     notify({ title: "Several models: nothing started", body: String(e?.message ?? e).slice(0, 300), level: "error" });
-    setShared(FAN_LAST, { prompt: String(o?.prompt ?? ""), branch: o?.branch ?? null, models: cleanModels(o?.models).map((m) => m.value), at: Date.now() });
+    setShared(FAN_LAST, { prompt: String(o?.prompt ?? ""), branch: o?.branch ?? null, models: cleanModels(o?.models).map((m) => m.value), from: cleanFrom(o?.from), fetch: o?.fetch === true, at: Date.now() });
   } finally { fanBusy = false; }
   return { started, failed };
 }
@@ -189,6 +207,15 @@ export class Launcher {
     this.prompt.on("change", (_e, cx) => cx.notify());
     this.modelNames = InputState.new({ placeholder: "model names, comma separated, e.g. opus, sonnet" });
     this.modelNames.on("change", (_e, cx) => cx.notify());
+    // From: the branch the new worktree (or each model's) starts from (basebranch.js). `refs`: the folder's branches, null
+    // until read; `base`: the one picked, null for the default (the checked-out one); `fetchFirst`: fetch a picked origin/
+    // branch before the worktree is made.
+    this.refs = null;
+    this.base = null;
+    this.pickBase = false;
+    this.fetchFirst = false;
+    this.baseQuery = InputState.new({ placeholder: "Filter branches" });
+    this.baseQuery.on("change", (_e, cx) => cx.notify());
     const left = shared(FAN_LAST);
     if (left && Date.now() - Number(left.at) < 600000) {
       this.several = true;
@@ -196,6 +223,8 @@ export class Launcher {
       this.prompt.set_value(String(left.prompt ?? ""));
       this.modelNames.set_value(this.picked.join(", "));
       if (left.branch) this.branch.set_value(String(left.branch));
+      this.base = cleanFrom(left.from);
+      this.fetchFirst = left.fetch === true;
     }
     if (left) setShared(FAN_LAST, null);
     // Earlier chats (T3's thread search and its archived threads): the chats saved on this computer,
@@ -215,11 +244,26 @@ export class Launcher {
       cx.notify();
       this.repo = await repoOf(this.cwd, this.machine);
       cx.notify();
+      await this.readRefs();
+      cx.notify();
     });
   }
 
   // Closed (Esc) while the setup script runs: the script is stopped; the worktree stays.
   async close(cx) { if (this.face) return this.face.close(cx); await this.setupRun?.cancel(); }
+  // The folder's branches, for the From picker: local ones and origin's (branches.js REF_ARGS, basebranch.js baseRefs).
+  async readRefs() {
+    const cwd = this.cwd;
+    const r = this.repo && cwd ? await exec("git", REF_ARGS, { cwd, on: this.machine ?? undefined, timeout: 10000 }).catch(() => null) : null;
+    if (cwd === this.cwd) this.refs = r?.code === 0 ? baseRefs(parseRefs(r.stdout)) : [];
+  }
+  // The start point: the picked one, else the branch checked out in the folder; null where there is neither (HEAD).
+  baseRef() { return this.base ?? defaultBase(this.refs); }
+  // What addWorktree and fanOut get for it: { from, fetch } ("Fetch first" only counts for a branch on origin), or {}.
+  baseOpts() {
+    const from = this.baseRef();
+    return from ? { from, ...(this.fetchFirst && onOrigin(from, this.refs) ? { fetch: true } : {}) } : {};
+  }
   // The project the scripts are kept for: the repository's main checkout on the space's machine (scripts.js `projectOf`).
   projectKey() { return this.repo ? `${this.machine ?? ""}:${this.repo}` : null; }
   // New from template: the field gets a command to start from (scripts.js `setupTemplate`); Save adds it as the
@@ -247,8 +291,19 @@ export class Launcher {
   // setup:skip, setup:cancel.
   // several:on and several:off (Several models), several:model:<model id> (ticks or unticks it), several:models:<names>
   // (types them, comma separated, where the agent has listed none), several:prompt:<text>; open then starts them.
+  // from:<ref> (the start point of the new worktree, or of each model's: a branch, origin/<branch> or a commit; from: alone
+  // is the default again), from:pick (opens or closes the From picker), from:filter:<text> (types into its filter),
+  // from:fetch:on and from:fetch:off (Fetch first).
   command(c, cx) {
     if (this.face) return this.face.command(c, cx);
+    if (c.startsWith("from:")) {
+      const a = c.slice(5);
+      if (a === "pick") this.pickBase = !this.pickBase;
+      else if (a.startsWith("filter:")) { this.pickBase = true; this.baseQuery.set_value(a.slice(7)); }
+      else if (a === "fetch:on" || a === "fetch:off") this.fetchFirst = a === "fetch:on";
+      else { this.base = cleanFrom(a); this.pickBase = false; }
+      return cx.notify();
+    }
     if (c.startsWith("setup:")) {
       const a = c.slice(6), run = this.setupRun;
       if (run && (a === "retry" || a === "skip" || a === "cancel")) run[a]();
@@ -329,7 +384,7 @@ export class Launcher {
       try {
         // The setup script, if the project has one, runs inside addWorktree: its card takes the dialog's place until
         // it succeeded or was skipped.
-        const cwd = await addWorktree(this.repo, branch, this.machine, { card: (run) => { this.setupRun = run; cx.notify(); }, sleep, onChange: () => cx.notify() });
+        const cwd = await addWorktree(this.repo, branch, this.machine, { ...this.baseOpts(), card: (run) => { this.setupRun = run; cx.notify(); }, sleep, onChange: () => cx.notify() });
         if (this.setupRun?.state === "ok") await sleep(700); // the finished card, for a moment
         this.start(cwd);
       } catch (e) { this.error = e?.setup ? String(e.message) : `Couldn't make the worktree: ${String(e?.message ?? e)}`; }
@@ -362,7 +417,7 @@ export class Launcher {
   fan(cx) {
     const why = this.fanReady(), branch = this.branch.value().trim();
     if (why) { this.error = why; return cx.notify(); }
-    run(`${MOD}.fanout:${JSON.stringify({ folder: this.cwd, prompt: this.prompt.value().trim(), models: this.fanModels(), agent: this.fanAgent().id, ...(branch ? { branch } : {}) })}`);
+    run(`${MOD}.fanout:${JSON.stringify({ folder: this.cwd, prompt: this.prompt.value().trim(), models: this.fanModels(), agent: this.fanAgent().id, ...(branch ? { branch } : {}), ...this.baseOpts() })}`);
     closeOverlay(this.overlay);
   }
   // Under the Several models tick: the prompt, the branch the models' branches are named after, and the agent's models
@@ -392,6 +447,43 @@ export class Launcher {
       .when(!!a && offered.length > 0, (e) => e.child(v_flex().id("ht3-fan-models").mx(10).mb(6).p(4).gap(2).max_h(150).overflow_y_scrollbar().rounded(8).border(1).border_color(k.border)
         .children(offered.map(tick))))
       .when(!!a, (e) => e.child(div().px(10).pb(6).text_size(12).text_color(k.muted).child(`${n} of ${FANOUT_MIN} to ${FANOUT_MAX} models of ${a.name}. Each gets a background chat in a worktree of its own; this tab stays shown.`)));
+  }
+
+  // ---- from ----
+
+  // Under New worktree and under Several models: "From <branch>" with Fetch first and Change, and under it the picker: a
+  // filter and the folder's branches (basebranch.js baseRefs: the checked-out one first, each with its origin/ one).
+  baseRows(k, el) {
+    const from = this.baseRef(), remote = !!from && onOrigin(from, this.refs), fetch = remote && this.fetchFirst;
+    const line = h_flex().px(10).pb(6).gap(8).h(30).items_center()
+      .child(icon("git-commit-horizontal").size(14).flex_none().text_color(k.muted))
+      .child(div().flex_none().max_w(240).truncate().text_size(12).child(baseLabel(from)))
+      .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(k.muted)
+        .child(this.base ? (fetch ? `after git fetch origin ${fetchArgs(from)[2]}` : remote ? "as last fetched" : "") : from ? "the branch checked out here" : "what is checked out here"))
+      .child(h_flex().id("from-fetch").gap(6).flex_none().items_center().opacity(remote ? 1 : 0.5).role("check_box").accessibility_label(`Fetch first${fetch ? ": ticked" : ""}`)
+        .tooltip("Runs git fetch origin <branch> before the worktree is made, so it starts from origin's latest commit. For a branch on origin.")
+        .when(remote, (e) => e.cursor_pointer().on_click((_e, cx) => { this.fetchFirst = !this.fetchFirst; cx.notify(); }))
+        .child(h_flex().size(16).flex_none().items_center().justify_center().rounded(4).border(1).border_color(fetch ? k.primary : k.input).bg(fetch ? k.primary : "#00000000")
+          .text_color(k.primaryText).when(fetch, (e) => e.child(icon("check").size(12))))
+        .child(div().text_size(12).text_color(fetch ? k.foreground : k.muted).child("Fetch first")))
+      .child(button(k, "from-pick", this.pickBase ? "Done" : "Change…", (cx) => { this.pickBase = !this.pickBase; if (this.pickBase) this.baseQuery.focus(); cx.notify(); },
+        { tip: "The branch the new worktree starts from" }));
+    if (!this.pickBase) return el.child(line);
+    const all = filterRefs(this.refs, this.baseQuery.value()), rows = all.slice(0, 80);
+    return el.child(line).child(v_flex().id("ht3-from-pick").mx(10).mb(6).p(4).gap(2).rounded(8).border(1).border_color(k.border)
+      .child(h_flex().h(28).px(8).gap(6).flex_none().items_center().text_size(13)
+        .child(icon("search").size(14).flex_none().text_color(k.muted)).child(div().flex_1().child(Input.new(this.baseQuery))))
+      .child(v_flex().id("ht3-from-list").gap(2).max_h(150).overflow_y_scrollbar()
+        .children(rows.map((b, i) => h_flex().id(`from-ref-${i}`).h(28).px(8).gap(8).flex_none().items_center().rounded(6).text_size(13).cursor_pointer()
+          .role("button").accessibility_label(`Start from ${b.ref}`)
+          .hover((st) => st.bg(alpha(k.accent, 0.6))).on_click((_e, cx) => { this.base = b.ref; this.pickBase = false; this.baseQuery.set_value(""); cx.notify(); })
+          .child(icon(b.ref === from ? "check" : "git-branch").size(14).flex_none().text_color(k.muted))
+          .child(div().flex_1().min_w(0).truncate().text_color(b.local ? k.foreground : k.muted).child(b.ref))
+          .when(b.current, (e) => e.child(badge(k, "current", "info")))
+          .when(!b.local, (e) => e.child(div().flex_none().text_size(11).text_color(k.dim).child("on origin"))))))
+      .when(this.refs == null, (e) => e.child(div().px(8).py(2).text_size(11).text_color(k.muted).child("Reading the branches…")))
+      .when(this.refs != null && !rows.length, (e) => e.child(div().px(8).py(2).text_size(11).text_color(k.muted).child(this.refs.length ? "No branch matches." : "No branches here.")))
+      .when(all.length > rows.length, (e) => e.child(div().px(8).py(2).text_size(11).text_color(k.muted).child(`Showing ${rows.length} of ${all.length} branches: type to narrow them.`))));
   }
 
   start(cwd) {
@@ -513,7 +605,7 @@ export class Launcher {
           .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(k.muted).child(where || "No folder"))
           .when(!remote, (el) => el.child(button(k, "pick-folder", "Change…", (cx) => cx.spawn(async (cx) => {
             const dir = await pickFolder({ prompt: "Folder for the agent" });
-            if (dir) { this.cwd = dir; this.repo = await repoOf(dir, null); if (!this.repo) this.wt = false; }
+            if (dir) { this.cwd = dir; this.repo = await repoOf(dir, null); if (!this.repo) this.wt = false; this.base = null; this.refs = null; await this.readRefs(); }
             cx.notify();
           })))))
         // Several models: one prompt, a background chat and a worktree per ticked model (fanRows). It takes New worktree's place.
@@ -535,7 +627,8 @@ export class Launcher {
           .when(this.wt, (e) => e.child(div().flex_1().min_w(0).h(28).px(8).rounded(6).border(1).border_color(k.input).text_size(13).child(Input.new(this.branch))))
           .when(!this.wt, (e) => e.child(div().flex_1().min_w(0).truncate().text_size(12).text_color(k.dim).child("the chat gets a branch and a folder of its own: .worktrees/<branch>")))))
         .when(this.wt && !fanning && !!this.branch.value().trim(), (el) => el.child(div().px(10).pb(6).text_size(12).text_color(k.muted).truncate()
-          .child(`git worktree add .worktrees/${this.branch.value().trim()} -b ${this.branch.value().trim()}   in ${shortPath(this.repo)}`)))
+          .child(`git worktree add .worktrees/${this.branch.value().trim()} -b ${this.branch.value().trim()}${this.baseRef() ? ` ${this.baseRef()}` : ""}   in ${shortPath(this.repo)}`)))
+        .when(this.wt || fanning, (el) => this.baseRows(k, el))
         .when(this.wt || fanning, (el) => this.setupRows(k, el))
         .when(!this.found, (el) => el.child(div().px(10).py(6).text_size(12).text_color(k.muted).child("Looking for installed agents…")))
         .when(!!this.error, (el) => el.child(div().px(10).py(6).text_size(12).text_color(k.destructiveText).child(this.error)))
