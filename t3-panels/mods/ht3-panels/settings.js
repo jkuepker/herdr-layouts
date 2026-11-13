@@ -29,6 +29,7 @@
 // - coordinatorAgent ("claude"), coordinatorModel (absent: the agent's own): the same for the coordinator chat (coordinator.js).
 // - coordinatorNotify (true): Herdr tells the coordinator chat, in a message of its own, when a task's chat finished, failed,
 //   waits for an approval or was closed (at most one message in 45 seconds); false: it learns of them when it reads its state file.
+// - keepAwake (false): while a chat or task agent works, the Mac doesn't go to sleep (caffeinate, macOS only; report.js keepAwake).
 // - sidePanelHiddenInNewSpaces (false): a space shown for the first time starts with the side panel hidden.
 // Anything left out is its default; unknown keys are kept as they are.
 
@@ -95,6 +96,8 @@ export const mdPreviewDefault = () => prefs().mdPreviewDefault !== false;
 export const chatTokenBudget = () => cleanBudget(prefs().chatTokenBudget);
 // "coordinatorNotify": false: no task notices are sent into the coordinator chat (coordinator.js).
 export const coordinatorNotify = () => prefs().coordinatorNotify !== false;
+// "keepAwake": true keeps the Mac awake while a chat works; the default does not.
+export const keepAwakeOn = () => prefs().keepAwake === true;
 // "followUp": "steer" makes a message sent while the agent works interrupt it; the default queues it.
 export const followUp = () => (prefs().followUp === "steer" ? "steer" : "queue");
 

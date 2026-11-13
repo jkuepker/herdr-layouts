@@ -34,7 +34,7 @@ import { LogsPanel } from "./logs.js";
 import { SideChat, beginChat } from "./sidechat.js";
 import { Empty } from "./empty.js";
 import { detect } from "./agent-acp.js";
-import { announce, prune } from "./report.js";
+import { announce, prune, keepAwake } from "./report.js";
 import { Settings, SETTINGS_SIZE } from "./settings-ui.js";
 import { Usage, USAGE_SIZE } from "./usage.js";
 import { Search, SEARCH_SIZE, showHit, searchOpen } from "./search.js";
@@ -64,7 +64,7 @@ class Buttons {
     // pass looks after chats a restart left behind: a turn that ran at the quit is marked cut off ("interrupted", told
     // to the coordinator once), and a chat that has posts waiting but no copy running (a copy starts only when its tab
     // first shows) is started by showing its tab for a moment and then the person's own again (coordinator.js wake).
-    cx.timer.every(2000, (cx) => { prune(); cx.spawn(() => loadPrefs()); cx.spawn(() => writeState()); });
+    cx.timer.every(2000, (cx) => { prune(); cx.spawn(() => loadPrefs()); cx.spawn(() => writeState()); cx.spawn(() => keepAwake()); });
     cx.spawn((cx) => keep(cx));
   }
   close() {}
