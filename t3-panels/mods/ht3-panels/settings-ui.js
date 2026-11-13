@@ -11,7 +11,7 @@
 // files opening as a preview, `ui:budget:<tokens>` sets the chat token budget (0 off; `ui:budget` alone takes the next choice),
 // `ui:taskagent:<id>` and `ui:coordagent:<id>` set the tasks' and the coordinator's agent (with no id: the next choice; `default`:
 // unset), `ui:taskmodel:<model>` and `ui:coordmodel:<model>` their models (with none: the agent's own), `ui:coordnotify` flips
-// the coordinator's task notices, `ui:close` closes.
+// the coordinator's task notices, `ui:awake` flips Keep the Mac awake, `ui:close` closes.
 
 import { div, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
@@ -22,7 +22,7 @@ import { importable } from "./detect.js";
 import { tokens, alpha, icon, agentMark, button, iconButton, shortPath, badge } from "./look.js";
 import { AGENTS, detect } from "./agent-acp.js";
 import { EDITORS, editors } from "./menus.js";
-import { enabledAgents, coordinatorNotify, prefs, agentOn, modelsOf, knownModels, editorOn, sideStartsHidden, firstAgent, setPref, settingsFile, followUp, checkpointsOn, toastsOn, soundsOn, diffHidesWhitespace, commitStyle, COMMIT_STYLES, mdPreviewDefault, chatTokenBudget } from "./settings.js";
+import { enabledAgents, coordinatorNotify, prefs, agentOn, modelsOf, knownModels, editorOn, sideStartsHidden, firstAgent, setPref, settingsFile, followUp, checkpointsOn, toastsOn, soundsOn, keepAwakeOn, diffHidesWhitespace, commitStyle, COMMIT_STYLES, mdPreviewDefault, chatTokenBudget } from "./settings.js";
 import { BUDGETS, budgetLabel, nextBudget } from "./token-budget.js";
 
 export const SETTINGS_SIZE = { width: 640, height: 680 };
@@ -82,6 +82,7 @@ export class Settings {
     else if (what === "taskagent" || what === "coordagent") this.setRoleAgent(what === "taskagent" ? "task" : "coordinator", rest);
     else if (what === "taskmodel" || what === "coordmodel") { const role = what === "taskmodel" ? "task" : "coordinator"; this.roleModel[role].set_value(rest); this.saveRoleModel(role); }
     else if (what === "coordnotify") setPref("coordinatorNotify", coordinatorNotify() ? false : undefined);
+    else if (what === "awake") setPref("keepAwake", keepAwakeOn() ? undefined : true);
     else if (what === "sounds") setPref("sounds", soundsOn() ? undefined : true);
     // ui:script:<name>=<command> adds a project script (same name: replaces it), ui:unscript:<n> removes the nth.
     else if (what === "script") { const at = rest.indexOf("="); if (at > 0) { this.scriptName.set_value(rest.slice(0, at)); this.scriptCommand.set_value(rest.slice(at + 1)); this.addScript(); } }
@@ -308,7 +309,9 @@ export class Settings {
           this.row(icon("bell").size(16).flex_none().text_color(k.muted), "Notify", "A notification when a chat you aren't looking at finishes or needs an approval. A click on it shows the chat.",
             [this.toggle(k, "set-notifications", toastsOn(), "Notify", () => setPref("notifications", toastsOn() ? false : undefined))]),
           this.row(icon("volume-2").size(16).flex_none().text_color(k.muted), "Sound", "Play Herdr's done or blocked sound then.",
-            [this.toggle(k, "set-sounds", soundsOn(), "Sound", () => setPref("sounds", soundsOn() ? undefined : true))])]))
+            [this.toggle(k, "set-sounds", soundsOn(), "Sound", () => setPref("sounds", soundsOn() ? undefined : true))]),
+          this.row(icon("monitor").size(16).flex_none().text_color(k.muted), "Keep the Mac awake while agents work", "While a chat or task agent is working, the Mac doesn't go to sleep (caffeinate). The display may still turn off.",
+            [this.toggle(k, "set-awake", keepAwakeOn(), "Keep the Mac awake while agents work", () => setPref("keepAwake", keepAwakeOn() ? undefined : true))])]))
         .child(this.section(k, "Tasks and coordinator", "The agents that work on tasks (Tasks' Run with agent, the coordinator's tasks) and the coordinator chat that plans and starts them.",
           [...this.roleRows(k, "task", "Task", "the agent New chat comes up with"),
             ...this.roleRows(k, "coordinator", "Coordinator", "Claude Code, else the agent New chat comes up with"),

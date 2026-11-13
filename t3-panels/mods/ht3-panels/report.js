@@ -13,10 +13,11 @@
 // `keep: true` in the program tells them a chat pane is never theirs to close: Settle puts its card away and no more.
 // A chat of a terminal agent (props.terminal) reports nothing: its terminal already does.
 
-import { shared, setShared, spaces, panes, focused, window, machines, notify, playSound, settings } from "herdr";
+import { shared, setShared, spaces, panes, focused, window, machines, notify, playSound, settings, exec } from "herdr";
 import { MOD } from "./look.js";
 import { agentOf } from "./agent-acp.js";
-import { toastsOn, soundsOn } from "./settings.js";
+import { toastsOn, soundsOn, keepAwakeOn } from "./settings.js";
+import { awakeDue, AWAKE_EVERY_MS, AWAKE_SECONDS } from "./awake.js";
 
 const STATUS = `${MOD}.status`, TITLES = `${MOD}.titles`, PROGRAM = `${MOD}.program`, PLACES = `${MOD}.places`, PROGRAMS = `${MOD}.programs`, TURNS = `${MOD}.turns`;
 const UNREAD = `${MOD}.unread`;
@@ -85,6 +86,22 @@ export function prune() {
   }
   const places = shared(PLACES) ?? {};
   put(PLACES, Object.fromEntries(Object.entries(places).filter(([, at]) => tabs.has(at.tab))));
+}
+
+// The keeper's, every two seconds: while the "keepAwake" pref is on and a chat (a task's too) works, runs `caffeinate -i`
+// for AWAKE_SECONDS, again every AWAKE_EVERY_MS, so it ends by itself soon after the last one stops or Herdr quits. Only the
+// keeper calls it, so there is one start a minute; the last start is shared ("ht3-panels.awake") so a reloaded keeper
+// doesn't start another at once. The shell puts caffeinate in the background and returns at once; macOS only (checked once).
+const AWAKE = `${MOD}.awake`;
+let mac = null;
+export async function keepAwake() {
+  const now = Date.now();
+  if (!awakeDue({ working: Object.values(shared(STATUS) ?? {}).includes("working"), on: keepAwakeOn(), last: shared(AWAKE), now, every: AWAKE_EVERY_MS })) return;
+  if (mac == null) mac = await exec("uname", []).then((r) => r.stdout.trim() === "Darwin").catch(() => false);
+  if (!mac) return;
+  setShared(AWAKE, now);
+  await exec("sh", ["-c", `caffeinate -i -t ${AWAKE_SECONDS} </dev/null >/dev/null 2>&1 &`], { timeout: 10000 })
+    .catch((e) => console.log(`ht3 awake: ${String(e?.message ?? e)}`));
 }
 
 // A chat started in the background (chat.js sendNew) is never drawn in front for long enough to count on, so the
