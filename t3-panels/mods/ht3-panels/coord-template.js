@@ -3,7 +3,7 @@
 // .claude/settings.json, which lets Claude Code run the few commands it needs without stopping at an approval card.
 // Raise VERSION with any change here: the files of a folder written from an older one are replaced.
 
-export const VERSION = 8;
+export const VERSION = 9;
 
 // `dir`: the coordinator's folder; `chats`: where the chats' saved states are.
 export const roleText = (dir, chats) => `# Coordinator
@@ -53,11 +53,12 @@ check, they write the code.
     jq '.spaces' state.json                           # the open spaces: name, folder, machine (the person's projects)
     jq '.projects[] | {project, tasks: [.tasks[] | {id, title, done, state}]}' state.json
     jq '.ops[-3:]' state.json                         # how your last commands went: { op, project, id, ok, error }
+    jq '.limit' state.json                            # the cap on running tasks: { max (0: none), running, queued }
 
 A task: id, title, note, done, state, branch, from (the branch its own was made from), ahead (its commits ahead of
 from; null when not read yet), dirty (it has uncommitted changes), ready (you marked it ready), merged (the person
 merged it), conflict (null, or { onto, files, at, asked }: the person's Merge into onto was aborted on a conflict in
-those files; asked: its agent was asked to update the branch), path (its worktree), chat (its chat's id), lastReply (the first line of what its agent said last). state is one of: none (not started), making (the worktree is being made), starting, working,
+those files; asked: its agent was asked to update the branch), path (its worktree), chat (its chat's id), lastReply (the first line of what its agent said last). state is one of: none (not started), queued (it waits for a free slot: the person set a cap on how many tasks run at once; \`queued\` is its place in the queue and Herdr starts it by itself when a running one ends), making (the worktree is being made), starting, working,
 waiting (its agent asks for an approval: see \`ask\` and "Approvals"), done (its turn ended), failed (see "why"), closed (its tab was closed),
 interrupted (Herdr was restarted while its agent worked: the turn was cut off, see "why"; \`tell\` its agent to continue).
 
@@ -82,7 +83,9 @@ single quotes, and write it without an apostrophe in a title or a note.
 
     # add a task (id: a short name of your own, to refer to it later; "run": true also starts it)
     herdr-app do 'ht3-panels.coord:{"op":"add","project":"/path/to/repo","id":"fix-login","title":"Fix the login redirect","note":"What to do, where, and how to check it.","run":true}'
-    # start a task that was added without "run" (or start it again: a new worktree and chat)
+    # start a task that was added without "run" (or start it again: a new worktree and chat). Beyond the cap on running
+    # tasks (.limit) it is queued instead (state "queued", and .ops says "queued"): don't run it again, Herdr starts it.
+    # A task that waits for an approval still holds its slot: answering it (see "Approvals") is what frees the queue.
     herdr-app do 'ht3-panels.coord:{"op":"run","project":"/path/to/repo","id":"fix-login"}'
     # mark it done ("done": false reopens it)
     herdr-app do 'ht3-panels.coord:{"op":"done","project":"/path/to/repo","id":"fix-login"}'

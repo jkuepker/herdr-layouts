@@ -1,6 +1,7 @@
 // The Tasks surface's logic (tasks.js), as pure functions: no Herdr imports, so node can test it.
 //
-// A task: { id, title, note, done, at, run? }. `run`, once "Run with agent" has started a chat for it:
+// A task: { id, title, note, done, at, queued?, startError?, run? }. `queued` ({ at, cwd?, space?, started? }): it waits for a
+// free slot under the cap on running tasks, and `startError`: why the keeper's start of it didn't work (taskqueue.js). `run`, once "Run with agent" has started a chat for it:
 // { chat (the chat's id), branch, path (the worktree), on (machine or null), from (the branch it was made from), at,
 // worked? (the chat was seen working, so an idle chat after that is a finished one), error?,
 // ready? ({ at, note, head? }: the coordinator looked at the work and says it can be merged; head: the commit the task's
@@ -59,6 +60,9 @@ export function cleanTasks(raw) {
     const r = t.run && typeof t.run === "object" && t.run.chat ? t.run : null;
     out.push({
       id, title, note: clip(t.note, NOTE_MAX), done: t.done === true, at: Number(t.at) || 0,
+      ...(t.queued && typeof t.queued === "object" && Number(t.queued.at) > 0 ? { queued: { at: Number(t.queued.at), ...(typeof t.queued.cwd === "string" && t.queued.cwd ? { cwd: t.queued.cwd } : {}),
+        ...(typeof t.queued.space === "string" && t.queued.space ? { space: t.queued.space } : {}), ...(Number(t.queued.started) > 0 ? { started: Number(t.queued.started) } : {}) } } : {}),
+      ...(typeof t.startError === "string" && t.startError ? { startError: clip(t.startError, 300) } : {}),
       ...(r ? { run: { chat: String(r.chat), branch: String(r.branch ?? ""), path: String(r.path ?? ""), on: r.on ?? null, from: r.from ?? null, at: Number(r.at) || 0,
         ...(r.worked ? { worked: true } : {}), ...(r.error ? { error: String(r.error) } : {}),
         ...(r.ready && typeof r.ready === "object" ? { ready: { at: Number(r.ready.at) || 0, note: clip(r.ready.note, READY_NOTE_MAX), ...(SHA.test(r.ready.head ?? "") ? { head: r.ready.head } : {}) } } : {}),

@@ -11,7 +11,7 @@
 // files opening as a preview, `ui:budget:<tokens>` sets the chat token budget (0 off; `ui:budget` alone takes the next choice),
 // `ui:taskagent:<id>` and `ui:coordagent:<id>` set the tasks' and the coordinator's agent (with no id: the next choice; `default`:
 // unset), `ui:taskmodel:<model>` and `ui:coordmodel:<model>` their models (with none: the agent's own), `ui:coordnotify` flips
-// the coordinator's task notices, `ui:awake` flips Keep the Mac awake, `ui:close` closes.
+// the coordinator's task notices, `ui:taskcap:<n>` sets how many tasks run at once (0: no cap; alone: the next choice), `ui:awake` flips Keep the Mac awake, `ui:close` closes.
 
 import { div, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
@@ -22,7 +22,8 @@ import { importable } from "./detect.js";
 import { tokens, alpha, icon, agentMark, button, iconButton, shortPath, badge } from "./look.js";
 import { AGENTS, detect } from "./agent-acp.js";
 import { EDITORS, editors } from "./menus.js";
-import { enabledAgents, coordinatorNotify, prefs, agentOn, modelsOf, knownModels, editorOn, sideStartsHidden, firstAgent, setPref, settingsFile, followUp, checkpointsOn, toastsOn, soundsOn, keepAwakeOn, diffHidesWhitespace, commitStyle, COMMIT_STYLES, mdPreviewDefault, chatTokenBudget } from "./settings.js";
+import { enabledAgents, coordinatorNotify, prefs, agentOn, modelsOf, knownModels, editorOn, sideStartsHidden, firstAgent, setPref, settingsFile, followUp, checkpointsOn, toastsOn, soundsOn, keepAwakeOn, diffHidesWhitespace, commitStyle, COMMIT_STYLES, mdPreviewDefault, chatTokenBudget, taskMaxRunning } from "./settings.js";
+import { cleanCap, capLabel, nextCap } from "./taskqueue.js";
 import { BUDGETS, budgetLabel, nextBudget } from "./token-budget.js";
 
 // Auto-settle's idle choices, as ht3-inbox autosettle.js AUTO_DAYS (a mod doesn't import another's files); 0 = off.
@@ -86,6 +87,7 @@ export class Settings {
     else if (what === "notifications") setPref("notifications", toastsOn() ? false : undefined);
     else if (what === "taskagent" || what === "coordagent") this.setRoleAgent(what === "taskagent" ? "task" : "coordinator", rest);
     else if (what === "taskmodel" || what === "coordmodel") { const role = what === "taskmodel" ? "task" : "coordinator"; this.roleModel[role].set_value(rest); this.saveRoleModel(role); }
+    else if (what === "taskcap") setPref("taskMaxRunning", (rest === "" ? nextCap(taskMaxRunning()) : cleanCap(rest)) || undefined);
     else if (what === "coordnotify") setPref("coordinatorNotify", coordinatorNotify() ? false : undefined);
     else if (what === "awake") setPref("keepAwake", keepAwakeOn() ? undefined : true);
     // Auto-settle (ht3-inbox autosettle.js): ui:autosettle:<days> (0 off; alone: the next choice), ui:autosettle-merge and ui:autosettle-keep flip the two switches.
@@ -333,6 +335,8 @@ export class Settings {
             [this.toggle(k, "set-autosettle-keep", prefs().autoSettleKeepOpenPr === true, "Keep chats with an open pull request", () => setPref("autoSettleKeepOpenPr", prefs().autoSettleKeepOpenPr === true ? undefined : true))])]))
         .child(this.section(k, "Tasks and coordinator", "The agents that work on tasks (Tasks' Run with agent, the coordinator's tasks) and the coordinator chat that plans and starts them.",
           [...this.roleRows(k, "task", "Task", "the agent New chat comes up with"),
+            this.row(icon("list-checks").size(16).flex_none().text_color(k.muted), "Tasks running at once", "A task started beyond this many is queued (Tasks' Run with agent, the coordinator's run) and starts when a running one ends. A task that waits for an approval still counts as running; one that is done, failed, closed or merged does not.",
+              [button(k, "set-task-cap", capLabel(taskMaxRunning()), () => setPref("taskMaxRunning", nextCap(taskMaxRunning()) || undefined), { size: "sm", variant: "outline", tip: "Click to change: No cap, 1, 2, 3, 4, 6, 8" })]),
             ...this.roleRows(k, "coordinator", "Coordinator", "Claude Code, else the agent New chat comes up with"),
             this.row(icon("messages-square").size(16).flex_none().text_color(k.muted), "Tell the coordinator about tasks", "Herdr sends the coordinator chat a short message when a task's chat finished, failed, waits for an approval or was closed: at most one in 45 seconds. Off: it learns of them when it next reads its state file.",
               [this.toggle(k, "set-coord-notify", coordinatorNotify(), "Tell the coordinator about tasks", () => setPref("coordinatorNotify", coordinatorNotify() ? false : undefined))])]))
