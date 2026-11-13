@@ -16,7 +16,8 @@ import { TermSource } from "./agent-term.js";
 import { Reporter, agentName, paneIds, tabIds, placeNew, markCut, clearCut } from "./report.js";
 import { fileIcon } from "./fileicons.js";
 import { snapshot, turnStat, undoRevert, prune, chatsWithRefs, safe as refName, KEEP } from "./checkpoint.js";
-import { checkpointsOn, followUp, limitModels, rememberModels, prefs, chatTokenBudget } from "./settings.js";
+import { checkpointsOn, followUp, limitModels, rememberModels, prefs, chatTokenBudget, autoResumeLimit } from "./settings.js";
+import { resumePlan, clockText, RESUME_TEXT } from "./limit-resume.js";
 import { budgetNotice } from "./token-budget.js";
 import { Diagrams, isMermaid, fit, INSTALL } from "./mermaid.js";
 import { addNotice, toMarkdown, subagents } from "./transcript.js";
@@ -119,7 +120,8 @@ const isWork = (m) => m.kind === "thought" || m.kind === "tool";
 // What a chat keeps across a reload of its pane (and of the app) that isn't the agent's to remember:
 // shared("ht3-panels.kept")[chat id] = { allow: true } while "Always allow this session" is on, and
 // { queue: [{ text, blocks, files }] }, the messages waiting for the agent's turn to end, { pin: true } while the
-// chat is pinned (pinSync), and { history: [{ text, tokens? }] }, the prompts sent in it, oldest first (pushPrompt).
+// chat is pinned (pinSync), { history: [{ text, tokens? }] }, the prompts sent in it, oldest first (pushPrompt), and
+// { resume: { at, on, sent? } }, the person's "Resume at reset" choice for the limit that resets at `at` (armResume).
 // Empty values aren't kept; a chat with nothing kept has no entry.
 const KEPT = `${MOD}.kept`;
 const keptOf = (id) => (id ? (shared(KEPT) ?? {})[id] ?? {} : {});
@@ -363,6 +365,8 @@ export class ChatPanel {
           this.quoteIn(cx, qt.text);
         }
       }
+      // A chat stopped by a usage limit, armed to go on: "continue" goes out once the limit has reset.
+      this.resumeCheck(cx);
       // What Herdr itself has to say to this chat (shared "ht3-panels.post": the coordinator's task notices, coordinator.js).
       if (this.reporter && this.phase === "chat" && this.source?.kind === "acp" && shared(`${MOD}.post`)?.[this.chatId]?.length) this.takePosts(cx);
       // "Regenerate title" in the card's menu (menus.js) asks this chat to name itself.
@@ -424,6 +428,39 @@ export class ChatPanel {
     if (this.source?.kind !== "acp") return;
     this.fresh = on;
     keep(this.chatId, { fresh: on });
+    cx.notify();
+  }
+
+  // T3's UsageLimitRecoveryBanner ("Resume at reset"): a chat whose turn a usage limit ended sends "continue" when the
+  // limit resets (limit-resume.js). -> null, or { at, armed, due }. Armed by the banner's button or the "autoResumeLimit"
+  // pref; the choice is kept with the chat for that reset, so a reload or a Herdr restart doesn't undo it.
+  resumeOf(v) {
+    if (this.source?.kind !== "acp" || !v) return null;
+    return resumePlan({ limit: v.limit, status: v.status, kept: this.chatId ? keptOf(this.chatId).resume : this.resumeChoice, pref: autoResumeLimit(), now: Date.now() });
+  }
+  // `more`: { sent: true } once "continue" went out for this reset. A chat with no id keeps it while its pane lives.
+  armResume(cx, on, more = null) {
+    const at = this.source?.view().limit?.resetsAt;
+    if (at == null) return;
+    this.resumeChoice = { at, on, ...(more ?? {}) };
+    keep(this.chatId, { resume: this.resumeChoice });
+    cx.notify();
+  }
+  // The tick's, every second: due and armed, "continue" goes out once, as a posted message does (takePosts), and it is
+  // disarmed. Only a running copy of the chat does this: with none at the reset (Herdr closed, the tab never loaded) it
+  // goes out when the chat next runs and is past due. Waking a chat for it (coordinator.js wake, coord-data.js wakeDue)
+  // is not done here.
+  resumeCheck(cx) {
+    if (this.phase !== "chat" || this.source?.kind !== "acp" || !this.source.alive) return;
+    const p = this.resumeOf(this.source.view());
+    if (p?.armed && p.due) this.resumeSend(cx);
+  }
+  resumeSend(cx) {
+    if (this.source?.kind !== "acp") return;
+    this.armResume(cx, false, { sent: true });
+    this.queue = [...(this.queue ?? []), { text: RESUME_TEXT, blocks: [], files: [], tokens: [], posted: true }];
+    this.keepQueue();
+    this.drain(cx);
     cx.notify();
   }
 
@@ -762,6 +799,9 @@ export class ChatPanel {
     // retry, copy-command, open-terminal: the agent status banner's buttons (statusBanner).
     if (c === "clear") this.armFresh(cx, true);
     if (c === "keep-session") this.armFresh(cx, false);
+    // resume:on and resume:off are the limit banner's "Resume at …" button; resume:now sends its "continue" at once.
+    if (c === "resume:on" || c === "resume:off") this.armResume(cx, c === "resume:on");
+    if (c === "resume:now") this.resumeSend(cx);
     if (c === "retry") this.retry(cx);
     if (c === "copy-command") { const pr = this.source.view().problem; if (pr) this.copy(cx, "status-cmd", pr.command); }
     if (c === "open-terminal" && this.reporter?.pane) this.openTerminal(this.reporter.pane);
@@ -893,6 +933,8 @@ export class ChatPanel {
     // "/clear" is T3's own as well (ComposerFreshSession): the next message starts a fresh session. Not on an agent that is a terminal's.
     if (/^\/clear$/.test(text) && this.source.kind === "acp") { this.input.set_value(""); this.hasText = false; this.trig = null; return this.armFresh(cx, true); }
     if ((!text && !files.length) || !v?.alive) return;
+    // The person goes on by hand: "Resume at reset" is off for this limit.
+    if (this.resumeOf(this.source.view())?.armed) this.armResume(cx, false);
     const payload = this.boxMessage(v);
     // Armed by "/clear": this message begins a fresh session, once the agent is ready for it (dispatch). Once it is sent
     // the next ones are the new session's.
@@ -2329,11 +2371,15 @@ export class ChatPanel {
     else if (l?.status === "allowed_warning") say = { text: `Near the ${kind}${l.utilization != null ? `: ${Math.round(100 * l.utilization)}% used` : ""}${l.resetsAt ? when(l.resetsAt) : ""}`, key: `w${l.type ?? ""}${Math.round(20 * (l.utilization ?? 0))}` };
     else if (full >= 0.9) say = { bad: full >= 0.97, text: `Context ${Math.round(100 * full)}% full: the agent may compact or stop soon. /compact where the agent has it, or start fresh.`, key: `c${full >= 0.97 ? 2 : 1}`, fresh: true };
     if (!say || this.limitHidden === say.key) return null;
+    // Stopped by the limit: "Resume at 3:05 AM" arms sending "continue" then (resumeOf), and the line says so while armed.
+    const rs = l?.status === "rejected" ? this.resumeOf(v) : null, at = rs ? clockText(rs.at) : "";
+    if (rs?.armed) say.text += ` · Will send “${RESUME_TEXT}” at ${at}`;
     const c = say.bad ? k.destructiveText : k.warningText;
     return h_flex().id("ht3-limit").mx(12).mb(-1).px(12).h(32).gap(8).items_center().rounded_t(12).border(1).border_color(alpha(c, 0.35)).bg(alpha(c, 0.08)).text_size(12).text_color(c)
       .role("status").accessibility_label(say.text)
       .child(icon(say.bad ? "circle-alert" : "clock").size(13).flex_none())
       .child(div().flex_1().min_w(0).truncate().tooltip(say.text).child(say.text))
+      .when(!!rs, (el) => el.child(button(k, "limit-resume", `Resume at ${at}`, (cx) => this.armResume(cx, !rs.armed), { variant: rs.armed ? "outline" : "ghost", glyph: rs.armed ? "check" : "clock", tip: rs.armed ? `On: sends “${RESUME_TEXT}” when the limit resets. Click to turn off.` : `Send “${RESUME_TEXT}” when the limit resets` })))
       // ComposerFreshSession: the context is full, so the next message may begin a fresh session instead.
       .when(!!say.fresh && !this.fresh && this.source.kind === "acp" && v.alive, (el) => el.child(button(k, "limit-fresh", "Start fresh", (cx) => this.armFresh(cx, true), { variant: "ghost", glyph: "eraser" })))
       .child(h_flex().id("limit-hide").size(20).flex_none().items_center().justify_center().rounded(5).cursor_pointer().role("button").accessibility_label("Hide this notice").tooltip("Hide")

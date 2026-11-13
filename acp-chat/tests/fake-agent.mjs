@@ -1,6 +1,9 @@
 // A scripted ACP agent for the bridge tests: one model option, and a prompt that
 // starts with "tool" asks permission before "running" a tool; one that starts with
-// "crash" asks and then exits without waiting for the answer. With
+// "crash" asks and then exits without waiting for the answer. One that starts with
+// "limit" is refused for a usage limit that resets in a minute (FAKE_AGENT_LIMIT_SECONDS):
+// Claude Code's `_claude/rateLimit` with status "rejected", then the turn ends; "limit-error"
+// ends it with an error instead. The next prompt is answered, the limit over. With
 // FAKE_AGENT_STORE set it keeps its updates in that file and can load the session.
 import * as fs from "node:fs";
 import { AcpConnection, lineSplitter } from "../mods/acp-chat/acp.js";
@@ -11,6 +14,7 @@ const history = store && fs.existsSync(store) ? JSON.parse(fs.readFileSync(store
 const sid = "fake-session";
 let model = "small";
 let cancelled = false;
+let limited = false;
 
 const conn = new AcpConnection((line) => process.stdout.write(line), {
   onNotification(method) {
@@ -55,6 +59,18 @@ async function prompt(text) {
     conn.request("session/request_permission", { sessionId: sid, toolCall: { toolCallId: "t0", title: "Crash" }, options: [{ optionId: "yes", name: "Allow", kind: "allow_once" }] }).catch(() => {});
     setTimeout(() => process.exit(3), 300);
     return new Promise(() => {});
+  }
+  if (text.startsWith("limit")) {
+    limited = true;
+    const resetsAt = Math.floor(Date.now() / 1000) + (Number(process.env.FAKE_AGENT_LIMIT_SECONDS) || 60);
+    update({ sessionUpdate: "usage_update", used: 1000, size: 200000, _meta: { "_claude/rateLimit": { status: "rejected", resetsAt, rateLimitType: "five_hour" } } });
+    if (text.startsWith("limit-error")) throw new Error("Usage limit reached");
+    update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "You've hit your limit." } });
+    return { stopReason: "end_turn" };
+  }
+  if (limited) {
+    limited = false;
+    update({ sessionUpdate: "usage_update", used: 1000, size: 200000, _meta: { "_claude/rateLimit": { status: "allowed", rateLimitType: "five_hour" } } });
   }
   if (text.startsWith("tool")) {
     update({ sessionUpdate: "tool_call", toolCallId: "t1", title: "Edit notes.md", kind: "edit", status: "pending" });
