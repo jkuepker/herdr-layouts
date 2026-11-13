@@ -103,10 +103,12 @@ const at = { space: "s1", tab: "t1", pane: "p9" };
 assert.deepEqual(wakeSteps([{ chat: "coordinator", tab: "t5", space: "s2" }], at, spaces), {
   show: [{ chat: "coordinator", tab: "t5", steps: [["space.select", { id: "s2" }], ["tab.select", { id: "t5" }]] }],
   back: [["space.select", { id: "s2" }], ["tab.select", { id: "t4" }], ["space.select", { id: "s1" }], ["tab.select", { id: "t1" }], ["pane.focus", { pane: "p9" }]],
+  settle: [],
 });
 // Several in one go, one return; a tab of the person's own space needs no other tab put back; a settled one is settled again.
 const plan = wakeSteps([{ chat: "c1", tab: "t2", space: "s1" }, { chat: "c2", tab: "t3", space: "s1" }, { chat: "coordinator", tab: "t5", space: "s2" }], at, spaces);
 assert.deepEqual(plan.show.map((s) => s.tab), ["t2", "t3", "t5"]);
+assert.deepEqual(plan.settle, ["t3"]); // for when the person moves and back isn't run
 assert.deepEqual(plan.back, [["space.select", { id: "s2" }], ["tab.select", { id: "t4" }], ["tab.settle", { id: "t3" }], ["space.select", { id: "s1" }], ["tab.select", { id: "t1" }], ["pane.focus", { pane: "p9" }]]);
 // The tab its space showed already (the remote one's only tab): nothing to put back there.
 assert.deepEqual(wakeSteps([{ chat: "c1", tab: "t6", space: "s3" }], { space: "s1", tab: "t1", pane: null }, spaces).back, [["space.select", { id: "s1" }], ["tab.select", { id: "t1" }]]);

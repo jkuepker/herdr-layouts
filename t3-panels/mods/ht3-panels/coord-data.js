@@ -241,8 +241,9 @@ export function wakeTab(chat, { spaces = [], places = {}, tasks = {}, coord = nu
 // command starts one in the background, so each tab is shown once, one after the other, and then everything is put
 // back. `targets`: [{ chat, tab, space }]; `at`: what is in front now ({ space, tab, pane }); `spaces`: spaces().
 // -> null (nothing to show: a target that is the shown tab starts by itself, and with no place to return to nothing
-// is touched), or { show: [{ chat, tab, steps }], back }, steps and back lists of [command, args]: back gives every
+// is touched), or { show: [{ chat, tab, steps }], back, settle }, steps and back lists of [command, args]: back gives every
 // other space the tab it showed before, settles again a tab that was settled, and ends on the person's space, tab and pane.
+// `settle`: the ids of the settled targets (showing a tab unsettles it), for when the person moves and back isn't run.
 export function wakeSteps(targets, at, spaces = []) {
   if (!at?.space || !at.tab) return null;
   const list = (targets ?? []).filter((t) => t?.tab && t.space && t.tab !== at.tab);
@@ -258,5 +259,5 @@ export function wakeSteps(targets, at, spaces = []) {
   }
   back.push(...settle, ["space.select", { id: at.space }], ["tab.select", { id: at.tab }]);
   if (at.pane) back.push(["pane.focus", { pane: at.pane }]);
-  return { show: list.map((t) => ({ chat: t.chat, tab: t.tab, steps: [["space.select", { id: t.space }], ["tab.select", { id: t.tab }]] })), back };
+  return { show: list.map((t) => ({ chat: t.chat, tab: t.tab, steps: [["space.select", { id: t.space }], ["tab.select", { id: t.tab }]] })), back, settle: settle.map(([, a]) => a.id) };
 }
