@@ -71,7 +71,8 @@ export function inboxActions(view, model) {
       }
       bringBack(seen);
     }, cx);
-    const moved = moveOn(xs);
+    // `settleAdvance: false` in the settings (shared "ht3-panels.settings"; on by default) settles in place instead.
+    const moved = shared("ht3-panels.settings")?.settleAdvance !== false && moveOn(xs);
     for (const a of panes) run(props()?.home ? `ht3-tabs.close-pane:${a.pane}` : "pane.close", props()?.home ? undefined : { pane: a.pane });
     return moved;
   };
