@@ -9,6 +9,7 @@
 import { AcpConnection, PROTOCOL_VERSION } from "./acp.js";
 import { addUsage } from "./token-budget.js";
 import { FORCE_STOP_NOTE } from "./forcestop.js";
+import { isChange, noteChange } from "./lastchange.js";
 import { emptyTranscript, addUser, addNotice, applyUpdate, endTurn, trim, handoffText, noteLimit, limitText } from "./transcript.js";
 
 export class ChatSession {
@@ -40,6 +41,8 @@ export class ChatSession {
     if (old?.transcript?.items) {
       this.state.transcript = old.transcript;
       this.state.seq = old.seq ?? 0;
+      // When it last really changed (lastchange.js) stays known over a restart.
+      if (old.lastChange) this.state.lastChange = old.lastChange;
       endTurn(this.state.transcript);
       this.resumeId = old.sessionId ?? null;
       // A forked chat (agent-acp.js forkChat): its new session is told what was said, with the first message.
@@ -56,6 +59,7 @@ export class ChatSession {
         if (u.sessionUpdate === "config_option_update" && u.configOptions) state.configOptions = u.configOptions;
         else if (u.sessionUpdate === "current_mode_update") this.setCurrent("mode", u.currentModeId);
         else applyUpdate(state.transcript, u);
+        if (isChange(u, state.status)) noteChange(state);
         this.changed(false);
       },
       onRequest: (method, params) => {
@@ -212,6 +216,7 @@ export class ChatSession {
     const partial = state.transcript.items.slice(from + 1).filter((m) => m.kind === "agent").map((m) => m.text ?? "").join("\n\n").trim();
     if (state.steering) {
       addUser(state.transcript, text, attachments, true);
+      noteChange(state);
       this.changed(false);
       try {
         const r = await this.conn.request("_session/steering", { sessionId: state.sessionId,
@@ -254,6 +259,7 @@ export class ChatSession {
     if (!opt.shown) addUser(state.transcript, text, attachments);
     state.status = "working";
     state.error = null;
+    noteChange(state);
     this.changed(false);
     try {
       const r = await this.conn.request("session/prompt", { sessionId: state.sessionId, prompt: [...(sent.trim() ? [{ type: "text", text: sent }] : []), ...blocks] });
@@ -274,6 +280,7 @@ export class ChatSession {
       if (limitText(e.message)) noteLimit(state.transcript, { ...(had?.resetsAt ? { resetsAt: had.resetsAt, rateLimitType: had.type } : {}), status: "rejected", text: limitText(e.message) });
     }
     endTurn(state.transcript);
+    noteChange(state);
     this.stopAsked = null;
     // A turn stopped by steer() stays "working": the steering message is on its way, and nothing queued may pass it.
     if (state.status === "working" && !this.steered && !this.held) state.status = "ready";
@@ -327,12 +334,15 @@ export class ChatSession {
     endTurn(state.transcript);
     state.status = "stopped";
     state.forceStopped = true;
+    noteChange(state);
     this.changed(true);
     this.kill();
     return true;
   }
 
   stop() {
+    // A stopped turn is a change; stopping an agent that rests is not.
+    if (this.state.status === "working") noteChange(this.state);
     this.state.status = "stopped";
     this.answerPermission({ outcome: "cancelled" });
     this.changed(true);
