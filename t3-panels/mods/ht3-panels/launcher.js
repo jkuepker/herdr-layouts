@@ -57,7 +57,7 @@ const ago = (ms) => { const m = Math.max(0, Math.round((Date.now() - ms) / 60000
 
 // The chats saved under data/ht3-panels/chats (each a state.json), newest first, at most 60:
 // { id, title, agent, argv, cwd, machine, at, text (what was said, to search) }. Chats that never got a message are left out.
-async function savedChats() {
+export async function savedChats() {
   const dir = `${appHome()}/data/${MOD}/chats`, named = shared(`${MOD}.named`) ?? {};
   // (A mod's fs has no readdir or stat: the shell lists them.)
   const r = await exec("/bin/sh", ["-c", "cd \"$1\" 2>/dev/null && stat -f '%m %N' */state.json 2>/dev/null", "sh", dir]).catch(() => null);
