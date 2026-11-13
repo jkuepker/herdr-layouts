@@ -19,6 +19,7 @@ import { scriptsOf, setScripts, setupOf, setSetup, toggleSetup, setupTemplate } 
 import { runSetup, setupCard, setupButtons, SetupDialog } from "./setup.js";
 import { FANOUT_MIN, FANOUT_MAX, cleanModels, typedModels, toggleModel, fanoutProblem, fanoutSpecs, fanoutNotice } from "./fanout.js";
 import { parseRefs, REF_ARGS } from "./branches.js";
+import { validChatId } from "./chatlinks.js";
 import { baseRefs, defaultBase, filterRefs, cleanFrom, onOrigin, fetchArgs, baseLabel } from "./basebranch.js";
 
 const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
@@ -166,6 +167,28 @@ export async function savedChats() {
     } catch {}
   }
   return out;
+}
+
+// Goes to a chat by its id (a chat link's click, `ht3-panels.openchat:<id>`): a chat open in a tab is shown ("focused"),
+// a closed one opens as a tab again as Earlier chats does it (reopen below; "opened"). null when nothing of that chat
+// is saved here.
+export async function openChat(id) {
+  if (!validChatId(id)) return null;
+  const at = (shared(`${MOD}.places`) ?? {})[id];
+  if (at?.pane && spaces().some((s) => s.tabs.some((t) => t.id === at.tab))) { run("pane.focus", { pane: at.pane }); return "focused"; }
+  let s = null;
+  try { s = JSON.parse(await readTextFile(`${appHome()}/data/${MOD}/chats/${id}/state.json`)); } catch {}
+  if (!s || !Array.isArray(s.agentArgv)) return null;
+  const space = focused()?.space;
+  run("tab.new", { mod: MOD, ...(space ? { space } : {}), name: agentName(s.agentArgv, s.agentInfo?.title ?? s.agentInfo?.name),
+    props: { panel: "chat", chat: id, agent: s.agentArgv, cwd: s.cwd ?? null, machine: s.machine ?? null } });
+  return "opened";
+}
+// The same, with a short notice when there is no such chat.
+export async function openChatOrSay(id) {
+  const how = await openChat(String(id ?? "").trim()).catch(() => null);
+  if (!how) notify({ title: "Chat not found", body: String(id ?? "").trim().slice(0, 80), level: "info", timeout: 3000 });
+  return how;
 }
 
 export class Launcher {

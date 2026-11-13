@@ -20,7 +20,7 @@ import { props, nextCommand, run, openOverlay, shared, setShared } from "herdr";
 import { MOD, tokens, iconButton } from "./look.js";
 import { ChatPanel, openLauncher } from "./chat.js";
 import { FilePanel } from "./editor.js";
-import { Launcher, fanOut } from "./launcher.js";
+import { Launcher, fanOut, openChatOrSay } from "./launcher.js";
 import { parseFanout } from "./fanout.js";
 import { Strip, ADD_MENU } from "./strip.js";
 import { AddMenu, ProjectMenu, CopyMenu, ThreadMenu, RevertMenu } from "./menus.js";
@@ -77,7 +77,8 @@ class Buttons {
   // chat with that agent), menu:add[:<group>], menu:project, pin:<folder> (the folder Files, Diff
   // and the pull request surfaces look at for the shown space; pin: with none goes back to the
   // terminal's), settings (the Settings dialog), set:<path>=<json> (one setting, e.g.
-  // set:agents.pi.enabled=false; set:<path> alone goes back to its default), earlier (the earlier chats, to search and reopen).
+  // set:agents.pi.enabled=false; set:<path> alone goes back to its default), earlier (the earlier chats, to search and reopen),
+  // openchat:<chat id> (shows that chat, open or saved).
   // The open Project popover (menus.js) takes git:pull, branches, branch:<name>, branch:new:<name>, branch:filter:<text>, key:<key>.
   command(c, cx) {
     const [name, a, b] = c.split(":");  // (pin keeps its whole path)
@@ -125,6 +126,9 @@ class Buttons {
     else if (name === "quick-line") showLine(Number(a), cx);
     // earlier: the New chat dialog as a list of the earlier chats alone, its search focused (the palette's "Earlier chats…").
     else if (name === "earlier") openOverlay({ mod: MOD, kind: "dialog", width: 512, height: 520, props: { find: true } });
+    // openchat:<chat id>: goes to that chat, as a click on a chat link in a message does (chatlinks.js, launcher.js openChat): its
+    // tab is shown if it is open, else it opens again as from Earlier chats. An id no chat has: a "Chat not found" notice.
+    else if (name === "openchat") cx.spawn(async (cx) => { try { await openChatOrSay(c.slice(9)); } catch (e) { fail(e); } cx.notify(); });
     // script: runs the project script the Project popover just picked (scripts.js), if it was picked a moment ago.
     else if (name === "script") { const s = pendingScript(); if (s && Date.now() - s.at < 10000) cx.spawn(async (cx) => { try { await openScript(s); } catch (e) { fail(e); } cx.notify(); }); }
     // prChat: Start chat from PR (pr.js). Alone it asks for the number or the address; prChat:<number or address> starts at once.
