@@ -296,7 +296,7 @@ function givePlace(chat, tab) {
 // per batch of posts). Herdr has no command that starts a pane's mod in the background (tab.select, tab.new and
 // pane.focus take no such argument, and a copy starts the first time it shows), so each one's tab is shown until its
 // copy began (at most two seconds), all in one go, and then the person's space, tab and pane are shown again
-// (wakeSteps). Should the person go elsewhere meanwhile, nothing more is touched. A tab is never opened here: a chat
+// (wakeSteps). Should the person go elsewhere meanwhile, nothing more is touched but settling again a settled tab shown. A tab is never opened here: a chat
 // with no tab waits (tasks.js wakeChat opens a closed task's again when it is told something).
 async function wake(tasks, f) {
   if (waking || machines().some((m) => m.layout === "loading")) return;
@@ -307,12 +307,15 @@ async function wake(tasks, f) {
   const plan = wakeSteps(targets, inFront(), all);
   if (!plan) return;
   waking = true;
+  const passed = new Set();
+  let back = false;
   try {
     let shown = inFront().tab, moved = false;
     for (const t of plan.show) {
       if (inFront()?.tab !== shown) return; // the person went elsewhere: where they are is theirs
       woke.set(t.chat, { at: Date.now(), post: targets.find((x) => x.chat === t.chat).post });
       for (const [name, args] of t.steps) run(name, args);
+      passed.add(t.tab);
       for (let i = 0; i < 40 && !mountedChats().has(t.chat); i++) await nap(50);
       if (mountedChats().has(t.chat)) givePlace(t.chat, t.tab);
       else console.log(`ht3-panels coordinator wake: the chat ${t.chat} didn't start in its tab.`);
@@ -320,8 +323,12 @@ async function wake(tasks, f) {
       if (now === t.tab) { shown = t.tab; moved = true; }
       else if (now !== shown) return;
     }
-    if (moved) for (const [name, args] of plan.back) run(name, args);
-  } finally { waking = false; }
+    if (moved) { for (const [name, args] of plan.back) run(name, args); back = true; }
+  } finally {
+    // The person moved before back ran: a settled tab that was shown is settled again, unless it is where they are now.
+    if (!back) for (const id of plan.settle) if (passed.has(id) && inFront()?.tab !== id) run("tab.settle", { id });
+    waking = false;
+  }
 }
 
 // ---- the chat ----
