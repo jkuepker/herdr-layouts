@@ -9,11 +9,11 @@
 
 import { div, list, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, TextView, Scrollbar } from "gpui-base";
-import { run, openOverlay, appHome, home, exec, hc, layout, settings, spaces, shared, setShared, notify, focused, panes } from "herdr";
+import { run, openOverlay, appHome, home, exec, hc, readTextFile, layout, settings, spaces, shared, setShared, notify, focused, panes } from "herdr";
 import { MOD, tokens, alpha, icon, agentMark, button, iconButton, control, badge, workLine, divider, shortPath } from "./look.js";
 import { AcpSource, AGENTS, detect, argvOf, forkChat, agentOf, chatLike, askOnce } from "./agent-acp.js";
 import { TermSource } from "./agent-term.js";
-import { Reporter, paneIds, tabIds, placeNew, markCut, clearCut } from "./report.js";
+import { Reporter, agentName, paneIds, tabIds, placeNew, markCut, clearCut } from "./report.js";
 import { fileIcon } from "./fileicons.js";
 import { snapshot, turnStat, undoRevert, prune, chatsWithRefs, safe as refName, KEEP } from "./checkpoint.js";
 import { checkpointsOn, followUp, limitModels, rememberModels, prefs, chatTokenBudget } from "./settings.js";
@@ -21,9 +21,10 @@ import { budgetNotice } from "./token-budget.js";
 import { Diagrams, isMermaid, fit, INSTALL } from "./mermaid.js";
 import { addNotice, toMarkdown, subagents } from "./transcript.js";
 import { touchesSecret } from "./secrets.js";
-import { repoOf } from "./launcher.js";
+import { repoOf, savedChats } from "./launcher.js";
 import { ServerWatch, serversStrip } from "./servers.js";
 import { terminalBlock, pickTerminal, TERM_LINES } from "./termctx.js";
+import { chatRefBlock, lastAgentText, chatTitle, otherChats, matchChat } from "./chatref.js";
 
 const LANE = 736; // --chat-content-max-width: 46rem
 const DRAW_EVERY_MS = 80;
@@ -95,6 +96,7 @@ const LOCAL_COMMANDS = [
   { name: "branch", description: "New chat on this branch: same agent, same folder", local: true },
   { name: "terminal", description: "This chat's terminal, under the chat: open, hide or show it", local: true },
   { name: "termout", description: "A terminal's last output into the message box (/termout 80: that many lines)", local: true },
+  { name: "chatref", description: "Another chat's last reply into the message box, for this agent to build on", local: true },
   { name: "send-new", description: "Send this draft as a new chat, and go there", local: true },
   { name: "send-background", description: "Send this draft as a new chat, and stay here", local: true },
   { name: "usage", description: "Tokens and context: this chat and every agent", local: true },
@@ -243,6 +245,23 @@ const initials = (name) => {
 
 // Every chat view in this window, for the composer keys (chatKey): one press acts on one chat.
 const CHATS = new Set();
+
+// The chats /chatref can offer for the chat `self`: the saved ones (launcher.js savedChats, newest first), without
+// this one, the chats open in a tab (shared ht3-panels.places) marked and first. [{ id, title, agent, at, open }]
+async function chatRefRows(self) {
+  const places = shared(`${MOD}.places`) ?? {}, tabs = new Set(spaces().flatMap((s) => s.tabs.map((t) => t.id)));
+  const rows = otherChats(await savedChats(), self).map((c) => ({ id: c.id, title: c.title, agent: c.agent, at: c.at, machine: c.machine, open: tabs.has(places[c.id]?.tab) }));
+  return [...rows.filter((c) => c.open), ...rows.filter((c) => !c.open)];
+}
+// One saved chat for chatRefBlock: { id, title, agent, cwd, branch, path, lastReply, machine }. Rejects when its state.json
+// can't be read. The branch is asked of its folder (where the chat runs); null when it isn't a repository.
+async function chatRefInfo(id) {
+  const path = `${appHome()}/data/${MOD}/chats/${id}/state.json`, s = JSON.parse(await readTextFile(path)), items = s.transcript?.items ?? [];
+  const branch = s.cwd ? await exec("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: s.cwd, on: s.machine ?? undefined, timeout: 8000 })
+    .then((r) => (r.code === 0 ? r.stdout.trim() : null), () => null) : null;
+  return { id, title: chatTitle(id, items, shared(`${MOD}.named`) ?? {}), agent: agentName(s.agentArgv ?? [], s.agentInfo?.title ?? s.agentInfo?.name), cwd: s.cwd ?? null, branch: branch && branch !== "HEAD" ? branch : null,
+    path, lastReply: lastAgentText(items), machine: s.machine ?? null };
+}
 
 export class ChatPanel {
   init(p, cx) {
@@ -624,6 +643,7 @@ export class ChatPanel {
       if (item.name === "branch" && this.source.kind === "acp" && this.source.state) chatLike(this.source.state);
       if (item.name === "terminal") this.toggleTerminal(cx);
       if (item.name === "termout") this.termOut(cx);
+      if (item.name === "chatref") this.chatRefOpen(cx);
       if (item.name === "title") this.retitle(cx);
       if (item.name === "send-new" || item.name === "send-background") return this.sendNew(cx, item.name === "send-background");
       // With a draft before "/stash" it is parked; alone, the parked drafts open.
@@ -752,6 +772,11 @@ export class ChatPanel {
     if (c === "term") this.toggleTerminal(cx);
     // termout and termout:<n>: "/termout", the last n (40) lines of a terminal into the message box (termOut).
     if (c === "termout" || /^termout:\d+$/.test(c)) this.termOut(cx, Number(c.slice(8)) || TERM_LINES);
+    // chatref, chatref:<chat id> and chatref-find:<words>: "/chatref" (the list of other chats), a chat by its id, a chat
+    // by words of its name (chatRef). Never this chat itself.
+    if (c === "chatref") this.chatRefOpen(cx);
+    if (c.startsWith("chatref:")) this.chatRef(cx, c.slice(8).trim());
+    if (c.startsWith("chatref-find:")) this.chatRefFind(cx, c.slice(13));
     // send:new and send:background: the draft becomes the first message of a new chat (sendNew); the layout's keys.
     if (c === "send:new" || c === "send:background") this.sendNew(cx, c === "send:background");
     // new:here is "/branch": a new chat with this one's agent in this one's folder (its branch).
@@ -861,6 +886,10 @@ export class ChatPanel {
     // "/termout" and "/termout 80": a terminal's output goes into the box, nothing is sent.
     const termout = /^\/termout(?:\s+(\d+))?$/.exec(text);
     if (termout) { this.input.set_value(""); this.hasText = false; this.trig = null; return this.termOut(cx, Number(termout[1]) || TERM_LINES); }
+    // "/chatref" (the other chats to pick from) and "/chatref some words" (the chat whose name has them): that chat's last
+    // reply goes into the box, nothing is sent.
+    const chatref = /^\/chatref(?:\s+([\s\S]+))?$/.exec(text);
+    if (chatref) { this.input.set_value(""); this.hasText = false; this.trig = null; return chatref[1] ? this.chatRefFind(cx, chatref[1]) : this.chatRefOpen(cx); }
     // "/clear" is T3's own as well (ComposerFreshSession): the next message starts a fresh session. Not on an agent that is a terminal's.
     if (/^\/clear$/.test(text) && this.source.kind === "acp") { this.input.set_value(""); this.hasText = false; this.trig = null; return this.armFresh(cx, true); }
     if ((!text && !files.length) || !v?.alive) return;
@@ -1328,6 +1357,52 @@ export class ChatPanel {
       if (block) this.quoteIn(cx, block);
       else this.termSay(cx, r?.code === 0 ? `Terminal ${name} has no output.` : `Couldn't read terminal ${name}.`);
     });
+  }
+  // T3's thread context (ThreadContextChip): another chat as context, so this agent can build on what that one did. "/chatref"
+  // opens the list of the other chats (chatRefRows: the open ones first, then the saved ones); a pick, `chatref:<id>` or
+  // `chatref-find:<words>` (matchChat) puts a reference into the box (chatref.js chatRefBlock): its name, agent, folder and
+  // branch, the file of its whole transcript, and its last reply as a quote. What is known of a chat is what it has saved
+  // here (it saves as it goes, so an open chat is a moment behind at most); a chat of another machine is read from the copy
+  // kept here too. A chat that said nothing, or can't be read, gets a notice and the box stays as it is.
+  chatRefOpen(cx) {
+    this.picker = "__chatref";
+    this.chatRows = null;
+    cx.notify();
+    cx.spawn(async (cx) => { this.chatRows = await chatRefRows(this.chatId).catch(() => []); cx.notify(); });
+  }
+  chatRefFind(cx, words) {
+    cx.spawn(async (cx) => {
+      const found = matchChat(await chatRefRows(this.chatId).catch(() => []), words);
+      if (found) this.chatRef(cx, found.id);
+      else this.termSay(cx, `No other chat has "${String(words).trim()}" in its name.`);
+    });
+  }
+  chatRef(cx, id) {
+    this.picker = null;
+    if (!/^[\w-]+$/.test(id) || id === this.chatId) return this.termSay(cx, id === this.chatId ? "That is this chat." : `"${id}" is not a chat id.`);
+    cx.spawn(async (cx) => {
+      const info = await chatRefInfo(id).catch(() => null);
+      if (!info) return this.termSay(cx, `Couldn't read the chat ${id}: nothing of it is saved here.`);
+      const block = info.lastReply ? chatRefBlock(info) : null;
+      if (block) this.quoteIn(cx, block);
+      else this.termSay(cx, `The chat "${info.title}" has said nothing yet${info.machine ? ` that is saved here (it runs on ${info.machine})` : ""}.`);
+    });
+  }
+  // The picker's panel: the other chats, a click on one is chatRef.
+  chatRefPanel(k) {
+    const rows = this.chatRows;
+    const row = (id, body, onClick) => h_flex().id(id).min_h(28).px(8).gap(8).flex_none().items_center().rounded(4).text_size(14)
+      .cursor_pointer().role("button").hover((st) => st.bg(k.accent)).on_click((_e, cx) => onClick(cx)).children(body);
+    return h_flex().w_full().flex_none().justify_center().px(16).pb(6)
+      .child(h_flex().w_full().max_w(LANE).justify_start()
+        .child(v_flex().id("chatref-menu").w(420).max_h(300).p(4).rounded(8).border(1).border_color(k.border).bg(k.popover).shadow_lg().overflow_y_scrollbar()
+          .children((rows ?? []).map((c, i) => row(`chatref-${i}`, [
+            icon("message-square").size(14).flex_none().text_color(k.muted),
+            div().flex_1().min_w(0).truncate().child(c.title),
+            div().flex_none().max_w(140).truncate().text_size(12).text_color(k.muted).child(`${c.open ? "open · " : ""}${c.agent ?? ""}`),
+          ], (cx) => this.chatRef(cx, c.id))))
+          .when(rows && !rows.length, (el) => el.child(div().px(8).py(6).text_size(12).line_height("16px").text_color(k.muted).child("No other chat to take a reply from.")))
+          .when(!rows, (el) => el.child(div().px(8).py(6).text_size(12).text_color(k.muted).child("Looking for chats...")))));
   }
   // A short notice in the thread (a toast for an agent that is a terminal's, which has no thread of its own to write in).
   termSay(cx, text) {
@@ -2214,6 +2289,7 @@ export class ChatPanel {
   // The choices of one composer control, as T3's menus look: 4 in, radius 8, 28px rows.
   pickerPanel(k, v) {
     if (this.picker === "__stash") return this.stashPanel(k);
+    if (this.picker === "__chatref") return this.chatRefPanel(k);
     const opt = v.options.find((o) => o.id === this.picker);
     if (!opt) return div();
     const f = this.filter.value().toLowerCase();
