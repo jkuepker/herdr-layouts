@@ -151,6 +151,9 @@ export class ChatSession {
       const t = this.state.transcript;
       if (!t.usage && kept.usage) t.usage = kept.usage;
       if (!t.usageLog?.length && kept.usageLog?.length) t.usageLog = kept.usageLog;
+      // And a limit that stopped the chat, as it was noted then (the replay has none, or notes the same one as of now):
+      // "Resume at reset" (limit-resume.js) goes by it after a restart.
+      if (kept.limit?.status === "rejected" && (!t.limit || (t.limit.status === "rejected" && t.limit.resetsAt === kept.limit.resetsAt))) t.limit = kept.limit;
       endTurn(this.state.transcript);
       addNotice(this.state.transcript, "Resumed the agent's session.");
       return true;
@@ -258,7 +261,9 @@ export class ChatSession {
     } catch (e) {
       addNotice(state.transcript, e.message, "error");
       // A refusal for a limit (rate, usage, credits) is also kept as the chat's limit, for the line over the message box.
-      if (limitText(e.message)) noteLimit(state.transcript, { status: "rejected", text: limitText(e.message) });
+      // The reset time the agent gave with this turn's "rejected" stays with it (limit-resume.js sends "continue" then).
+      const had = state.transcript.limit?.status === "rejected" ? state.transcript.limit : null;
+      if (limitText(e.message)) noteLimit(state.transcript, { ...(had?.resetsAt ? { resetsAt: had.resetsAt, rateLimitType: had.type } : {}), status: "rejected", text: limitText(e.message) });
     }
     endTurn(state.transcript);
     // A turn stopped by steer() stays "working": the steering message is on its way, and nothing queued may pass it.

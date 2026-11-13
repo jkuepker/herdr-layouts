@@ -302,6 +302,8 @@ export class Settings {
         .child(this.section(k, "Chats", "How a chat with an agent behaves.",
           [this.row(icon("rows-2").size(16).flex_none().text_color(k.muted), "Steer instead of queue", "A message sent while the agent works interrupts it. Off: it waits for the turn to end.",
             [this.toggle(k, "set-steer", followUp() === "steer", "Steer instead of queue", () => setPref("followUp", followUp() === "steer" ? undefined : "steer"))]),
+          this.row(icon("clock").size(16).flex_none().text_color(k.muted), "Resume chats when a usage limit resets", "A chat stopped by a usage limit sends “continue” when the limit resets.",
+            [this.toggle(k, "set-resume-limit", prefs().autoResumeLimit === true, "Resume chats when a usage limit resets", () => setPref("autoResumeLimit", prefs().autoResumeLimit === true ? undefined : true))]),
           this.row(icon("gauge").size(16).flex_none().text_color(k.muted), "Token budget per chat", "A chat that has used 80% of this many input + output tokens (as its agent reports them) shows a warning over the message box; at 100% the line offers Stop and New session. Agents that report no tokens show nothing.",
             [button(k, "set-token-budget", budgetLabel(chatTokenBudget()), () => setPref("chatTokenBudget", nextBudget(chatTokenBudget()) || undefined), { size: "sm", variant: "outline", tip: "Click to change: Off, 100k, 250k, 500k, 1M, 2M" })]),
           this.row(icon("rotate-ccw").size(16).flex_none().text_color(k.muted), "Checkpoints", "In a Git repository, snapshot the files before and after each turn, for its diff and for Revert.",
