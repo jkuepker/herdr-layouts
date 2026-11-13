@@ -49,6 +49,7 @@ import { WorktreesDialog, openWorktrees, worktreesOpen } from "./worktrees.js";
 import { CompareDialog, openCompare, compareOpen } from "./compare.js";
 import { DepsDialog, openDeps, depsOpen } from "./deps.js";
 import { coordCommand, openCoordinator, writeState, postTo, CHAT } from "./coordinator.js";
+import { prWatch, prWatchCommand } from "./prwatch-run.js";
 
 export { SIDE };
 
@@ -65,7 +66,7 @@ class Buttons {
     // pass looks after chats a restart left behind: a turn that ran at the quit is marked cut off ("interrupted", told
     // to the coordinator once), and a chat that has posts waiting but no copy running (a copy starts only when its tab
     // first shows) is started by showing its tab for a moment and then the person's own again (coordinator.js wake).
-    cx.timer.every(2000, (cx) => { prune(); cx.spawn(() => loadPrefs()); cx.spawn(() => writeState()); cx.spawn(() => keepAwake()); });
+    cx.timer.every(2000, (cx) => { prune(); cx.spawn(() => loadPrefs()); cx.spawn(() => writeState()); cx.spawn(() => keepAwake()); cx.spawn(() => prWatch()); });
     cx.spawn((cx) => keep(cx));
   }
   close() {}
@@ -180,6 +181,9 @@ class Buttons {
     else if (c === "coordinator") cx.spawn(async (cx) => { try { await openCoordinator(); } catch (e) { fail(e); } cx.notify(); });
     else if (name === "coord-post") postTo(CHAT, c.slice(11));
     else if (name === "coord") cx.spawn(async (cx) => { await coordCommand(c.slice(6)); cx.notify(); });
+    // prwatch:on | off | now: PR watch (prwatch.js): chats are told of failed checks and new comments on their branch's open pull
+    // request. on / off set the "prWatch" setting; now sweeps at once, whatever it says, and a notice says what it found.
+    else if (name === "prwatch") cx.spawn(async (cx) => { try { await prWatchCommand(a); } catch (e) { fail(e); } cx.notify(); });
     // blame / history: Files shows or hides blame in its open file's Lines view / the file's commit history (editor.js, blame.js; they reach Files while it is shown).
     // (Nothing to run here: the Files copy takes them, like lines and open:<path>.)
     // reopen-closed: brings back the newest closed side-panel surface, file or chat tab (side.js reopenClosed; T3's mod+shift+t).

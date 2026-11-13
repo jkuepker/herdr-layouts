@@ -32,6 +32,8 @@
 // - keepAwake (false): while a chat or task agent works, the Mac doesn't go to sleep (caffeinate, macOS only; report.js keepAwake).
 // - autoResumeLimit (false): a chat stopped by a usage limit sends "continue" when the limit resets (limit-resume.js); off, its
 //   banner's "Resume at …" button arms it for that one stop.
+// - prWatch (false): a chat whose branch has an open GitHub pull request gets a message when checks failed on it or someone
+//   commented (prwatch.js; looked at every two minutes through gh).
 // - sidePanelHiddenInNewSpaces (false): a space shown for the first time starts with the side panel hidden.
 // Anything left out is its default; unknown keys are kept as they are.
 
@@ -102,6 +104,8 @@ export const coordinatorNotify = () => prefs().coordinatorNotify !== false;
 export const keepAwakeOn = () => prefs().keepAwake === true;
 // "autoResumeLimit": true arms "Resume at reset" in every chat a usage limit stops; the default leaves it to the banner's button.
 export const autoResumeLimit = () => prefs().autoResumeLimit === true;
+// "prWatch": true has chats told of failed checks and new comments on their pull requests (prwatch.js); the default does not.
+export const prWatchOn = () => prefs().prWatch === true;
 // "followUp": "steer" makes a message sent while the agent works interrupt it; the default queues it.
 export const followUp = () => (prefs().followUp === "steer" ? "steer" : "queue");
 
