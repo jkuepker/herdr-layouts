@@ -29,6 +29,9 @@
 //   "interrupted" and the coordinator is told once which ones (coord-data.js restartText), to have their agents go on.
 //   And each pass, a chat that has posts waiting and no copy running (the coordinator's own too) is started: its
 //   restored tab is shown for a moment and the person's space, tab and pane are shown again (`wake`, below).
+// - the keeper keeps the cap on running tasks (settings.js `taskMaxRunning`, taskqueue.js): each pass it starts the
+//   oldest queued tasks into the free slots (`drain`), and a `run` beyond the cap queues the task instead of starting it;
+//   state.json has such a task's state as "queued" with its place, and the cap as `limit`;
 // `coordinator` shows the chat, making the space and the chat when they aren't there.
 
 import { exec, run, shared, setShared, spaces, panes, machines, focused, appHome, home, readTextFile, writeTextFile, notify } from "herdr";
@@ -36,9 +39,10 @@ import { mountedChats, cutAll, markCut } from "./report.js";
 import { MOD } from "./look.js";
 import { AGENTS, detect } from "./agent-acp.js";
 import { repoOf } from "./launcher.js";
-import { roleAgent, roleSet, coordinatorNotify } from "./settings.js";
+import { roleAgent, roleSet, coordinatorNotify, taskMaxRunning, prefsRead } from "./settings.js";
+import { mustQueue, due as queueDue, queueOf, placeIn, enqueue, unqueued, markOf } from "./taskqueue.js";
 import { tasksOf, taskKeys, update, newId, startTask, observe, workAll, setWork, WORK_EVERY_MS, postTo, tellTask, askUpdate } from "./tasks.js";
-import { newTask, patch, remove, keyOf, chatState, readWork, readyStale, unready, showCommand, conflictGone, unconflict, SENT_WORDS } from "./tasklist.js";
+import { newTask, patch, remove, keyOf, parseKey, chatState, readWork, readyStale, unready, showCommand, conflictGone, unconflict, SENT_WORDS } from "./tasklist.js";
 import { lastReply } from "./compare-data.js";
 import { parseOp, logOp, snapshot, templateDue, pickAnswer, readyCheck, taskStates, noticeDiff, noticeText, conflictNews, conflictText,
   savedCut, restartNews, restartText, wakeDue, wakeTab, wakeSteps, resettleAfter } from "./coord-data.js";
@@ -126,7 +130,10 @@ export async function coordCommand(text) {
       entry.sent = how;
       if (SENT_WORDS[how]) entry.note = SENT_WORDS[how].trim();
     }
-    if (o.op === "run" || o.run) await runOne(key, find());
+    if (o.op === "run" || o.run) {
+      const n = await runOne(key, find());
+      if (n) { entry.queued = n; entry.note = `Queued (${n}): at most ${taskMaxRunning()} tasks run at once. Herdr starts it when a running one ends.`; }
+    }
     entry.ok = true;
   } catch (e) {
     entry.ok = false;
@@ -138,13 +145,49 @@ export async function coordCommand(text) {
 }
 
 // Starts a task the way Tasks does, in the space that works in its repository; the tab shown now is shown again once
-// the chat has started, so the coordinator's chat stays in front.
+// the chat has started, so the coordinator's chat stays in front. Beyond the cap on running tasks (or behind others that
+// wait already) it is queued instead, as is one that waits already. -> its place in the queue, or 0 when it was started.
+const allTasks = () => Object.fromEntries(taskKeys().map((key) => [key, tasksOf(key)]));
 async function runOne(key, t) {
   const mark = `${key}\n${t.id}`;
   if (making.has(mark)) throw new Error("This task is being started already.");
+  const mk = Object.fromEntries(making);
+  if (t.queued || mustQueue({ cap: taskMaxRunning(), tasks: allTasks(), facts: facts(), making: mk })) {
+    update(key, (l) => enqueue(l, t.id, { at: Date.now() }));
+    return placeIn(queueOf(allTasks(), mk), key, t.id) || 1;
+  }
   making.set(mark, "making the worktree");
   try { await startTask(key, t, { back: focused()?.tab ?? null, step: (words) => making.set(mark, words) }); }
   finally { making.delete(mark); }
+  return 0;
+}
+
+// Each pass of writeState: the queue (taskqueue.js). A queued task that was marked done leaves it; the oldest queued
+// ones are started into the free slots (all of them once the cap is gone). A start is not awaited: `making` holds its
+// slot from here on, and then its chat does. One the keeper began before a restart (`started`, with no start under way)
+// is begun again. Nothing is started before the settings file was read (the cap isn't known) or while a machine's layout loads.
+function drain(tasks, f) {
+  if (!prefsRead() || machines().some((m) => m.layout === "loading")) return;
+  for (const [key, list] of Object.entries(tasks)) if (list.some((t) => t.queued && t.done)) update(key, (l) => l.map((t) => (t.queued && t.done ? unqueued(t) : t)));
+  for (const q of queueDue({ cap: taskMaxRunning(), tasks, facts: f, making: Object.fromEntries(making) })) startQueued(q.key, q.id);
+}
+function startQueued(key, id) {
+  const mark = markOf(key, id), t = tasksOf(key).find((x) => x.id === id), q = t?.queued;
+  if (!q || t.done || making.has(mark)) return;
+  making.set(mark, "making the worktree");
+  update(key, (l) => patch(l, id, { queued: { ...q, started: Date.now() } }));
+  const entry = { at: Date.now(), op: "start", project: parseKey(key)?.root ?? null, id };
+  // Where the person stood when they asked, if that space is still there; the tab shown now is shown again after.
+  const space = q.space && spaces().some((s) => s.id === q.space) ? q.space : undefined;
+  startTask(key, t, { ...(q.cwd ? { cwd: q.cwd } : {}), ...(space ? { space } : {}), back: focused()?.tab ?? null, step: (words) => making.set(mark, words) })
+    .then(() => { entry.ok = true; })
+    .catch((e) => {
+      entry.ok = false;
+      entry.error = why(e);
+      console.log(`ht3-panels.coord: start of ${id}: ${entry.error}`);
+      update(key, (l) => l.map((x) => (x.id === id ? { ...unqueued(x), startError: entry.error } : x)));
+    })
+    .finally(() => { making.delete(mark); ops = logOp(ops, entry); });
 }
 
 // ---- the state file ----
@@ -205,6 +248,8 @@ export async function writeState() {
     const f = facts(), { turns, places, status } = f;
     staleMarks(keys, f);
     tasks = Object.fromEntries(keys.map((key) => [key, tasksOf(key)]));
+    drain(tasks, f);
+    tasks = Object.fromEntries(keys.map((key) => [key, tasksOf(key)]));
     lookAtWork(tasks, f);
     const said = {};
     for (const t of Object.values(tasks).flat()) {
@@ -213,7 +258,7 @@ export async function writeState() {
       said[t.run.chat] = await replyOf(t.run.chat, `${word}:${turns[tab] ?? 0}`, word === "working");
     }
     for (const chat of replies.keys()) if (!(chat in said)) replies.delete(chat);
-    const body = snapshot({ spaces: spaces(), tasks, facts: f, replies: said, making: Object.fromEntries(making), ops, skip: coordDir(), work: workAll() });
+    const body = snapshot({ spaces: spaces(), tasks, facts: f, replies: said, making: Object.fromEntries(making), ops, skip: coordDir(), work: workAll(), cap: taskMaxRunning() });
     const text = JSON.stringify(body, null, 2) + "\n";
     if (text !== written) {
       await exec("mkdir", ["-p", coordDir()]).catch(() => null);

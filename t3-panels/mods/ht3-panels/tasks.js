@@ -14,6 +14,10 @@
 //   The row then says "on <branch>" with the chat's state, read where the Inbox reads it (report.js: shared
 //   "ht3-panels.places", ".status", ".turns"): working, waiting for you (the agent asks), done or failed; a click on the
 //   row shows that chat. Marking a task done is the person's: a finished chat doesn't do it.
+// - The cap: with settings.js `taskMaxRunning` set, Run with agent only queues the task (`queued`, taskqueue.js) and the
+//   keeper starts it (coordinator.js drain: at once while fewer than that many tasks run, else when a running one
+//   ends). Its row says "Queued (n)", n its place in the queue over every project, with Cancel, then "starting…" while
+//   the keeper makes its worktree. Without a cap the surface starts it itself, as before.
 // - Merge: the agent is told to commit on its branch (tasklist.js PROMPT_RULES), and the person takes the work in with
 //   one click. A run task's row says what its worktree holds ("2 commits, 3 uncommitted files": shared
 //   "ht3-panels.work", which the keeper reads, coordinator.js) and, once the coordinator marked it, "Ready to merge".
@@ -29,7 +33,8 @@
 //   (`git worktree remove`, `git branch -d`; kept while it has uncommitted files). How each went is said at the foot.
 // - Notes: plain text per folder (a worktree is a folder of its own), saved a moment after the last change to
 //   `data/ht3-panels/notes/<name from the folder>.txt` in the app's folder, never in the repository.
-// For scripts: with the surface shown, `tasks-add:<title>`, `tasks-run:<n>` (the nth task, from 0, in the list's order),
+// For scripts: with the surface shown, `tasks-add:<title>`, `tasks-run:<n>` (the nth task, from 0, in the list's order;
+// under a cap it queues), `tasks-cancel:<n>` (takes a queued one out of the queue),
 // `tasks-done:<n>` (toggles), `tasks-delete:<n>` (twice deletes), `tasks-up:<n>`, `tasks-down:<n>`, `tasks-tab:<tasks|notes>`,
 // `tasks-notes:<text>` (replaces the notes), `tasks-merge:<task id>` (asks), `tasks-yes` / `tasks-no` (answer it),
 // `tasks-cleanup:<task id>` (Remove worktree), `tasks-update:<task id>` (Ask agent to update, after a conflict).
@@ -48,7 +53,8 @@ import { activeSpace, placeOf, showing, openSurface, spaceState, GROUPS } from "
 import { projectOf } from "./scripts.js";
 import { addWorktree, repoOf } from "./launcher.js";
 import { AGENTS, detect } from "./agent-acp.js";
-import { roleAgent, roleSet } from "./settings.js";
+import { roleAgent, roleSet, taskMaxRunning } from "./settings.js";
+import { queueOf, placeIn, enqueue, dequeue, unqueued, queuedWords } from "./taskqueue.js";
 import { cleanTasks, newTask, patch, remove, move, canMove, promptOf, branchFor, chatState, STATE_LABEL, notesFile, TITLE_MAX, parseKey, spaceIn,
   readWork, workWords, hasWork, BUSY_STATES, mergePlan, mergeTask, mergeWords, cleanupTask, keyOf,
   conflictMark, unconflict, askedMark, tellCheck, updateCheck, updateText, SENT_WORDS, TELL_MAX, clip } from "./tasklist.js";
@@ -165,7 +171,8 @@ export async function startTask(key, t, opts = {}) {
   opts.step?.("starting the chat");
   const space = opts.space ?? (await spaceFor(at.root, on));
   const set = roleSet("task", agent.id);
-  update(key, (l) => patch(l, t.id, { run: { chat, branch, path, on, from, at: Date.now() } }));
+  // (A task that was queued has left the queue with this.)
+  update(key, (l) => l.map((x) => (x.id === t.id ? { ...unqueued(x), run: { chat, branch, path, on, from, at: Date.now() } } : x)));
   run("tab.new", { mod: MOD, ...(space ? { space } : {}), name: t.title.slice(0, 60),
     props: { panel: "chat", chat, agent: [found.found[agent.argv[0]], ...agent.argv.slice(1)], cwd: path, machine: on, prompt: promptOf(t),
       ...(set ? { set } : {}), ...(opts.back ? { back: { tab: opts.back, at: Date.now() } } : {}) } });
@@ -394,9 +401,16 @@ export class TasksPanel {
 
   runTask(t, cx) {
     const project = this.project, where = this.where;
-    if (!project || !where || this.making.has(t.id)) return;
+    if (!project || !where || this.making.has(t.id) || t.queued) return;
     const space = focused()?.space ?? activeSpace()?.id ?? null;
     this.errors.delete(t.id);
+    // Under a cap every start is the keeper's (coordinator.js drain), which alone counts what runs: the task is queued
+    // with where the person stands, and starts within seconds when a slot is free.
+    if (taskMaxRunning() > 0) {
+      update(project.key, (l) => enqueue(l, t.id, { at: Date.now(), cwd: where.cwd, ...(space ? { space } : {}) }));
+      return cx.notify();
+    }
+    if (t.startError) update(project.key, (l) => l.map((x) => (x.id === t.id ? unqueued(x) : x)));
     this.making.set(t.id, "making the worktree");
     cx.notify();
     // The click's cx goes stale at the first await: the run reports through the spawn's own.
@@ -409,6 +423,13 @@ export class TasksPanel {
       this.making.delete(t.id);
       acx.notify();
     });
+  }
+
+  // Cancel, for a queued task: it leaves the queue (not once the keeper began to start it).
+  cancelQueued(t, cx) {
+    const key = this.project?.key;
+    if (key && t.queued && !t.queued.started) update(key, (l) => dequeue(l, t.id));
+    cx.notify();
   }
 
   // The chat's state for a task (tasklist.js chatState) from what the chat tabs report.
@@ -548,6 +569,7 @@ export class TasksPanel {
     const list = this.list(), at = (s) => list[Number(s)];
     if (c.startsWith("tasks-add:")) { this.title.set_value(c.slice(10)); this.add(cx); }
     else if (c.startsWith("tasks-run:")) { const t = at(c.slice(10)); if (t) this.runTask(t, cx); }
+    else if (c.startsWith("tasks-cancel:")) { const t = at(c.slice(13)); if (t) this.cancelQueued(t, cx); }
     else if (c.startsWith("tasks-done:")) { const t = at(c.slice(11)); if (t) this.toggleDone(t, cx); }
     else if (c.startsWith("tasks-delete:")) { const t = at(c.slice(13)); if (t) this.del(t, cx); }
     else if (c.startsWith("tasks-up:")) { const t = at(c.slice(9)); if (t) this.shift(t, -1, cx); }
@@ -605,7 +627,7 @@ export class TasksPanel {
 
   // "on <branch>" and the chat's state, or what the run is doing now, or why it didn't start.
   runLine(k, t) {
-    const making = this.making.get(t.id), err = this.errors.get(t.id);
+    const making = this.making.get(t.id), err = this.errors.get(t.id) ?? (t.queued ? null : t.startError ?? null);
     if (!t.run && !making && !err) return null;
     if (!t.run) {
       return h_flex().gap(6).items_center().min_w(0).text_size(12)
@@ -623,6 +645,24 @@ export class TasksPanel {
       .child(div().flex_1().min_w(0).truncate().text_color(k.muted).tooltip(`${t.run.path}\nfrom ${t.run.from ?? "HEAD"}`).child(`on ${t.run.branch}`))
       .child(badge(k, label, TONE[state] ?? "secondary"))
       .when(state === "failed" && !!s.why, (el) => el.tooltip(s.why));
+  }
+
+  // A queued task: "Queued (n)", its place in the queue over every project, with Cancel; "starting…" once the keeper
+  // began to start it. Null for a task that isn't queued.
+  queueLine(k, t) {
+    const q = t.queued;
+    if (!q || !this.project) return null;
+    if (q.started) {
+      return h_flex().id(`task-queued-${t.id}`).pl(24).gap(6).items_center().min_w(0).text_size(12)
+        .child(icon("loader-circle").size(14).flex_none().text_color(k.muted).spin(1000))
+        .child(div().flex_1().min_w(0).text_color(k.muted).child("starting…"));
+    }
+    const n = placeIn(this.queue ?? [], this.project.key, t.id), cap = taskMaxRunning();
+    return h_flex().id(`task-queued-${t.id}`).pl(24).gap(6).items_center().min_w(0).text_size(12)
+      .child(icon("clock").size(14).flex_none().text_color(k.muted))
+      .child(div().flex_none().tooltip(cap ? `At most ${cap} ${cap === 1 ? "task runs" : "tasks run"} at once (Settings, Tasks and coordinator). It starts when a running one ends; a task that waits for an approval still counts as running.` : "It starts in a moment.").child(badge(k, queuedWords(n), "secondary")))
+      .child(div().flex_1())
+      .child(button(k, `task-cancel-${t.id}`, "Cancel", (cx) => this.cancelQueued(t, cx), { variant: "outline", size: "xs", glyph: "x", tip: "Takes it out of the queue" }));
   }
 
   // What the task's worktree holds and the person's step with it: "2 commits, 3 uncommitted files", "Ready to merge"
@@ -689,7 +729,7 @@ export class TasksPanel {
     const idle = !this.making.has(t.id), s = this.stateOf(t), again = !!t.run && ["failed", "closed"].includes(s?.state);
     const live = !!s?.tab;
     const first = !canMove(list, t.id, -1), last = !canMove(list, t.id, 1);
-    const note = t.note.replace(/\s+/g, " "), ml = this.mergeLine(k, t), cl = this.conflictLine(k, t);
+    const note = t.note.replace(/\s+/g, " "), ml = this.mergeLine(k, t), cl = this.conflictLine(k, t), ql = this.queueLine(k, t);
     return v_flex().id(`task-${t.id}`).flex_none().mx(8).px(8).py(6).gap(4).rounded(8).hover((x) => x.bg(alpha(k.foreground, 0.04)))
       .when(this.lit === t.id, (el) => el.border(1).border_color(k.primary).bg(alpha(k.foreground, 0.04)))
       .child(h_flex().gap(8).items_center()
@@ -708,12 +748,13 @@ export class TasksPanel {
         .when(live, (e) => e.cursor_pointer().role("button").accessibility_label(`Show the chat of ${t.title}`).on_click((_e, cx) => { this.focusChat(t); cx.notify(); }))
         .child(note)))
       .child(div().pl(18).child(this.runLine(k, t) ?? div()))
+      .when(!!ql, (el) => el.child(ql))
       .when(!!ml, (el) => el.child(ml))
       .when(!!cl, (el) => el.child(cl))
       .when(!t.done, (el) => el.child(h_flex().pl(24).gap(6).items_center()
         .child(button(k, `task-run-btn-${t.id}`, this.making.has(t.id) ? "Working…" : again ? "Run again" : t.run ? "Run again" : "Run with agent", (cx) => this.runTask(t, cx),
-          { variant: !t.run || again ? "outline" : "ghost-muted", size: "xs", glyph: "play", disabled: !idle || !this.project,
-            tip: "Makes a worktree on a new branch from the current one and starts a chat there with this task as its first message" }))
+          { variant: !t.run || again ? "outline" : "ghost-muted", size: "xs", glyph: "play", disabled: !idle || !this.project || !!t.queued,
+            tip: t.queued ? "It is queued" : `Makes a worktree on a new branch from the current one and starts a chat there with this task as its first message${taskMaxRunning() ? `. At most ${taskMaxRunning()} run at once: beyond that it is queued` : ""}` }))
         .when(live && !!t.run, (e) => e.child(button(k, `task-show-${t.id}`, "Show chat", () => this.focusChat(t), { variant: "ghost-muted", size: "xs", glyph: "message-square" })))
         .child(button(k, `task-mark-${t.id}`, "Mark done", (cx) => this.toggleDone(t, cx), { variant: "ghost-muted", size: "xs", glyph: "check", tip: "Moves it to Done" }))));
   }
@@ -722,6 +763,8 @@ export class TasksPanel {
     // The task asked for is drawn first in its section.
     const first = (l) => [...l.filter((t) => t.id === this.lit), ...l.filter((t) => t.id !== this.lit)];
     const list = this.list(), open = first(list.filter((t) => !t.done)), done = first(list.filter((t) => t.done));
+    // The queue over every project, for the rows' "Queued (n)".
+    this.queue = list.some((t) => t.queued) ? queueOf(Object.fromEntries(taskKeys().map((key) => [key, tasksOf(key)]))) : [];
     const foot = this.foot(k);
     return v_flex().flex_1().min_h(0)
       .child(this.addBox(k))

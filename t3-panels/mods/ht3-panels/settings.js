@@ -26,6 +26,8 @@
 // - taskAgent, taskModel (absent: the default agent, on its own model): the agent a task's chat starts on (Tasks' "Run with
 //   agent", the coordinator's tasks) and the model it is set to before the task is sent, e.g. "omp" and
 //   "fleetq-tatooine-r9700-8080/Qwen3.8". An agent that is off or not installed falls back to the default one, on its own model.
+// - taskMaxRunning (0 = no cap; 1 to 32): at most this many tasks run at once, over every project. A task started beyond it
+//   is queued and the keeper starts the oldest queued one when a running one ends (taskqueue.js, coordinator.js drain).
 // - coordinatorAgent ("claude"), coordinatorModel (absent: the agent's own): the same for the coordinator chat (coordinator.js).
 // - coordinatorNotify (true): Herdr tells the coordinator chat, in a message of its own, when a task's chat finished, failed,
 //   waits for an approval or was closed (at most one message in 45 seconds); false: it learns of them when it reads its state file.
@@ -42,6 +44,7 @@ import * as fs from "fs/promises";
 import { MOD } from "./look.js";
 import { AGENTS } from "./agent-acp.js";
 import { cleanBudget } from "./token-budget.js";
+import { cleanCap } from "./taskqueue.js";
 
 const KEY = `${MOD}.settings`, MODELS = `${MOD}.models`;
 export const settingsFile = () => `${appHome()}/data/ht3-settings.json`;
@@ -98,6 +101,8 @@ export const commitStyle = () => (COMMIT_STYLES.includes(prefs().commitStyle) ? 
 export const mdPreviewDefault = () => prefs().mdPreviewDefault !== false;
 // "chatTokenBudget": the per-chat token budget, 0 when off.
 export const chatTokenBudget = () => cleanBudget(prefs().chatTokenBudget);
+// "taskMaxRunning": how many tasks run at once (taskqueue.js); 0 when there is no cap.
+export const taskMaxRunning = () => cleanCap(prefs().taskMaxRunning);
 // "coordinatorNotify": false: no task notices are sent into the coordinator chat (coordinator.js).
 export const coordinatorNotify = () => prefs().coordinatorNotify !== false;
 // "keepAwake": true keeps the Mac awake while a chat works; the default does not.
@@ -144,6 +149,8 @@ export function setPref(path, value) {
 }
 
 // The keeper's: the file as it is now. A file that isn't JSON is left alone and the last good settings stay.
+// Whether the settings file was read in this copy (the keeper's: before that a cap that is set reads as none).
+export const prefsRead = () => onDisk != null;
 export async function loadPrefs() {
   const text = await readTextFile(settingsFile()).catch(() => null);
   if (text == null) { if (onDisk == null) onDisk = ""; return; }

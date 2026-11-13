@@ -55,7 +55,7 @@ assert.match(long, /app on spark1 \/ t0 "/); assert.match(long, /; and 3 more; u
 // ready is refused for a task whose turn was cut off.
 assert.match(readyCheck(tasks[":/code/app"][0], { ahead: 1, dirty: 0, branch: "task-x", head: "a".repeat(40) }, "interrupted"), /cut off/);
 // The role text says what to do (template 8).
-assert.equal(VERSION, 8);
+assert.equal(VERSION, 9);
 const role = roleText("/h/coordinator", "/h/chats");
 assert.match(role, /"interrupted"/); assert.match(role, /continue where it stopped/); assert.match(role, /Never run the task again for that/);
 

@@ -1,5 +1,6 @@
 // The coordinator's logic (coordinator.js), as pure functions: no Herdr imports, so node can test it.
 
+import { queueOf, placeIn, runningCount, cleanCap } from "./taskqueue.js";
 import { chatState, clip, TITLE_MAX, NOTE_MAX, READY_NOTE_MAX, TELL_MAX, parseKey, hasWork, conflictGone } from "./tasklist.js";
 
 export const OPS = ["add", "run", "done", "delete", "answer", "ready", "tell", "update"];
@@ -15,7 +16,8 @@ export function expandHome(path, home) {
 }
 
 // What `coord:<json>` carries -> { op, project (a folder, absolute), machine, id, title, note, run, done }, or { error }.
-// add: { project, title, note?, run?, id?, machine? }; run, done, delete: { project, id, machine? } (done: false reopens);
+// add: { project, title, note?, run?, id?, machine? }; run, done, delete: { project, id, machine? } (done: false reopens;
+// a run beyond the cap on running tasks queues the task, coordinator.js runOne);
 // answer: { project, id, ask, option, machine? } -> { op, project, machine, id, ask, option } (the ids as strings);
 // ready: { project, id, note?, machine? } -> { op, project, machine, id, note } (the task's work can be merged, and why);
 // tell: { project, id, text, machine? } -> { op, project, machine, id, text } (a message for the task's own agent, at most TELL_MAX);
@@ -89,7 +91,9 @@ export const logOp = (log, entry) => [...(log ?? []), entry].slice(-OPS_KEPT);
 // `replies`: chat id -> its last reply's first line; `making`: "<key>\n<task id>" ->
 // what a run that hasn't made its chat yet is doing; `skip`: a folder whose space isn't a project's (the coordinator's own);
 // `work`: "<key>\n<task id>" -> its worktree as last read (tasklist.js readWork).
-// A task's state: "none" (never run), "making", or chatState's: starting, working, waiting, done, failed, closed,
+// `cap`: the cap on running tasks (settings.js taskMaxRunning; 0: none), written as `limit`: { max, running, queued }.
+// A task's state: "none" (never run), "making", "queued" (it waits for a free slot under the cap, taskqueue.js; `queued`
+// is its place in the queue, from 1), or chatState's: starting, working, waiting, done, failed, closed,
 // interrupted (`facts.cut`: its turn was cut off by a restart; `why` says so).
 // A task whose chat waits for an approval has it as `ask`: { id, title, options: [{ optionId, name, kind }] }.
 // A task that was run also says how its work stands: `from` (the branch its own was made from), `ahead` (its commits
@@ -97,7 +101,8 @@ export const logOp = (log, entry) => [...(log ?? []), entry].slice(-OPS_KEPT);
 // ready to merge), `merged` (the person merged it) and `conflict` (null, or { onto, files, at, asked }: the person's
 // Merge into `onto` was aborted on a conflict in those files and the branch hasn't moved since; asked: its agent was
 // asked to update it).
-export function snapshot({ spaces = [], tasks = {}, facts = {}, replies = {}, making = {}, ops = [], skip = null, work = {} } = {}) {
+export function snapshot({ spaces = [], tasks = {}, facts = {}, replies = {}, making = {}, ops = [], skip = null, work = {}, cap = 0 } = {}) {
+  const queue = queueOf(tasks, making);
   return {
     spaces: spaces.filter((s) => !skip || s.folder !== skip).map((s) => ({ name: String(s.name ?? "").replace(/​/g, ""), folder: s.folder ?? "", machine: s.machine ?? null })),
     projects: Object.keys(tasks).sort().map((key) => {
@@ -108,7 +113,9 @@ export function snapshot({ spaces = [], tasks = {}, facts = {}, replies = {}, ma
           const busy = making[`${key}\n${t.id}`], s = t.run ? chatState(t.run, facts) : null;
           const ask = !busy && s?.tab ? facts.asks?.[s.tab] : null;
           const w = t.run && !t.run.merged ? work[`${key}\n${t.id}`] : null;
-          return { id: t.id, title: t.title, note: t.note, done: t.done, state: busy ? "making" : s?.state ?? "none",
+          const place = busy ? 0 : placeIn(queue, key, t.id);
+          return { id: t.id, title: t.title, note: t.note, done: t.done, state: busy ? "making" : place ? "queued" : s?.state ?? "none",
+            ...(place ? { queued: place } : {}),
             ...(s?.why && !busy ? { why: s.why } : {}),
             ...(ask?.id && Array.isArray(ask.options) ? { ask: { id: String(ask.id), title: String(ask.title ?? ""), options: ask.options.map((o) => ({ optionId: o.optionId, name: o.name ?? null, kind: o.kind ?? null })) } } : {}),
             branch: t.run?.branch ?? null, from: t.run?.from ?? null, ahead: w && !w.missing ? w.ahead ?? null : null, dirty: !!w && !w.missing && w.dirty > 0,
@@ -117,6 +124,7 @@ export function snapshot({ spaces = [], tasks = {}, facts = {}, replies = {}, ma
         }),
       };
     }).filter(Boolean),
+    limit: { max: cleanCap(cap), running: runningCount({ tasks, facts, making }), queued: queue.length },
     ops,
   };
 }
