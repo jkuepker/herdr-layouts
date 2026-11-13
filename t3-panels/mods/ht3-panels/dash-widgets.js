@@ -10,11 +10,10 @@ import { exec, hc, run, shared, setShared, spaces, readTextFile, appHome } from 
 import { MOD, alpha, icon, agentMark } from "./look.js";
 import { openScript, activate, ensureShown } from "./side.js";
 import { field, num, show, level } from "./dash-data.js";
+import { PROMPT } from "./termctx.js"; // a shell waiting is not the command's last line
 
 const TERMS = `${MOD}.dashterms`; // { "<command>|<cwd>|<on>": terminal address }: the terminals this surface's buttons opened
 const termKey = (w) => `${w.command ?? ""}|${w.cwd ?? ""}|${w.on ?? ""}`;
-// A shell waiting is not the command's last line: a bare prompt sign, user@host…, or a prompt drawn with icon-font glyphs.
-const PROMPT = /^\S{0,40}\s?[%$#❯>]\s*$|^[^\s]*@[^\s]*.*[%$#❯]\s*$|[\uE000-\uF8FF\u{F0000}-\u{FFFFD}]/u;
 const STATUS = { working: "info", blocked: "warning", done: "success", idle: "muted" };
 
 export const widgets = {
