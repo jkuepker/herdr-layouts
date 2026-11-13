@@ -20,7 +20,8 @@ import { props, nextCommand, run, openOverlay, shared, setShared } from "herdr";
 import { MOD, tokens, iconButton } from "./look.js";
 import { ChatPanel, openLauncher } from "./chat.js";
 import { FilePanel } from "./editor.js";
-import { Launcher } from "./launcher.js";
+import { Launcher, fanOut } from "./launcher.js";
+import { parseFanout } from "./fanout.js";
 import { Strip, ADD_MENU } from "./strip.js";
 import { AddMenu, ProjectMenu, CopyMenu, ThreadMenu, RevertMenu } from "./menus.js";
 import { DiffPanel } from "./diff.js";
@@ -141,6 +142,16 @@ class Buttons {
     // one (merge its branch into the main checkout). Alone it comes up on the last pair, or a picker; with one chat id the other
     // is picked. Again while it is open, the dialog takes the new ids itself (its cmp:* commands are its own).
     else if (name === "compare") { if (!compareOpen()) openCompare(a ?? "", b ?? ""); }
+    // fanout:{"folder":"<folder>","prompt":"…","models":["<model>","<model>"],"branch":"<name>","agent":"<agent id>"}: one prompt to
+    // two to four models (fanout.js; the New chat dialog's Several models sends this too). Each model gets a worktree on
+    // <branch>-<model> from the commit the folder is on (no branch: one named after the prompt) and a background chat in it with
+    // the prompt, named "<prompt's first line> · <model>"; the shown tab stays shown. agent: an agent-acp.js AGENTS id (none:
+    // the one New chat comes up with). A notice lists what started; with exactly two, a click on it opens Compare on them.
+    else if (name === "fanout") cx.spawn(async (cx) => {
+      const o = parseFanout(c.slice(7));
+      try { if (o.error) throw new Error(o.error); await fanOut(o); } catch (e) { fail(e); }
+      cx.notify();
+    });
     // deps: the outdated dependencies of the shown space's folder, as a dialog (deps.js); again while it is open closes it (the dialog
     // does that itself). While it is open: deps-refresh, deps-stop, deps-update:<package>, deps-filter:<text>, deps-select:<package>,
     // deps-all (asks), deps-yes, deps-no, deps-ask, deps-eco:<id> (the dialog takes these).
