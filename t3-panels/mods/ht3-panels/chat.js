@@ -770,7 +770,9 @@ export class ChatPanel {
   // Waiting for a permission is "blocked": the session itself still says working.
   report() {
     const s = this.source?.state;
-    if (this.reporter && s) this.reporter.update(s.permission && this.source.alive ? "blocked" : this.source.word(), s.agentArgv, s.agentInfo?.title ?? s.agentInfo?.name,
+    // An approval the rules haven't looked at yet (the project is still being found) isn't "blocked" yet.
+    const held = s?.permission && this.source.kind === "acp" && !this.autoAllow && this.ruled !== s.permission;
+    if (this.reporter && s) this.reporter.update(s.permission && this.source.alive && !held ? "blocked" : this.source.word(), s.agentArgv, s.agentInfo?.title ?? s.agentInfo?.name,
       this.named() ?? s.transcript.items.find((m) => m.kind === "user")?.text,
       { cwd: s.cwd, machine: s.machine ?? null, ask: s.permission?.title ?? null, at: lastChangeOf(s), crumb: this.crumb({ cwd: s.cwd, machine: s.machine, items: s.transcript.items, status: this.source.word(), permission: s.permission, usage: s.transcript.usage, name: "Agent" }) });
   }
@@ -791,7 +793,8 @@ export class ChatPanel {
     if (p && p !== this.ruled) {
       const key = this.ruleKey();
       // The project isn't known yet (stashKey asks Git once): looked at again when it is.
-      if (!key) { if (!this.ruleWait) { this.ruleWait = true; cx.timer.after(200, (cx) => { this.ruleWait = false; if (!this.closed) this.asking(cx); }); } }
+      if (!key && !this.source.state?.cwd) this.ruled = p; // no folder, no project rules: the card shows as it is
+      else if (!key) { if (!this.ruleWait) { this.ruleWait = true; cx.timer.after(200, (cx) => { this.ruleWait = false; if (!this.closed) { this.asking(cx); this.report(); } }); } }
       else {
         this.ruled = p; // each approval is looked at once: a rule added later doesn't answer one already shown
         const d = decide(p, rulesFor(prefs().approveRules, key));
@@ -959,12 +962,13 @@ export class ChatPanel {
 
   // Draws at most every DRAW_EVERY_MS, at once when urgent.
   changed(cx, urgent) {
+    // An approval goes through the rules (asking) before the lists hear of it, so one a rule answers raises no "needs you".
+    this.asking(cx);
     this.report();
     this.models();
     this.clock();
     this.turnEnded(cx);
     this.drain(cx);
-    this.asking(cx);
     this.pinSync();
     this.termSync(cx);
     const draw = (cx) => {
