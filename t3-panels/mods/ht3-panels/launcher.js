@@ -3,17 +3,20 @@
 // conversation the chat shows, and the ACP agents installed where the space is, which the
 // chat starts itself. Open chat opens the chat as a tab of its own. Under them, the earlier chats,
 // to search and reopen; opened with props.find, the dialog is that list alone.
+// "Several models" (fanout.js): one prompt to two to four of the agent's models, each in a background chat and a
+// worktree of its own; `fanOut` below starts them, for the dialog and for `ht3-panels.fanout:<json>` alike.
 
 import { div } from "gpui-kit";
-import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { exec, run, closeOverlay, focused, spaces, panes, home, pickFolder, appHome, shared, setShared, readTextFile } from "herdr";
+import { v_flex, h_flex, InputState, Input, TextareaState, Textarea } from "gpui-base";
+import { exec, run, closeOverlay, focused, spaces, panes, home, pickFolder, appHome, shared, setShared, readTextFile, notify } from "herdr";
 import { agentName } from "./report.js";
 import { MOD, tokens, alpha, icon, agentMark, button, iconButton, badge, shortPath } from "./look.js";
 import { AGENTS, detect } from "./agent-acp.js";
-import { enabledAgents, agentOn, firstAgent } from "./settings.js";
+import { enabledAgents, agentOn, firstAgent, knownModels, modelsOf } from "./settings.js";
 import { KINDS } from "./core/chat-reader.js";
 import { scriptsOf, setScripts, setupOf, setSetup, toggleSetup, setupTemplate } from "./scripts.js";
 import { runSetup, setupCard, setupButtons, SetupDialog } from "./setup.js";
+import { FANOUT_MIN, FANOUT_MAX, cleanModels, typedModels, toggleModel, fanoutProblem, fanoutSpecs, fanoutNotice } from "./fanout.js";
 
 const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
@@ -51,6 +54,76 @@ export async function setupWorktree(repo, path, on, opts = {}) {
   if (!script) return "none";
   return runSetup({ cwd: path, root: repo, on: on ?? null, script, card: opts.card ?? null, sleep: opts.sleep ?? null, onChange: opts.onChange ?? null,
     ...(opts.timeout ? { timeout: opts.timeout } : {}), ...(opts.every ? { every: opts.every } : {}) });
+}
+
+// ---- one prompt to several models ----
+
+const nap = (ms) => exec("sleep", [String(ms / 1000)], { timeout: ms + 5000 }).catch(() => null);
+// What a fan-out that failed was asked for ({ prompt, branch, models, at }): the dialog comes up with it again.
+const FAN_LAST = `${MOD}.fanout-last`;
+// The models an agent's chats may be set to, as its picker lists them: what it has offered (settings.js knownModels),
+// cut to the person's list when there is one (ids added there by hand too). Empty until the agent has listed them.
+export function modelsFor(id) {
+  const known = knownModels(id), only = modelsOf(id);
+  if (!only) return known;
+  return only.map((v) => known.find((m) => m.value === v) ?? { value: v, name: v });
+}
+let fanBusy = false;
+// Starts one background chat per model (fanout.js fanoutSpecs), each in a new worktree on <branch>-<model> from the
+// commit `o.folder` is on, with the same prompt as its first message and its model set before it. The chats are tabs
+// of the shown space; the tab shown now is shown again after each one began (chat.js stepBack), so focus stays where
+// it was. One model that can't start doesn't stop the others. A notice lists them at the end; with exactly two, its
+// click opens Compare on them (compare.js reads their saved state, which is there by the time it is clicked).
+// `o`: { folder, prompt, models, branch?, agent? } (fanout.js parseFanout). -> { started, failed }.
+export async function fanOut(o) {
+  const f = focused(), space = f?.space ?? null, here = f?.tab ?? null;
+  const on = (space && spaces().find((s) => s.id === space)?.machine) || null;
+  const started = [], failed = [];
+  if (fanBusy) { notify({ title: "Several models", body: "The last ones are still being started.", level: "warning" }); return { started, failed }; }
+  fanBusy = true;
+  try {
+    const why = fanoutProblem(o);
+    if (why) throw new Error(why);
+    const folder = !on && String(o.folder).startsWith("~") ? home() + String(o.folder).slice(1) : String(o.folder);
+    const repo = await repoOf(folder, on);
+    if (!repo) throw new Error(`${shortPath(folder)} isn't in a Git repository.`);
+    const d = await detect(on), agent = AGENTS.find((a) => a.id === (o.agent ?? firstAgent(d.found)));
+    if (!agent || !agentOn(agent.id) || !d.found[agent.argv[0]]) throw new Error(o.agent ? `The agent ${o.agent} isn't installed and turned on (Settings).` : d.error ?? "No chat agent is installed and turned on (Settings).");
+    const git = async (args) => { const r = await exec("git", args, { cwd: folder, on: on ?? undefined, timeout: 10000 }).catch(() => null); return r?.code === 0 ? r.stdout.trim() : ""; };
+    // One start point for all of them: the commit the folder is on now, not whatever HEAD is when each is made.
+    const from = await git(["rev-parse", "HEAD"]);
+    if (!from) throw new Error(`${shortPath(folder)} has no commit to start from.`);
+    const taken = (await git(["for-each-ref", "--format=%(refname:short)", "refs/heads"])).split("\n").filter(Boolean);
+    // A model given by its id alone is called what the agent calls it.
+    const known = knownModels(agent.id);
+    const models = cleanModels(o.models).map((m) => (m.name !== m.value ? m : { value: m.value, name: known.find((x) => x.value === m.value)?.name ?? m.value }));
+    const specs = fanoutSpecs({ prompt: o.prompt, models, branch: o.branch ?? null, suffix: Date.now().toString(36).slice(-4), taken });
+    for (const s of specs) {
+      try {
+        const cwd = await addWorktree(repo, s.branch, on, { from });
+        const chat = newId(), before = new Set(spaces().flatMap((sp) => sp.tabs.map((t) => t.id)));
+        // Its name, "<title> · <model>", as a renamed thread's (chat.js named), and its tab's.
+        setShared(`${MOD}.named`, { ...(shared(`${MOD}.named`) ?? {}), [chat]: s.title.slice(0, 120) });
+        run("tab.new", { mod: MOD, ...(space ? { space } : {}), name: s.title,
+          props: { panel: "chat", chat, agent: [d.found[agent.argv[0]], ...agent.argv.slice(1)], cwd, machine: on, prompt: s.prompt, set: s.set,
+            ...(here ? { back: { tab: here, at: Date.now() } } : {}) } });
+        started.push({ chat, title: s.title, branch: s.branch, path: cwd, model: s.model });
+        // A copy starts when its tab first shows: wait until this one took its place and stepped back, at most three
+        // seconds, before the next tab is made. One that didn't step back by itself is put behind here.
+        for (let i = 0; i < 60; i++) { await nap(50); if ((shared(`${MOD}.places`) ?? {})[chat] && (!here || focused()?.tab === here)) break; }
+        const now = focused()?.tab;
+        if (here && now && now !== here && !before.has(now)) run("tab.select", { id: here });
+      } catch (e) { failed.push({ name: s.name, model: s.model, why: String(e?.message ?? e).slice(0, 200) }); }
+    }
+    const n = fanoutNotice(started, failed);
+    notify({ title: n.title, body: n.body, level: n.level, timeout: n.compare ? 20000 : 8000, ...(n.compare ? { action: { name: `${MOD}.compare:${n.compare[0]}:${n.compare[1]}` } } : {}) });
+    // The ones that didn't start stay picked, with the prompt, for the dialog's next time (T3 keeps them selected too).
+    if (failed.length) setShared(FAN_LAST, { prompt: o.prompt, branch: o.branch ?? null, models: failed.map((x) => x.model), at: Date.now() });
+  } catch (e) {
+    notify({ title: "Several models: nothing started", body: String(e?.message ?? e).slice(0, 300), level: "error" });
+    setShared(FAN_LAST, { prompt: String(o?.prompt ?? ""), branch: o?.branch ?? null, models: cleanModels(o?.models).map((m) => m.value), at: Date.now() });
+  } finally { fanBusy = false; }
+  return { started, failed };
 }
 
 const ago = (ms) => { const m = Math.max(0, Math.round((Date.now() - ms) / 60000)); return m < 1 ? "just now" : m < 60 ? `${m}m ago` : m < 1440 ? `${Math.round(m / 60)}h ago` : `${Math.round(m / 1440)}d ago`; };
@@ -108,6 +181,23 @@ export class Launcher {
     this.setupCommand = InputState.new({ placeholder: "command, e.g. npm ci" });
     this.setupCommand.on("change", (_e, cx) => cx.notify());
     this.setupRun = null;
+    // Several models: off. The ticked models (`picked`), the prompt they all get, and, for an agent that hasn't
+    // listed its models yet, their names typed. What a fan-out that failed left (fanOut) comes back once.
+    this.several = false;
+    this.picked = [];
+    this.prompt = TextareaState.new({ placeholder: "The prompt every model gets", rows: 3 });
+    this.prompt.on("change", (_e, cx) => cx.notify());
+    this.modelNames = InputState.new({ placeholder: "model names, comma separated, e.g. opus, sonnet" });
+    this.modelNames.on("change", (_e, cx) => cx.notify());
+    const left = shared(FAN_LAST);
+    if (left && Date.now() - Number(left.at) < 600000) {
+      this.several = true;
+      this.picked = cleanModels(left.models).map((m) => m.value).slice(0, FANOUT_MAX);
+      this.prompt.set_value(String(left.prompt ?? ""));
+      this.modelNames.set_value(this.picked.join(", "));
+      if (left.branch) this.branch.set_value(String(left.branch));
+    }
+    if (left) setShared(FAN_LAST, null);
     // Earlier chats (T3's thread search and its archived threads): the chats saved on this computer,
     // newest first, with a field that looks through their names and what was said in them.
     this.recent = null;
@@ -155,6 +245,8 @@ export class Launcher {
   // setup:pick (opens or closes the setup picker), setup:<script name> (marks it; setup: alone unmarks), setup:template (a new
   // one, from the template), setup:command:<text> (types its command), setup:save; while the card shows, setup:retry,
   // setup:skip, setup:cancel.
+  // several:on and several:off (Several models), several:model:<model id> (ticks or unticks it), several:models:<names>
+  // (types them, comma separated, where the agent has listed none), several:prompt:<text>; open then starts them.
   command(c, cx) {
     if (this.face) return this.face.command(c, cx);
     if (c.startsWith("setup:")) {
@@ -165,6 +257,14 @@ export class Launcher {
       else if (a.startsWith("command:")) { this.pickSetup = this.template = true; this.setupCommand.set_value(a.slice(8)); }
       else if (a === "save") this.saveSetup();
       else setSetup(this.projectKey(), a || null);
+      return cx.notify();
+    }
+    if (c.startsWith("several:")) {
+      const a = c.slice(8);
+      if (a === "on" || a === "off") this.several = a === "on" && !!this.repo;
+      else if (a.startsWith("model:")) this.picked = toggleModel(this.picked, a.slice(6));
+      else if (a.startsWith("models:")) this.modelNames.set_value(a.slice(7));
+      else if (a.startsWith("prompt:")) this.prompt.set_value(a.slice(7));
       return cx.notify();
     }
     if (c.startsWith("worktree:")) { this.wt = !!c.slice(9) && !!this.repo; this.branch.set_value(c.slice(9)); }
@@ -216,6 +316,7 @@ export class Launcher {
 
   // With New worktree on, the worktree is made first and the chat starts in it; if git says no, the dialog stays and says why.
   open(cx) {
+    if (this.fanReady() !== null) return this.fan(cx);
     const term = this.running.find((x) => x.id === this.choice && !this.custom.value().trim());
     if (!this.wt || !this.repo || term) return this.start(this.cwd);
     const branch = this.branch.value().trim();
@@ -236,6 +337,61 @@ export class Launcher {
       this.busy = false;
       cx.notify();
     });
+  }
+
+  // ---- several models ----
+
+  // The agent the models are of: the picked one, when it is an installed ACP agent and no command was typed. Else null.
+  fanAgent() {
+    const a = this.custom.value().trim() ? null : enabledAgents().find((x) => x.id === this.choice);
+    return a && this.found?.[a.argv[0]] ? a : null;
+  }
+  // The models to send to: the ticked ones the agent lists, or, when it has listed none, the names typed.
+  fanModels() {
+    const a = this.fanAgent(), offered = a ? modelsFor(a.id) : [];
+    return offered.length ? this.picked.filter((v) => offered.some((m) => m.value === v)) : typedModels(this.modelNames.value());
+  }
+  // null when Several models is off (or can't be on: no repository), else why it can't start yet, or "" when it can.
+  fanReady() {
+    if (!this.several || !this.repo) return null;
+    if (!this.fanAgent()) return "Pick an installed agent above.";
+    return fanoutProblem({ prompt: this.prompt.value(), models: this.fanModels(), branch: this.branch.value() }) ?? "";
+  }
+  // Start: the keeper makes the worktrees and the chats (main.js `fanout:<json>`, fanOut above) and says how it went in
+  // a notice; the dialog closes at once, so the tab it was opened over is the one that stays shown.
+  fan(cx) {
+    const why = this.fanReady(), branch = this.branch.value().trim();
+    if (why) { this.error = why; return cx.notify(); }
+    run(`${MOD}.fanout:${JSON.stringify({ folder: this.cwd, prompt: this.prompt.value().trim(), models: this.fanModels(), agent: this.fanAgent().id, ...(branch ? { branch } : {}) })}`);
+    closeOverlay(this.overlay);
+  }
+  // Under the Several models tick: the prompt, the branch the models' branches are named after, and the agent's models
+  // to tick (a field for their names when it has listed none).
+  fanRows(k, el) {
+    const a = this.fanAgent(), offered = a ? modelsFor(a.id) : [], n = this.fanModels().length, branch = this.branch.value().trim();
+    const tick = (m, i) => {
+      const on = this.picked.includes(m.value), full = !on && this.picked.length >= FANOUT_MAX;
+      return h_flex().id(`fan-model-${i}`).h(28).px(8).gap(8).flex_none().items_center().rounded(6).text_size(13).opacity(full ? 0.5 : 1)
+        .role("check_box").accessibility_label(`${m.name}${on ? ": ticked" : ""}`)
+        .when(!full, (e) => e.cursor_pointer().hover((st) => st.bg(alpha(k.accent, 0.6))).on_click((_e, cx) => { this.picked = toggleModel(this.picked, m.value); cx.notify(); }))
+        .child(h_flex().size(16).flex_none().items_center().justify_center().rounded(4).border(1).border_color(on ? k.primary : k.input).bg(on ? k.primary : "#00000000")
+          .text_color(k.primaryText).when(on, (e) => e.child(icon("check").size(12))))
+        .child(div().flex_none().max_w(220).truncate().child(m.name))
+        .when(m.name !== m.value, (e) => e.child(div().flex_1().min_w(0).truncate().text_size(11).font_family(k.mono).text_color(k.muted).child(m.value)));
+    };
+    return el
+      .child(div().mx(10).mb(6).min_h(60).px(8).py(4).rounded(8).border(1).border_color(k.input).text_size(13).line_height("20px").child(Textarea.new(this.prompt)))
+      .child(h_flex().px(10).pb(6).gap(8).h(34).items_center()
+        .child(icon("git-branch").size(14).flex_none().text_color(k.muted))
+        .child(div().flex_1().min_w(0).h(28).px(8).rounded(6).border(1).border_color(k.input).text_size(13).child(Input.new(this.branch)))
+        .child(div().flex_none().max_w(230).truncate().text_size(12).text_color(k.dim).child(`each model: .worktrees/${branch || "<prompt>"}-<model>`)))
+      .when(!a, (e) => e.child(div().px(10).pb(6).text_size(12).text_color(k.muted).child("Pick an installed agent below: its models are listed here.")))
+      .when(!!a && !offered.length, (e) => e
+        .child(div().mx(10).mb(4).h(30).px(11).rounded(8).border(1).border_color(k.input).text_size(13).child(Input.new(this.modelNames)))
+        .child(div().px(10).pb(6).text_size(12).text_color(k.muted).child(`${a.name} hasn't listed its models yet (it does in its first chat): type ${FANOUT_MIN} to ${FANOUT_MAX} of their names.`)))
+      .when(!!a && offered.length > 0, (e) => e.child(v_flex().id("ht3-fan-models").mx(10).mb(6).p(4).gap(2).max_h(150).overflow_y_scrollbar().rounded(8).border(1).border_color(k.border)
+        .children(offered.map(tick))))
+      .when(!!a, (e) => e.child(div().px(10).pb(6).text_size(12).text_color(k.muted).child(`${n} of ${FANOUT_MIN} to ${FANOUT_MAX} models of ${a.name}. Each gets a background chat in a worktree of its own; this tab stays shown.`)));
   }
 
   start(cwd) {
@@ -313,6 +469,8 @@ export class Launcher {
     };
     const ready = !!this.custom.value().trim() || this.running.some((x) => x.id === this.choice)
       || !!(enabledAgents().find((a) => a.id === this.choice) && this.found?.[AGENTS.find((a) => a.id === this.choice).argv[0]]);
+    // Several models is on (fanReady: "" when it can start, else why not yet).
+    const fan = this.fanReady(), fanning = fan !== null;
     const earlier = (el) => {
           const rows = this.shown();
           return (this.find ? el : el.child(label("Earlier chats")))
@@ -358,8 +516,17 @@ export class Launcher {
             if (dir) { this.cwd = dir; this.repo = await repoOf(dir, null); if (!this.repo) this.wt = false; }
             cx.notify();
           })))))
-        // New worktree: the chat gets a folder and a branch of its own, <repo>/.worktrees/<branch>.
+        // Several models: one prompt, a background chat and a worktree per ticked model (fanRows). It takes New worktree's place.
         .when(!!this.repo, (el) => el.child(h_flex().px(10).pb(6).gap(8).h(34).items_center()
+          .child(h_flex().id("fan-toggle").gap(8).flex_none().items_center().cursor_pointer().role("check_box").accessibility_label("Several models")
+            .on_click((_e, cx) => { this.several = !this.several; if (this.several) this.prompt.focus(); cx.notify(); })
+            .child(h_flex().size(16).flex_none().items_center().justify_center().rounded(4).border(1).border_color(this.several ? k.primary : k.input).bg(this.several ? k.primary : "#00000000")
+              .text_color(k.primaryText).when(this.several, (e) => e.child(icon("check").size(12))))
+            .child(div().text_size(13).text_color(this.several ? k.foreground : k.muted).child("Several models")))
+          .when(!this.several, (e) => e.child(div().flex_1().min_w(0).truncate().text_size(12).text_color(k.dim).child("one prompt to 2-4 models, each in a worktree of its own, to compare")))))
+        .when(fanning, (el) => this.fanRows(k, el))
+        // New worktree: the chat gets a folder and a branch of its own, <repo>/.worktrees/<branch>.
+        .when(!!this.repo && !fanning, (el) => el.child(h_flex().px(10).pb(6).gap(8).h(34).items_center()
           .child(h_flex().id("wt-toggle").gap(8).flex_none().items_center().cursor_pointer().role("check_box").accessibility_label("New worktree")
             .on_click((_e, cx) => { this.wt = !this.wt; if (this.wt) this.branch.focus(); cx.notify(); })
             .child(h_flex().size(16).flex_none().items_center().justify_center().rounded(4).border(1).border_color(this.wt ? k.primary : k.input).bg(this.wt ? k.primary : "#00000000")
@@ -367,9 +534,9 @@ export class Launcher {
             .child(div().text_size(13).text_color(this.wt ? k.foreground : k.muted).child("New worktree")))
           .when(this.wt, (e) => e.child(div().flex_1().min_w(0).h(28).px(8).rounded(6).border(1).border_color(k.input).text_size(13).child(Input.new(this.branch))))
           .when(!this.wt, (e) => e.child(div().flex_1().min_w(0).truncate().text_size(12).text_color(k.dim).child("the chat gets a branch and a folder of its own: .worktrees/<branch>")))))
-        .when(this.wt && !!this.branch.value().trim(), (el) => el.child(div().px(10).pb(6).text_size(12).text_color(k.muted).truncate()
+        .when(this.wt && !fanning && !!this.branch.value().trim(), (el) => el.child(div().px(10).pb(6).text_size(12).text_color(k.muted).truncate()
           .child(`git worktree add .worktrees/${this.branch.value().trim()} -b ${this.branch.value().trim()}   in ${shortPath(this.repo)}`)))
-        .when(this.wt, (el) => this.setupRows(k, el))
+        .when(this.wt || fanning, (el) => this.setupRows(k, el))
         .when(!this.found, (el) => el.child(div().px(10).py(6).text_size(12).text_color(k.muted).child("Looking for installed agents…")))
         .when(!!this.error, (el) => el.child(div().px(10).py(6).text_size(12).text_color(k.destructiveText).child(this.error)))
         .when(!!this.found && !enabledAgents().length, (el) => el.child(div().px(10).py(6).text_size(12).text_color(k.muted).child("No agent is enabled in Settings.")))
@@ -381,6 +548,8 @@ export class Launcher {
         .when((this.recent?.length ?? 0) > 0, earlier))
       .child(h_flex().px(24).py(16).gap(8).flex_none().justify_end().border_t(1).border_color(k.border)
         .child(button(k, "cancel", "Cancel", () => closeOverlay(this.overlay), { variant: "outline", size: "default" }))
-        .child(button(k, "open", this.busy ? "Making the worktree…" : "Open chat", (cx) => this.open(cx), { variant: "default", size: "default", disabled: !ready || this.busy || (this.wt && !this.branch.value().trim()) })));
+        .child(fanning
+          ? button(k, "open", `Start ${this.fanModels().length || ""} chats`.replace("  ", " "), (cx) => this.open(cx), { variant: "default", size: "default", disabled: fan !== "", tip: fan || "One background chat per model" })
+          : button(k, "open", this.busy ? "Making the worktree…" : "Open chat", (cx) => this.open(cx), { variant: "default", size: "default", disabled: !ready || this.busy || (this.wt && !this.branch.value().trim()) })));
   }
 }
