@@ -142,9 +142,10 @@ class Buttons {
     // one (merge its branch into the main checkout). Alone it comes up on the last pair, or a picker; with one chat id the other
     // is picked. Again while it is open, the dialog takes the new ids itself (its cmp:* commands are its own).
     else if (name === "compare") { if (!compareOpen()) openCompare(a ?? "", b ?? ""); }
-    // fanout:{"folder":"<folder>","prompt":"…","models":["<model>","<model>"],"branch":"<name>","agent":"<agent id>"}: one prompt to
+    // fanout:{"folder":"<folder>","prompt":"…","models":["<model>","<model>"],"branch":"<name>","agent":"<agent id>","from":"<ref>","fetch":true}: one prompt to
     // two to four models (fanout.js; the New chat dialog's Several models sends this too). Each model gets a worktree on
-    // <branch>-<model> from the commit the folder is on (no branch: one named after the prompt) and a background chat in it with
+    // <branch>-<model> from the commit the folder is on, or from "from" (a branch, origin/<branch>, a commit; with "fetch" one on
+    // origin is fetched first) (no branch: one named after the prompt) and a background chat in it with
     // the prompt, named "<prompt's first line> · <model>"; the shown tab stays shown. agent: an agent-acp.js AGENTS id (none:
     // the one New chat comes up with). A notice lists what started; with exactly two, a click on it opens Compare on them.
     else if (name === "fanout") cx.spawn(async (cx) => {

@@ -5,6 +5,8 @@
 // chats; the New chat dialog's "Several models" and `ht3-panels.fanout:<json>` both go through it.
 // Run by node: t3-panels/tests/fanout.test.mjs.
 
+import { cleanFrom } from "./basebranch.js";
+
 export const FANOUT_MIN = 2, FANOUT_MAX = 4;
 const TITLE_MAX = 60, SLUG_MAX = 24;
 
@@ -77,8 +79,9 @@ export function fanoutProblem({ prompt, models, branch }) {
   return null;
 }
 
-// The scripted command's argument (`fanout:<json>`): { folder, prompt, models: [...], branch?, agent? }.
-// -> { folder, prompt, models, branch, agent } or { error }.
+// The scripted command's argument (`fanout:<json>`): { folder, prompt, models: [...], branch?, agent?, from?, fetch? }.
+// `from`: the branch (origin/<branch>, a commit) every model's worktree starts from (basebranch.js); `fetch: true`
+// fetches one on origin first. -> { folder, prompt, models, branch, agent } (and from, fetch when given) or { error }.
 export function parseFanout(text) {
   let o;
   try { o = JSON.parse(String(text ?? "")); } catch { return { error: "fanout takes a JSON object: {\"folder\":…,\"prompt\":…,\"models\":[…]}." }; }
@@ -86,8 +89,11 @@ export function parseFanout(text) {
   const folder = typeof o.folder === "string" ? o.folder.trim().replace(/(.)\/+$/, "$1") : "";
   if (!folder.startsWith("/") && !folder.startsWith("~")) return { error: "fanout needs \"folder\", an absolute path." };
   if (!Array.isArray(o.models)) return { error: "fanout needs \"models\", a list of model names." };
+  const from = typeof o.from === "string" ? cleanFrom(o.from) : null;
+  if (o.from != null && o.from !== "" && !from) return { error: "fanout's \"from\" is a branch or a commit, e.g. \"origin/main\"." };
   const out = { folder, prompt: String(o.prompt ?? "").trim(), models: cleanModels(o.models),
-    branch: typeof o.branch === "string" && o.branch.trim() ? o.branch.trim() : null, agent: typeof o.agent === "string" && o.agent.trim() ? o.agent.trim() : null };
+    branch: typeof o.branch === "string" && o.branch.trim() ? o.branch.trim() : null, agent: typeof o.agent === "string" && o.agent.trim() ? o.agent.trim() : null,
+    ...(from ? { from } : {}), ...(from && o.fetch === true ? { fetch: true } : {}) };
   const why = fanoutProblem(out);
   return why ? { error: why } : out;
 }

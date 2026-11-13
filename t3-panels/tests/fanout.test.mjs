@@ -56,6 +56,13 @@ assert.match(fanoutProblem({ prompt: "p", models: ["a", "b"], branch: "-x" }), /
 assert.deepEqual(parseFanout('{"folder":"/work/app/","prompt":" Fix it ","models":["opus","sonnet"],"branch":"fix","agent":"claude"}'),
   { folder: "/work/app", prompt: "Fix it", models: [{ value: "opus", name: "opus" }, { value: "sonnet", name: "sonnet" }], branch: "fix", agent: "claude" });
 assert.deepEqual(parseFanout('{"folder":"/","prompt":"p","models":["a","b"]}'), { folder: "/", prompt: "p", models: [{ value: "a", name: "a" }, { value: "b", name: "b" }], branch: null, agent: null });
+// from: the start point, and fetch with it; never an option for git.
+assert.deepEqual(parseFanout('{"folder":"/a","prompt":"p","models":["a","b"],"from":" origin/main ","fetch":true}'),
+  { folder: "/a", prompt: "p", models: [{ value: "a", name: "a" }, { value: "b", name: "b" }], branch: null, agent: null, from: "origin/main", fetch: true });
+assert.equal(parseFanout('{"folder":"/a","prompt":"p","models":["a","b"],"from":"main"}').from, "main");
+assert.equal("fetch" in parseFanout('{"folder":"/a","prompt":"p","models":["a","b"],"fetch":true}'), false);
+assert.match(parseFanout('{"folder":"/a","prompt":"p","models":["a","b"],"from":"--force"}').error, /from/);
+assert.match(parseFanout('{"folder":"/a","prompt":"p","models":["a","b"],"from":7}').error, /from/);
 assert.match(parseFanout("nope").error, /JSON/);
 assert.match(parseFanout("[]").error, /JSON object/);
 assert.match(parseFanout('{"folder":"app","prompt":"p","models":["a","b"]}').error, /folder/);
