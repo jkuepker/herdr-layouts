@@ -41,7 +41,7 @@ import { tasksOf, taskKeys, update, newId, startTask, observe, workAll, setWork,
 import { newTask, patch, remove, keyOf, chatState, readWork, readyStale, unready, showCommand, conflictGone, unconflict, SENT_WORDS } from "./tasklist.js";
 import { lastReply } from "./compare-data.js";
 import { parseOp, logOp, snapshot, templateDue, pickAnswer, readyCheck, taskStates, noticeDiff, noticeText, conflictNews, conflictText,
-  savedCut, restartNews, restartText, wakeDue, wakeTab, wakeSteps } from "./coord-data.js";
+  savedCut, restartNews, restartText, wakeDue, wakeTab, wakeSteps, resettleAfter } from "./coord-data.js";
 import { VERSION, roleText, SETTINGS } from "./coord-template.js";
 
 export const CHAT = "coordinator", SPACE = "Coordinator";
@@ -326,7 +326,7 @@ async function wake(tasks, f) {
     if (moved) { for (const [name, args] of plan.back) run(name, args); back = true; }
   } finally {
     // The person moved before back ran: a settled tab that was shown is settled again, unless it is where they are now.
-    if (!back) for (const id of plan.settle) if (passed.has(id) && inFront()?.tab !== id) run("tab.settle", { id });
+    for (const id of resettleAfter(plan, passed, inFront()?.tab, back)) run("tab.settle", { id });
     waking = false;
   }
 }
