@@ -261,3 +261,10 @@ export function wakeSteps(targets, at, spaces = []) {
   if (at.pane) back.push(["pane.focus", { pane: at.pane }]);
   return { show: list.map((t) => ({ chat: t.chat, tab: t.tab, steps: [["space.select", { id: t.space }], ["tab.select", { id: t.tab }]] })), back, settle: settle.map(([, a]) => a.id) };
 }
+
+// When the person moved before wake's back ran (showing a tab unsettles it): which settled targets to settle again:
+// those that were shown (`passed`, a Set of tab ids), except the one in front now (`front`). -> [tab id].
+export function resettleAfter(plan, passed, front, backRan) {
+  if (backRan || !plan?.settle) return [];
+  return plan.settle.filter((id) => passed.has(id) && id !== front);
+}

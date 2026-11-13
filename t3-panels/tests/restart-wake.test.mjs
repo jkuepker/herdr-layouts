@@ -4,7 +4,7 @@
 // posts but no copy running: wakeDue (which), wakeTab (where), wakeSteps (how, and back to where the person was).
 import assert from "node:assert/strict";
 import { chatState, STATE_LABEL, SENT_WORDS, CUT_WHY } from "../mods/ht3-panels/tasklist.js";
-import { savedCut, snapshot, taskStates, noticeDiff, restartNews, restartText, readyCheck, wakeDue, wakeTab, wakeSteps, WAKE_AFTER_MS, WAKE_AGAIN_MS, NOTICE_MAX } from "../mods/ht3-panels/coord-data.js";
+import { savedCut, snapshot, taskStates, noticeDiff, restartNews, restartText, readyCheck, wakeDue, wakeTab, wakeSteps, resettleAfter, WAKE_AFTER_MS, WAKE_AGAIN_MS, NOTICE_MAX } from "../mods/ht3-panels/coord-data.js";
 import { VERSION, roleText } from "../mods/ht3-panels/coord-template.js";
 
 const run = (more = {}) => ({ chat: "c1", branch: "task-x", path: "/r/.worktrees/task-x", on: null, from: "main", at: 1, worked: true, ...more });
@@ -121,5 +121,12 @@ for (const p of [plan, wakeSteps([{ chat: "c1", tab: "t2", space: "s1" }], { ...
   const tabsBack = p.back.filter(([c]) => c === "tab.select");
   assert.deepEqual(tabsBack[tabsBack.length - 1], ["tab.select", { id: "t1" }]);
 }
+
+// The person moved before back ran: settle again the settled ones shown, not the one they are on; nothing once back ran.
+assert.deepEqual(resettleAfter(plan, new Set(["t2", "t3"]), "t1", false), ["t3"]);
+assert.deepEqual(resettleAfter(plan, new Set(["t2"]), "t1", false), []); // t3 was never shown
+assert.deepEqual(resettleAfter(plan, new Set(["t2", "t3"]), "t3", false), []); // they went to it
+assert.deepEqual(resettleAfter(plan, new Set(["t2", "t3"]), "t1", true), []);
+assert.deepEqual(resettleAfter(null, new Set(), "t1", false), []);
 
 console.log("restart-wake: ok");
