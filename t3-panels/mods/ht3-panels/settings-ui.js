@@ -11,7 +11,7 @@
 // files opening as a preview, `ui:budget:<tokens>` sets the chat token budget (0 off; `ui:budget` alone takes the next choice),
 // `ui:taskagent:<id>` and `ui:coordagent:<id>` set the tasks' and the coordinator's agent (with no id: the next choice; `default`:
 // unset), `ui:taskmodel:<model>` and `ui:coordmodel:<model>` their models (with none: the agent's own), `ui:coordnotify` flips
-// the coordinator's task notices, `ui:awake` flips Keep the Mac awake, `ui:close` closes.
+// the coordinator's task notices, `ui:awake` flips Keep the Mac awake, `ui:prwatch` flips PR watch, `ui:close` closes.
 
 import { div, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
@@ -22,7 +22,7 @@ import { importable } from "./detect.js";
 import { tokens, alpha, icon, agentMark, button, iconButton, shortPath, badge } from "./look.js";
 import { AGENTS, detect } from "./agent-acp.js";
 import { EDITORS, editors } from "./menus.js";
-import { enabledAgents, coordinatorNotify, prefs, agentOn, modelsOf, knownModels, editorOn, sideStartsHidden, firstAgent, setPref, settingsFile, followUp, checkpointsOn, toastsOn, soundsOn, keepAwakeOn, diffHidesWhitespace, commitStyle, COMMIT_STYLES, mdPreviewDefault, chatTokenBudget } from "./settings.js";
+import { enabledAgents, coordinatorNotify, prefs, agentOn, modelsOf, knownModels, editorOn, sideStartsHidden, firstAgent, setPref, settingsFile, followUp, checkpointsOn, toastsOn, soundsOn, keepAwakeOn, prWatchOn, diffHidesWhitespace, commitStyle, COMMIT_STYLES, mdPreviewDefault, chatTokenBudget } from "./settings.js";
 import { BUDGETS, budgetLabel, nextBudget } from "./token-budget.js";
 
 // Auto-settle's idle choices, as ht3-inbox autosettle.js AUTO_DAYS (a mod doesn't import another's files); 0 = off.
@@ -88,6 +88,7 @@ export class Settings {
     else if (what === "taskmodel" || what === "coordmodel") { const role = what === "taskmodel" ? "task" : "coordinator"; this.roleModel[role].set_value(rest); this.saveRoleModel(role); }
     else if (what === "coordnotify") setPref("coordinatorNotify", coordinatorNotify() ? false : undefined);
     else if (what === "awake") setPref("keepAwake", keepAwakeOn() ? undefined : true);
+    else if (what === "prwatch") setPref("prWatch", prWatchOn() ? undefined : true);
     // Auto-settle (ht3-inbox autosettle.js): ui:autosettle:<days> (0 off; alone: the next choice), ui:autosettle-merge and ui:autosettle-keep flip the two switches.
     else if (what === "autosettle") { const n = rest === "" ? AUTO_DAYS[(AUTO_DAYS.indexOf(autoDays()) + 1) % AUTO_DAYS.length] : AUTO_DAYS.find((d) => String(d) === rest); if (n != null) setPref("autoSettleDays", n || undefined); }
     else if (what === "autosettle-merge") setPref("autoSettleOnMerge", prefs().autoSettleOnMerge === true ? undefined : true);
@@ -322,7 +323,9 @@ export class Settings {
           this.row(icon("volume-2").size(16).flex_none().text_color(k.muted), "Sound", "Play Herdr's done or blocked sound then.",
             [this.toggle(k, "set-sounds", soundsOn(), "Sound", () => setPref("sounds", soundsOn() ? undefined : true))]),
           this.row(icon("monitor").size(16).flex_none().text_color(k.muted), "Keep the Mac awake while agents work", "While a chat or task agent is working, the Mac doesn't go to sleep (caffeinate). The display may still turn off.",
-            [this.toggle(k, "set-awake", keepAwakeOn(), "Keep the Mac awake while agents work", () => setPref("keepAwake", keepAwakeOn() ? undefined : true))])]))
+            [this.toggle(k, "set-awake", keepAwakeOn(), "Keep the Mac awake while agents work", () => setPref("keepAwake", keepAwakeOn() ? undefined : true))]),
+          this.row(icon("git-pull-request").size(16).flex_none().text_color(k.muted), "Watch pull requests", "A chat whose branch has an open GitHub pull request gets a message when checks fail on it or someone comments, so its agent can fix them. Looked at every two minutes, through gh.",
+            [this.toggle(k, "set-prwatch", prWatchOn(), "Watch pull requests", () => setPref("prWatch", prWatchOn() ? undefined : true))])]))
         // Auto-settle: the Inbox reads these three (ht3-inbox autosettle.js), all off by default.
         .child(this.section(k, "Inbox", "Chats the Inbox settles by itself. New work brings a settled chat back.",
           [this.row(icon("clock").size(16).flex_none().text_color(k.muted), "Settle chats idle for", "A chat with no activity for this long is settled. Never one that works, waits for you, is in front, pinned or snoozed.",
