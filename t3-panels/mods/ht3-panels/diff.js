@@ -6,6 +6,8 @@
 // (picked from a list of the recent ones shown in the panel itself, with Prev and Next arrows).
 // Hide whitespace (the pilcrow button, setting "diffIgnoreWhitespace", on as T3's is) puts -w on every
 // diff and show the panel runs; a file left with nothing says it was only whitespace.
+// Hide test files (the flask button, setting "diffHideTestFiles", off by default; testfiles.js says which files) leaves
+// test files out of the list and the diff after it is parsed, and says how many it left out.
 //
 // Runs git in the repository of the shown space's folder: `git diff <base or HEAD>`, and for
 // untracked files `git diff --no-index /dev/null <file>`. Reads only. The listing follows the
@@ -25,7 +27,8 @@ import { tokens, alpha, icon, iconButton, button } from "./look.js";
 import { fileIcon } from "./fileicons.js";
 import { activeSpace, placeOf, showing } from "./side.js";
 import { syntax } from "./editor.js";
-import { prefs, setPref, diffHidesWhitespace } from "./settings.js";
+import { prefs, setPref, diffHidesWhitespace, diffHidesTests } from "./settings.js";
+import { isTestFile } from "./testfiles.js";
 import { parseDiff, MAX_LINES_FILE, hunkActions, applyHunk, revertFile, redo } from "./hunkpatch.js";
 
 export { parseDiff };
@@ -198,6 +201,9 @@ export class DiffPanel {
     this.root = null;
     this.on = null;
     this.files = null;
+    this.rawFiles = null; // every file the last run parsed; files is those left after Hide test files
+    this.testsHidden = 0; // how many test files that left out
+    this.testsUsed = false; // whether files was filtered for Hide test files
     this.error = null;
     this.loading = false;
     this.shut = new Set(); // collapsed files
@@ -251,6 +257,8 @@ export class DiffPanel {
     // commit:prev and commit:next go one older or newer, commit:list opens the picker.
     // ws:on hides whitespace changes (-w), ws:off shows them, ws:toggle flips it.
     if (c.startsWith("commit:")) this.commitCommand(cx, c.slice(7));
+    // tests:on hides test files, tests:off shows them, tests:toggle flips it.
+    if (c === "tests:on" || c === "tests:off" || c === "tests:toggle") this.setTests(cx, c === "tests:toggle" ? !diffHidesTests() : c === "tests:on");
     if (c === "ws:on" || c === "ws:off" || c === "ws:toggle") this.setWhitespace(cx, c === "ws:toggle" ? !diffHidesWhitespace() : c === "ws:on");
     // hunk:<n> picks the nth hunk shown (from 0; hunk: lets go of it), comment:<text> sends it to the chat with that comment.
     // diffline:<n> picks the nth diff line shown (from 0, counted as Unified lists them, in either view), as a click on
@@ -431,6 +439,24 @@ export class DiffPanel {
     if (hide !== diffHidesWhitespace()) setPref("diffIgnoreWhitespace", hide ? undefined : false);
     cx.notify();
   }
+  // The header's Hide test files toggle (off by default). The files shown are filtered again from the last run's,
+  // in render; no git command changes.
+  setTests(cx, hide) {
+    if (hide !== diffHidesTests()) setPref("diffHideTestFiles", hide ? true : undefined);
+    cx.notify();
+  }
+  // What a run found, as the list shows it: without the test files when they are hidden (and the count of those), at most
+  // MAX_FILES. The full list is kept in rawFiles so the toggle needs no new run. Every place that looks a file up by path
+  // reads this.files, so they all see the same list.
+  setFound(files) {
+    const hide = diffHidesTests();
+    const shown = hide ? files.filter((f) => !isTestFile(f.path)) : files;
+    this.rawFiles = files;
+    this.testsUsed = hide;
+    this.testsHidden = files.length - shown.length;
+    this.files = shown.slice(0, MAX_FILES);
+    this.more = shown.length - this.files.length;
+  }
   sig() { return `${this.scope}|${this.scope === "commit" ? this.commit?.hash ?? "" : ""}|${diffHidesWhitespace() ? "w" : ""}`; }
 
   // ---- Commit scope ----
@@ -574,8 +600,7 @@ export class DiffPanel {
           if (r.code !== 0) throw new Error(r.stderr.trim().split("\n")[0] || "git show failed");
           const files = withWhitespaceOnly(parseDiff(r.stdout), await names(showArgs(commit.hash, false, ["--name-only"])));
           if (this.root === root && this.scope === scope && this.commit?.hash === commit.hash) {
-            this.files = files.slice(0, MAX_FILES);
-            this.more = files.length - this.files.length;
+            this.setFound(files);
             this.error = null;
             this.live = false;
             this.usedSig = sig;
@@ -614,12 +639,11 @@ export class DiffPanel {
           this.diffWs = ws;
           this.usedSig = sig;
           this.base = base;
-          this.files = files.slice(0, MAX_FILES);
-          this.more = files.length - this.files.length;
+          this.setFound(files);
           this.error = null;
           used = true;
         }
-      } catch (e) { if (turn ? this.turn === turn : this.root === root) { used = this.scope === scope; this.error = String(e?.message ?? e); if (turn) this.files = []; } }
+      } catch (e) { if (turn ? this.turn === turn : this.root === root) { used = this.scope === scope; this.error = String(e?.message ?? e); if (turn) { this.files = []; this.rawFiles = null; this.testsHidden = 0; } } }
       finally { this.loading = false; if (!used || this.again) this.stale = true; this.again = false; cx.notify(); }
     });
   }
@@ -752,6 +776,8 @@ export class DiffPanel {
     }
     if (this.files && this.usedSig && this.usedSig !== this.sig()) this.stale = true; // whitespace was switched elsewhere (Settings, a script)
     if (this.stale) this.refresh(cx);
+    // Hide test files was switched (the button, tests:on, Settings): filter the last run's files again.
+    if (this.files && this.rawFiles && this.testsUsed !== diffHidesTests()) this.setFound(this.rawFiles);
     const k = tokens(), colors = syntax();
     const root = v_flex().id("ht3-diff").size_full().min_h(0).bg(k.background).text_color(k.foreground).text_size(12)
       .on_size_change((size, cx) => { if (Math.abs((this.width ?? 0) - size.width) >= 1) { this.width = size.width; cx.notify(); } })
@@ -769,7 +795,7 @@ export class DiffPanel {
     const byId = split ? new Map(rows.filter((r) => r.kind === "pair").map((r) => [r.id, r])) : null;
     const allShut = files.length > 0 && files.every((f) => this.shut.has(f.path));
     const picked = this.hunkAt(), ph = picked ? this.pickedHunk() : null, ask = this.armedNow(), undo = this.undo && this.undo.until > Date.now() ? this.undo : null;
-    const hideWs = diffHidesWhitespace();
+    const hideWs = diffHidesWhitespace(), hideTests = diffHidesTests();
     const scopeLabel = this.scope === "branch" ? "Changes" : this.scope === "turn" ? "This turn" : this.scope === "commit" ? "Commit" : "Uncommitted";
     const older = this.scope === "commit" ? this.neighbour(1) : null, newer = this.scope === "commit" ? this.neighbour(-1) : null;
     return root
@@ -789,6 +815,8 @@ export class DiffPanel {
           .child(div().text_color(k.successText).child(`+${add}`)).child(div().text_color(k.destructiveText).child(`−${del}`))))
         // T3's Hide whitespace (a pilcrow): -w on every diff the panel runs.
         .child(iconButton(k, "diff-whitespace", "pilcrow", (cx) => this.setWhitespace(cx, !hideWs), { size: "sm", on: hideWs, tip: hideWs ? "Show whitespace changes" : "Hide whitespace changes" }))
+        // T3's Hide test files (a flask): the test files leave the list and the diff.
+        .child(iconButton(k, "diff-tests", "flask-conical-off", (cx) => this.setTests(cx, !hideTests), { size: "sm", on: hideTests, tip: hideTests ? "Show test files" : "Hide test files" }))
         // T3's layout toggle (its Stacked and Split): one column, or old beside new.
         .child(h_flex().flex_none().gap(2)
           .child(iconButton(k, "diff-unified", "rows-3", (cx) => this.setView(cx, "unified"), { size: "sm", on: view === "unified", tip: "Unified: one column" }))
@@ -818,6 +846,7 @@ export class DiffPanel {
             .on_click((_e, cx) => (id === "commit" ? this.openPicker(cx) : this.setScope(cx, id)))
             .child(div().flex_1().child(label))
             .when(this.scope === id, (e) => e.child(icon("check").size(14).flex_none().text_color(k.muted)))))))
+      .when(this.testsHidden > 0 && !this.picking, (el) => el.child(div().px(16).py(4).flex_none().text_size(11).text_color(k.muted).child(`${this.testsHidden} test file${this.testsHidden === 1 ? "" : "s"} hidden`)))
       .when(!!this.error, (el) => el.child(div().px(12).py(4).text_size(11).text_color(k.destructiveText).child(this.error)))
       // The picker step: the recent commits of this branch in place of the files; a click shows one.
       .when(this.picking, (el) => el.child(this.commitPicker(k)))

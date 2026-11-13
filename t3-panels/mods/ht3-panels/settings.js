@@ -15,6 +15,7 @@
 // - followUp ("queue"): "steer" makes a message sent while the agent works interrupt it.
 // - notifications (true): a toast when a chat that isn't looked at finishes or needs an approval; sounds (false): a sound then.
 // - diffIgnoreWhitespace (true, as T3's): the Diff surface puts -w on every diff and show it runs; false shows whitespace changes.
+// - diffHideTestFiles (false): the Diff surface leaves test files out of its list and diff, and says how many (the flask button).
 // - commitStyle ("plain"): what "Write message" asks the agent for: "plain" (a short imperative subject), "conventional"
 //   (type(scope): subject), or "template" (the repository's commit.template or .gitmessage as the format). The Commit step
 //   warns, without blocking, when a typed message's first line isn't Conventional Commits and the style is "conventional".
@@ -79,6 +80,8 @@ export const sideStartsHidden = () => prefs().sidePanelHiddenInNewSpaces === tru
 export const checkpointsOn = () => prefs().checkpoints !== false;
 // "diffIgnoreWhitespace": false shows whitespace changes in the Diff surface; the default hides them (T3's diffIgnoreWhitespace).
 export const diffHidesWhitespace = () => prefs().diffIgnoreWhitespace !== false;
+// "diffHideTestFiles": true leaves test files (testfiles.js) out of the Diff surface; the default shows them (T3's diffHideTestFiles).
+export const diffHidesTests = () => prefs().diffHideTestFiles === true;
 // "notifications": false: no toast when a chat that isn't looked at ends its turn or asks for an approval.
 // "sounds": true: Herdr's done / blocked sound with it (or alone).
 export const toastsOn = () => prefs().notifications !== false;
