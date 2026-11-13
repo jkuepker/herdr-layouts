@@ -19,6 +19,7 @@ import { snapshot, turnStat, undoRevert, prune, chatsWithRefs, safe as refName, 
 import { checkpointsOn, followUp, limitModels, rememberModels, prefs, chatTokenBudget, autoResumeLimit } from "./settings.js";
 import { resumePlan, clockText, RESUME_TEXT } from "./limit-resume.js";
 import { budgetNotice } from "./token-budget.js";
+import { stopState, stopAge, FORCE_STOP_TITLE, FORCE_STOP_DETAIL } from "./forcestop.js";
 import { Diagrams, isMermaid, fit, INSTALL } from "./mermaid.js";
 import { addNotice, toMarkdown, subagents } from "./transcript.js";
 import { touchesSecret } from "./secrets.js";
@@ -379,7 +380,8 @@ export class ChatPanel {
       // A name given elsewhere (the Inbox's thread menu) shows here and in the lists.
       if (this.named() !== (this.wasNamed ?? null)) { this.wasNamed = this.named(); this.report(); cx.notify(); }
       // The subagent bar counts seconds too, and lets go of a finished one a moment after the turn's end.
-      if (this.since != null || this.fitHint() || this.subN) cx.notify();
+      // So does the banner of a Stop the agent hasn't answered (stopBanner).
+      if (this.since != null || this.fitHint() || this.subN || this.source?.session?.stopAsked != null) cx.notify();
       // A finished turn nobody saw is "done" until its tab is looked at.
       if (this.reporter?.tab) this.reporter.seen();
       else this.report();
@@ -461,6 +463,19 @@ export class ChatPanel {
     this.queue = [...(this.queue ?? []), { text: RESUME_TEXT, blocks: [], files: [], tokens: [], posted: true }];
     this.keepQueue();
     this.drain(cx);
+    cx.notify();
+  }
+
+  // T3's runStopNowItem: Stop was asked and the turn still runs a while later (forcestop.js) -> "unresponsive", when the
+  // banner offers Force stop; "stopping" before that, null with no Stop asked.
+  stopOf(v) {
+    if (this.source?.kind !== "acp" || !v) return null;
+    return stopState({ askedAt: v.stopAsked, status: v.status, now: Date.now() });
+  }
+  // The banner's button: the agent is killed and the turn ends as stopped (session.js forceStop). Only once it is offered.
+  forceStop(cx) {
+    if (this.stopOf(this.source?.view()) !== "unresponsive") return;
+    this.source.forceStop();
     cx.notify();
   }
 
@@ -785,6 +800,8 @@ export class ChatPanel {
     if (c.startsWith("pick:")) { this.picker = this.picker === c.slice(5) ? null : c.slice(5); this.filter.set_value(""); }
     if (c.startsWith("answer:")) this.source?.answer(cx, c.slice(7));
     if (c === "stop") this.source?.stop();
+    // force-stop is the "Force stop" button of the banner over the box: it acts once that banner shows (stopOf).
+    if (c === "force-stop") this.forceStop(cx);
     // allow-always: the drawer's "Always allow this session"; ask-again turns it off.
     if (c === "allow-always") this.allowAlways(cx);
     if (c === "ask-again") this.allow(false);
@@ -932,7 +949,9 @@ export class ChatPanel {
     if (chatref) { this.input.set_value(""); this.hasText = false; this.trig = null; return chatref[1] ? this.chatRefFind(cx, chatref[1]) : this.chatRefOpen(cx); }
     // "/clear" is T3's own as well (ComposerFreshSession): the next message starts a fresh session. Not on an agent that is a terminal's.
     if (/^\/clear$/.test(text) && this.source.kind === "acp") { this.input.set_value(""); this.hasText = false; this.trig = null; return this.armFresh(cx, true); }
-    if ((!text && !files.length) || !v?.alive) return;
+    // An agent that was force stopped is started again by the next message, which waits in the queue for it.
+    const again = this.source.kind === "acp" && v?.forced === true;
+    if ((!text && !files.length) || !(v?.alive || again)) return;
     // The person goes on by hand: "Resume at reset" is off for this limit.
     if (this.resumeOf(this.source.view())?.armed) this.armResume(cx, false);
     const payload = this.boxMessage(v);
@@ -956,6 +975,7 @@ export class ChatPanel {
       if (followUp() === "steer" && ["working", "blocked"].includes(v.status) && !this.sending && !payload.fresh) return this.dispatch(cx, payload, true);
       this.queue.splice(Math.min(editing?.at ?? this.queue.length, this.queue.length), 0, payload);
       this.keepQueue();
+      if (again) this.source.wake(cx);
       this.drain(cx);
       return cx.notify();
     }
@@ -2407,6 +2427,21 @@ export class ChatPanel {
         .hover((st) => st.bg(alpha(c, 0.15))).on_click((_e, cx) => dismiss(cx)).child(icon("x").size(12)));
   }
 
+  // chat/ThreadActivityBanners.tsx runStopNowItem: over the box once the agent has not answered Stop for a while, with
+  // how long ago it was asked. Its button kills the agent (forceStop).
+  stopBanner(k, v) {
+    if (this.stopOf(v) !== "unresponsive") return null;
+    const c = k.warning;
+    return h_flex().id("ht3-force-stop").mx(22).px(16).py(8).gap(10).items_center().rounded_t(16).border(1).border_color(alpha(c, 0.32)).bg(k.card)
+      .role("status").accessibility_label(FORCE_STOP_TITLE)
+      .child(icon("triangle-alert").size(16).flex_none().text_color(c))
+      .child(v_flex().flex_1().min_w(0)
+        .child(div().text_size(13).font_medium().child(FORCE_STOP_TITLE))
+        .child(div().text_size(12).text_color(k.muted).child(FORCE_STOP_DETAIL)))
+      .child(div().flex_none().text_size(12).text_color(k.muted).child(stopAge({ askedAt: v.stopAsked, now: Date.now() })))
+      .child(button(k, "force-stop", "Force stop", (cx) => this.forceStop(cx), { variant: "outline" }));
+  }
+
   // chat/ComposerFreshSession.tsx: over the box while "/clear" is armed. Its button keeps the current session.
   freshBanner(k) {
     if (!this.fresh || this.source.kind !== "acp") return null;
@@ -2495,7 +2530,7 @@ export class ChatPanel {
     const has = this.hasText || (acp && this.attached?.length > 0);
     // While an ACP agent works, a message can still be sent: it queues (or steers). Stop stays beside Send then.
     const busy = acp && ["working", "blocked", "starting"].includes(v.status);
-    const can = v.alive && has && (acp || this.source.kind === "term");
+    const can = (v.alive || v.forced) && has && (acp || this.source.kind === "term");
     const stopBtn = () => h_flex().id("stop").size(32).flex_none().items_center().justify_center().rounded_full().bg(alpha(k.destructive, 0.9)).text_color("#ffffff")
       .shadow_xs().cursor_pointer().tooltip("Interrupt").role("button").accessibility_label("Stop generation").hover((s) => s.bg(k.destructive))
       .on_click(() => this.source.stop()).child(icon("stop").size(12));
@@ -2606,8 +2641,8 @@ export class ChatPanel {
         .child(div().w(6).flex_none())
         .child(action));
     const limit = this.limitLine(k, v), subs = this.subBar(k, v), srv = v.cwd ? serversStrip(k, this.servers.at({ cwd: v.cwd, on: v.machine ?? null })) : null;
-    const fresh = this.freshBanner(k), budget = this.budgetLine(k, v);
-    const box = drawer || limit || budget || subs || srv || fresh ? v_flex().when(!!budget, (el) => el.child(budget)).when(!!limit, (el) => el.child(limit)).when(!!srv, (el) => el.child(srv)).when(!!subs, (el) => el.child(subs)).when(!!fresh, (el) => el.child(fresh)).when(!!drawer, (el) => el.child(drawer)).child(card) : card;
+    const fresh = this.freshBanner(k), budget = this.budgetLine(k, v), unstopped = this.stopBanner(k, v);
+    const box = drawer || limit || budget || subs || srv || fresh || unstopped ? v_flex().when(!!budget, (el) => el.child(budget)).when(!!limit, (el) => el.child(limit)).when(!!srv, (el) => el.child(srv)).when(!!subs, (el) => el.child(subs)).when(!!fresh, (el) => el.child(fresh)).when(!!unstopped, (el) => el.child(unstopped)).when(!!drawer, (el) => el.child(drawer)).child(card) : card;
     // While a queued message is in the box: what it is, where a draft went, and the way back.
     const editLine = this.editing ? h_flex().w_full().justify_end().items_center().gap(6).pb(6).text_size(11).text_color(k.muted)
       .child(div().min_w(0).truncate().child(this.parked ? "Editing a queued message · your draft comes back when it is sent" : "Editing a queued message"))

@@ -291,6 +291,7 @@ export class AcpSource {
   // Starts the agent as this copy's program; it stops with the copy. `first`: a new chat's first message.
   // `set`: options a new chat starts with, e.g. { model: "provider/model" }, set before `first`.
   start(cx, argv, cwd, first = null, set = null) {
+    this.waking = false;
     if (this.machine && !this.target) {
       const why = this.remoteError ?? `Couldn't find how to reach ${this.machine}.`;
       if (this.state) Object.assign(this.state, { status: "exited", error: why });
@@ -368,6 +369,14 @@ export class AcpSource {
       }
       this.start(cx, this.state.agentArgv, this.state.cwd);
     });
+    return true;
+  }
+
+  // After a force stop (session.js forceStop) the chat's next message starts the agent again: once, whatever else is
+  // sent before it is up. -> whether it is on its way.
+  wake(cx) {
+    if (this.alive || !this.state?.forceStopped) return false;
+    if (!this.waking) { this.waking = true; this.restart(cx); }
     return true;
   }
 
@@ -474,6 +483,9 @@ export class AcpSource {
       })),
       permission: s.permission,
       alive: this.alive,
+      // When Stop was asked of the running turn, and whether the agent is down from a force stop (forcestop.js).
+      stopAsked: this.alive ? this.session?.stopAsked ?? null : null,
+      forced: !this.alive && s.forceStopped === true,
     };
   }
 
@@ -481,6 +493,7 @@ export class AcpSource {
   // A message for the turn that is running (session.js steer): into the turn where the agent can, else it ends the turn.
   steer(_cx, text, blocks = [], attachments = null) { this.session?.handle({ type: "steer", text, blocks, attachments }); }
   stop() { this.session?.handle({ type: "cancel" }); }
+  forceStop() { return this.session?.forceStop() ?? false; }
   answer(_cx, optionId) { this.session?.handle({ type: "permission", optionId }); }
   setOption(id, value) { this.session?.handle({ type: "config", configId: id, value }); }
   // A tool's output arrives with the call; nothing to fetch.

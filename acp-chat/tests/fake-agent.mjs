@@ -3,7 +3,8 @@
 // "crash" asks and then exits without waiting for the answer. One that starts with
 // "limit" is refused for a usage limit that resets in a minute (FAKE_AGENT_LIMIT_SECONDS):
 // Claude Code's `_claude/rateLimit` with status "rejected", then the turn ends; "limit-error"
-// ends it with an error instead. The next prompt is answered, the limit over. With
+// ends it with an error instead. The next prompt is answered, the limit over. One that starts with
+// "hang" says a word and then never ends its turn, whatever `session/cancel` asks (for Force stop). With
 // FAKE_AGENT_STORE set it keeps its updates in that file and can load the session.
 import * as fs from "node:fs";
 import { AcpConnection, lineSplitter } from "../mods/acp-chat/acp.js";
@@ -58,6 +59,10 @@ async function prompt(text) {
   if (text.startsWith("crash")) {
     conn.request("session/request_permission", { sessionId: sid, toolCall: { toolCallId: "t0", title: "Crash" }, options: [{ optionId: "yes", name: "Allow", kind: "allow_once" }] }).catch(() => {});
     setTimeout(() => process.exit(3), 300);
+    return new Promise(() => {});
+  }
+  if (text.startsWith("hang")) {
+    update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Hanging." } });
     return new Promise(() => {});
   }
   if (text.startsWith("limit")) {
